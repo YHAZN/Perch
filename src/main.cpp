@@ -147,6 +147,7 @@ void setup() {
 
 void loop() {
   while (Serial.available()) {
+    deviceNoteSerial();
     const char command = Serial.read();
     if (command == 's') printStatus();
     if (command == 'c') capture();
@@ -155,10 +156,11 @@ void loop() {
     if (command == 'g') testWifi("guest", "");
     handleDeviceButton(command);
   }
+  deviceTick();
   static unsigned long lastHeartbeat = 0;
   if (millis() - lastHeartbeat >= 2000) {
     lastHeartbeat = millis();
     Serial.printf("Alive: %lu seconds | free heap: %u bytes\n", millis() / 1000, ESP.getFreeHeap());
   }
-  delay(10);
+  delay(1);
 }

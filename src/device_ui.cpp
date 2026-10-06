@@ -12,6 +12,8 @@
 #include <vector>
 #include <math.h>
 #include "ai_client.h"
+#include "display.h"
+#include "storage.h"
 
 namespace {
 constexpr int W = 240, H = 284;
@@ -161,8 +163,8 @@ int textWidth(const String &text) {
   screen.getTextBounds(text, 0, 0, &x, &y, &w, &h);
   return (w + 1) / 2;
 }
-void wrap(const char *text) {
-  lines.clear();
+std::vector<String> wrapLines(const char *text) {
+  std::vector<String> lines;
   screen.setFont(&FreeSans18pt7b);
   String line, word;
   auto append = [&]() {
@@ -198,6 +200,10 @@ void wrap(const char *text) {
   append();
   if (!line.isEmpty()) lines.push_back(line);
   if (lines.empty()) lines.push_back("");
+  return lines;
+}
+void wrap(const char *text) {
+  lines = wrapLines(text);
   page = 0;
 }
 int pageCount() { return max(1, (static_cast<int>(lines.size()) + LINES_PER_PAGE - 1) / LINES_PER_PAGE); }
@@ -218,8 +224,7 @@ void render() {
       header("Camera");
       screen.fillRect(0, 32, 240, 180, PANEL);
       if (liveRequested && livePixels) {
-        for (int y = 0; y < 180; ++y)
-          for (int x = 0; x < 240; ++x) screen.drawPixel(x, y + 32, livePixels[(y * 108 / 180) * 144 + x * 144 / 240]);
+        memcpy(screen.pixels + 32 * W, livePixels, 240 * 180 * 2);
       } else {
         cameraIcon(120, 113, INK);
         body("Tap to preview", 66, 147, MUTED);
@@ -288,8 +293,10 @@ void render() {
       break;
     case View::Error:
       header("Notice");
-      wrap(problem.c_str());
-      for (int i = 0; i < 6 && i < (int)lines.size(); ++i) body(lines[i], 14, TEXT_TOP + i * LINE_HEIGHT, MUTED);
+      {
+        std::vector<String> message = wrapLines(problem.c_str());
+        for (int i = 0; i < 6 && i < (int)message.size(); ++i) body(message[i], 14, TEXT_TOP + i * LINE_HEIGHT, MUTED);
+      }
       if (activeApp == AppId::AI && jpegBytes) {
         screen.fillRoundRect(16, 200, 208, 38, 12, PANEL);
         body("Retry same photo", 40, 225, INK);
@@ -308,12 +315,18 @@ bool sendAcknowledged(const uint8_t *bytes, size_t length) {
   }
   return offset == length;
 }
+// True while handling the physical touchscreen: frames go to the LCD only.
+// USB frames are sent only in reply to a mirror command, so the bridge never
+// receives a frame it did not ask for.
+bool fromTouch = false;
 void sendFrame() {
   if (!screen.pixels) {
     Serial.println("SCREEN_ERROR framebuffer unavailable");
     return;
   }
   render();
+  displayPresent(screen.pixels);
+  if (fromTouch) return;
   const uint8_t *bytes = reinterpret_cast<uint8_t *>(screen.pixels);
   uint32_t checksum = 2166136261u;
   for (size_t i = 0; i < W * H * 2; ++i) {
@@ -381,31 +394,54 @@ void stopPreview() {
     if (f) esp_camera_fb_return(f);
   }
 }
+// QVGA 320x240 maps onto the 240x180 viewfinder at exactly 3:4.
+bool decodePreview(camera_fb_t *f) {
+  size_t needed = f->width * f->height * 2;
+  if (needed > rgbCapacity) {
+    free(rgbScratch);
+    rgbScratch = (uint8_t *)ps_malloc(needed);
+    rgbCapacity = rgbScratch ? needed : 0;
+  }
+  if (!livePixels) livePixels = (uint16_t *)ps_malloc(240 * 180 * 2);
+  if (!rgbScratch || !livePixels || !jpg2rgb565(f->buf, f->len, rgbScratch, JPG_SCALE_NONE)) return false;
+  for (int y = 0; y < 180; ++y)
+    for (int x = 0; x < 240; ++x) {
+      size_t offset = ((y * f->height / 180) * f->width + x * f->width / 240) * 2;
+      livePixels[y * 240 + x] = rgbScratch[offset] | (uint16_t(rgbScratch[offset + 1]) << 8);
+    }
+  return true;
+}
+bool ensurePreviewMode() {
+  if (previewActive) return true;
+  sensor_t *sensor = esp_camera_sensor_get();
+  if (!sensor) return false;
+  stillSize = sensor->status.framesize;
+  stillQuality = sensor->status.quality;
+  if (sensor->set_framesize(sensor, FRAMESIZE_QVGA) || sensor->set_quality(sensor, 20)) {
+    sensor->set_framesize(sensor, stillSize);
+    sensor->set_quality(sensor, stillQuality);
+    return false;
+  }
+  previewActive = true;
+  for (int i = 0; i < 2; ++i) {
+    camera_fb_t *f = esp_camera_fb_get();
+    if (f) esp_camera_fb_return(f);
+  }
+  return true;
+}
 void previewFrame(bool deviceScreen = false) {
   if (view != View::Home || !liveRequested) {
     stopPreview();
     Serial.println("CAPTURE FAILED Preview is not active");
     return;
   }
-  sensor_t *sensor = esp_camera_sensor_get();
-  if (!sensor) {
+  if (!esp_camera_sensor_get()) {
     Serial.println("CAPTURE FAILED Camera unavailable");
     return;
   }
-  if (!previewActive) {
-    stillSize = sensor->status.framesize;
-    stillQuality = sensor->status.quality;
-    if (sensor->set_framesize(sensor, FRAMESIZE_QVGA) || sensor->set_quality(sensor, 20)) {
-      sensor->set_framesize(sensor, stillSize);
-      sensor->set_quality(sensor, stillQuality);
-      Serial.println("CAPTURE FAILED Preview setup failed");
-      return;
-    }
-    previewActive = true;
-    for (int i = 0; i < 2; ++i) {
-      camera_fb_t *f = esp_camera_fb_get();
-      if (f) esp_camera_fb_return(f);
-    }
+  if (!ensurePreviewMode()) {
+    Serial.println("CAPTURE FAILED Preview setup failed");
+    return;
   }
   camera_fb_t *f = esp_camera_fb_get();
   if (!f) {
@@ -413,20 +449,7 @@ void previewFrame(bool deviceScreen = false) {
     return;
   }
   if (deviceScreen) {
-    size_t needed = f->width * f->height * 2;
-    if (needed > rgbCapacity) {
-      free(rgbScratch);
-      rgbScratch = (uint8_t *)ps_malloc(needed);
-      rgbCapacity = rgbScratch ? needed : 0;
-    }
-    if (!livePixels) livePixels = (uint16_t *)ps_malloc(144 * 108 * 2);
-    bool decoded = rgbScratch && livePixels && jpg2rgb565(f->buf, f->len, rgbScratch, JPG_SCALE_NONE);
-    if (decoded)
-      for (int y = 0; y < 108; ++y)
-        for (int x = 0; x < 144; ++x) {
-          size_t offset = ((y * f->height / 108) * f->width + x * f->width / 144) * 2;
-          livePixels[y * 144 + x] = rgbScratch[offset] | (uint16_t(rgbScratch[offset + 1]) << 8);
-        }
+    bool decoded = decodePreview(f);
     esp_camera_fb_return(f);
     if (!decoded) {
       Serial.println("SCREEN_ERROR Preview decode failed");
@@ -442,7 +465,7 @@ void previewFrame(bool deviceScreen = false) {
 }
 void takePhoto() {
   stopPreview();
-  jpegBytes = 0;
+  // Every failure path below leaves the previously captured photo intact.
   if (!esp_camera_sensor_get()) {
     problem = "Camera is unavailable.";
     view = View::Error;
@@ -473,7 +496,9 @@ void takePhoto() {
   uint8_t *rgb = rgbScratch;
   Serial.printf("CAPTURE_FRAME %u %u %u\n", frame->width, frame->height, frame->len);
   if (!photo) photo = (uint16_t *)ps_malloc(216 * 162 * 2);
-  bool decoded = rgb && photo && jpg2rgb565(frame->buf, frame->len, rgb, JPG_SCALE_4X);
+  uint8_t *jpegTarget = frame->len > jpegCapacity ? (uint8_t *)ps_malloc(frame->len) : savedJpeg;
+  bool decoded = rgb && photo && jpegTarget && jpg2rgb565(frame->buf, frame->len, rgb, JPG_SCALE_4X);
+  if (!decoded && jpegTarget != savedJpeg) free(jpegTarget);
   if (decoded) {
     // 180-degree rotation and scaling happen on the board.
     for (int y = 0; y < 162; ++y)
@@ -486,15 +511,13 @@ void takePhoto() {
         size_t source = (sourceY * decodedWidth + sourceX) * 2;
         photo[y * 216 + x] = rgb[source] | (uint16_t(rgb[source + 1]) << 8);
       }
-    if (frame->len > jpegCapacity) {
+    if (jpegTarget != savedJpeg) {
       free(savedJpeg);
-      savedJpeg = (uint8_t *)ps_malloc(frame->len);
-      jpegCapacity = savedJpeg ? frame->len : 0;
+      savedJpeg = jpegTarget;
+      jpegCapacity = frame->len;
     }
-    if (savedJpeg) {
-      memcpy(savedJpeg, frame->buf, frame->len);
-      jpegBytes = frame->len;
-    } else jpegBytes = 0;
+    memcpy(savedJpeg, frame->buf, frame->len);
+    jpegBytes = frame->len;
     photoWidth = frame->width;
     photoHeight = frame->height;
     view = View::Photo;
@@ -504,6 +527,16 @@ void takePhoto() {
   }
   esp_camera_fb_return(frame);
 }
+// The AI request still blocks the loop (P3 moves it to a task), so draw an
+// honest waiting state on the LCD before it starts instead of a frozen screen.
+void showWaiting(const char *label) {
+  if (!screen.pixels) return;
+  render();
+  for (int i = 0; i < W * H; ++i) screen.pixels[i] = (screen.pixels[i] >> 1) & 0x7bef;
+  screen.setFont(&FreeSans18pt7b);
+  body(label, (W - textWidth(label)) / 2, H / 2 + 6, INK);
+  displayPresent(screen.pixels);
+}
 void solveSavedPhoto() {
   activeApp = AppId::AI;
   stopPreview();
@@ -512,6 +545,7 @@ void solveSavedPhoto() {
     view = View::Error;
     return;
   }
+  showWaiting(useGemini ? "Asking Gemini" : "Asking GPT");
   String key = settings.getString(useGemini ? "gemini-key" : "gpt-key", "");
   String answer;
   bool ok = requestImageAnswer(useGemini, key, savedJpeg, jpegBytes, answer);
@@ -520,8 +554,7 @@ void solveSavedPhoto() {
     // Persist only successful real answers. Demo and failed attempts cannot replace them.
     lastAnswer = answer;
     lastAnswerGemini = useGemini;
-    settings.putString("last-answer", lastAnswer);
-    settings.putBool("answer-gemini", lastAnswerGemini);
+    if (!saveLastAnswer(lastAnswer, lastAnswerGemini)) Serial.println("STORAGE_ERROR Answer not saved");
     wrap(lastAnswer.c_str());
     view = View::Answer;
   } else {
@@ -529,14 +562,111 @@ void solveSavedPhoto() {
     view = View::Error;
   }
 }
+// Shared by mirror taps ('T') and the physical touchscreen.
+char hitTest(int x, int y) {
+  if (view != View::Desk && y >= 274) return 'h';
+  if (view == View::Desk) {
+    for (int i = 0; i < 5; ++i) {
+      int cx = appX(i), cy = appY(i);
+      if (x >= cx - 42 && x < cx + 42 && y >= cy - 28 && y < cy + 43) return apps[i].command;
+    }
+  } else if (view == View::Home) {
+    if (y >= 216 && y < 274 && x >= 84 && x <= 156) return 'a';
+    if (jpegBytes && y >= 216 && y < 274 && x < 72) return 'p';
+    if (y >= 32 && y < 212) return 'L';
+  } else if (view == View::AI) {
+    if (y < 32 && x >= 190) return 'Q';
+    if (y >= 220 && y < 260 && x >= 24 && x <= 216) return jpegBytes ? 'q' : 'Q';
+  } else if (view == View::History && !lastAnswer.isEmpty() && y >= 54 && y < 126) return 'b';
+  else if (view == View::Status && y >= 52 && y < 96) return 'P';
+  else if (view == View::Error) {
+    if (y < 32 && x < 36) return 'X';
+    if (activeApp == AppId::AI && jpegBytes && y >= 200 && y < 238) return 'q';
+  }
+  return 'f';
+}
+unsigned long lastSerialMs = 0;
 }  // namespace
+void deviceNoteSerial() { lastSerialMs = millis(); }
 void initDeviceUi() {
   settings.begin("tiny-ai", false);
   useGemini = settings.getBool("gemini", true);
-  lastAnswer = settings.getString("last-answer", "");
-  lastAnswerGemini = settings.getBool("answer-gemini", true);
+  if (!storageBegin()) Serial.println("STORAGE_ERROR Flash filesystem unavailable");
+  if (!loadLastAnswer(lastAnswer, lastAnswerGemini)) {
+    // Copy an answer saved by older firmware in NVS. The NVS copy is left untouched.
+    lastAnswer = settings.getString("last-answer", "");
+    lastAnswerGemini = settings.getBool("answer-gemini", true);
+    if (!lastAnswer.isEmpty()) saveLastAnswer(lastAnswer, lastAnswerGemini);
+  }
   screen.pixels = (uint16_t *)ps_malloc(W * H * 2);
   wrap(demo);
+  const bool lcd = displayBegin();
+  Serial.printf("DISPLAY lcd=%d touch=%d\n", lcd, touchAvailable());
+  if (lcd && screen.pixels) {
+    render();
+    displayPresent(screen.pixels);
+    displayBrightness(255);
+    Serial.printf("DISPLAY full frame %lu us\n", (unsigned long)displayLastPresentMicros());
+  }
+}
+void deviceTick() {
+  static unsigned long lastPoll = 0, touchStart = 0, lastFpsReport = 0;
+  static bool down = false;
+  static int startX = 0, startY = 0, lastX = 0, lastY = 0, frames = 0;
+  const unsigned long now = millis();
+  if (now - lastPoll >= 15) {
+    lastPoll = now;
+    int x, y;
+    if (touchRead(x, y)) {
+      if (!down) {
+        down = true;
+        startX = lastX = x;
+        startY = lastY = y;
+        touchStart = now;
+      } else {
+        lastX = x;
+        lastY = y;
+      }
+    } else if (down) {
+      down = false;
+      const int dx = lastX - startX, dy = lastY - startY;
+      char action = 0;
+      if (abs(dy) >= 40 && abs(dy) > abs(dx)) {
+        // Swipe up from the bottom edge is home everywhere; vertical swipes page answers.
+        if (startY >= 244 && dy < 0 && view != View::Desk) action = 'h';
+        else if (view == View::Answer) action = dy < 0 ? 'v' : 'u';
+      } else if (abs(dx) < 20 && abs(dy) < 20) {
+        action = hitTest(startX, startY);
+        if (action == 'f') action = 0;
+      }
+      if (action) {
+        fromTouch = true;
+        handleDeviceButton(action);
+        fromTouch = false;
+      }
+    }
+  }
+  // Live viewfinder on the LCD while the PC mirror is idle. Only the preview rows are pushed.
+  if (view == View::Home && liveRequested && screen.pixels && now - lastSerialMs > 3000 && ensurePreviewMode()) {
+    camera_fb_t *f = esp_camera_fb_get();
+    if (f) {
+      bool decoded = decodePreview(f);
+      esp_camera_fb_return(f);
+      if (decoded) {
+        memcpy(screen.pixels + 32 * W, livePixels, 240 * 180 * 2);
+        displayPresent(screen.pixels, 32, 212);
+        ++frames;
+      }
+    }
+    if (now - lastFpsReport >= 5000) {
+      if (lastFpsReport) Serial.printf("PREVIEW_FPS %.1f\n", frames * 1000.0f / (now - lastFpsReport));
+      lastFpsReport = now;
+      frames = 0;
+    }
+  } else {
+    lastFpsReport = 0;
+    frames = 0;
+  }
 }
 void handleDeviceButton(char command) {
   if (command == 'T') {
@@ -551,27 +681,7 @@ void handleDeviceButton(char command) {
       sendFrame();
       return;
     }
-    char action = 'f';
-    if (view != View::Desk && y >= 274) action = 'h';
-    else if (view == View::Desk) {
-      for (int i = 0; i < 5; ++i) {
-        int cx = appX(i), cy = appY(i);
-        if (x >= cx - 42 && x < cx + 42 && y >= cy - 28 && y < cy + 43) action = apps[i].command;
-      }
-    } else if (view == View::Home) {
-      if (y >= 216 && y < 274 && x >= 84 && x <= 156) action = 'a';
-      else if (jpegBytes && y >= 216 && y < 274 && x < 72) action = 'p';
-      else if (y >= 32 && y < 212) action = 'L';
-    } else if (view == View::AI) {
-      if (y < 32 && x >= 190) action = 'Q';
-      else if (y >= 220 && y < 260 && x >= 24 && x <= 216) action = jpegBytes ? 'q' : 'Q';
-    } else if (view == View::History && !lastAnswer.isEmpty() && y >= 54 && y < 126) action = 'b';
-    else if (view == View::Status && y >= 52 && y < 96) action = 'P';
-    else if (view == View::Error) {
-      if (y < 32 && x < 36) action = 'X';
-      else if (activeApp == AppId::AI && jpegBytes && y >= 200 && y < 238) action = 'q';
-    }
-    handleDeviceButton(action);
+    handleDeviceButton(hitTest(x, y));
     return;
   }
   if (command == 'K') {
@@ -642,12 +752,10 @@ void handleDeviceButton(char command) {
     case 'G':
       useGemini = true;
       settings.putBool("gemini", true);
-      view = View::Home;
       break;
     case 'O':
       useGemini = false;
       settings.putBool("gemini", false);
-      view = View::Home;
       break;
     case 'P':
       useGemini = !useGemini;
