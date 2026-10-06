@@ -72,7 +72,7 @@ bool displayBegin() {
   if (esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)SPI2_HOST, &ioConfig, &io) != ESP_OK) return false;
 
   esp_lcd_panel_dev_config_t panelConfig = {};
-  panelConfig.reset_gpio_num = PIN_PANEL_RST;  // also resets the touch controller
+  panelConfig.reset_gpio_num = PIN_LCD_RST;
   panelConfig.color_space = ESP_LCD_COLOR_SPACE_RGB;
   panelConfig.bits_per_pixel = 16;
   if (esp_lcd_new_panel_st7789(io, &panelConfig, &panel) != ESP_OK) return false;
@@ -82,8 +82,12 @@ bool displayBegin() {
   esp_lcd_panel_set_gap(panel, GAP_X, GAP_Y);
   esp_lcd_panel_disp_on_off(panel, true);
 
-  // The shared reset just released the touch chip; give it time to boot.
+  // Reset the touch controller, then give it time to boot.
   pinMode(PIN_TP_INT, INPUT);
+  pinMode(PIN_TP_RST, OUTPUT);
+  digitalWrite(PIN_TP_RST, LOW);
+  delay(10);
+  digitalWrite(PIN_TP_RST, HIGH);
   delay(60);
   Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL, 400000);
   Wire.beginTransmission(TOUCH_ADDR);
