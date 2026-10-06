@@ -13,7 +13,8 @@ constexpr int W = 240, H = 284;
 // Waveshare's demo drives this panel with no RAM offset and colour inversion on.
 constexpr int GAP_X = 0, GAP_Y = 0;
 constexpr int STRIP_ROWS = 24;
-constexpr uint32_t SPI_HZ = 40 * 1000 * 1000;
+// 40 MHz is fine on a PCB; long loose jumper wires need a slower clock.
+constexpr uint32_t SPI_HZ = 10 * 1000 * 1000;
 constexpr uint8_t TOUCH_ADDR = 0x15;
 constexpr int BL_CHANNEL = 7;
 

@@ -111,7 +111,7 @@ bool request(bool gemini, const String &key, const uint8_t *jpeg, size_t length,
   if (cancelled) return fail("Cancelled. Nothing was sent.");
   if (WiFi.status() != WL_CONNECTED) return fail("Not connected to Wi-Fi. Nothing was sent.");
   if (time(nullptr) < 1700000000) {
-    configTime(0, 0, "time.google.com", "pool.ntp.org");
+    // The clock is started at boot by networkBegin(); just give it a moment.
     start = millis();
     while (time(nullptr) < 1700000000 && millis() - start < 8000) delay(50);
     if (time(nullptr) < 1700000000)
@@ -256,6 +256,8 @@ void join() {
 }  // namespace
 
 void networkBegin() {
+  // US Eastern time. SNTP keeps retrying until Wi-Fi is up.
+  configTzTime("EST5EDT,M3.2.0,M11.1.0", "time.google.com", "pool.ntp.org");
   WiFi.persistent(false);
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
