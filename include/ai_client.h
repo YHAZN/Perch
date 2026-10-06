@@ -5,6 +5,8 @@
 void networkBegin();
 void networkTick();
 bool networkConnected();
+void networkSetEnabled(bool on);
+bool networkEnabled();
 
 // One AI request at a time, on its own FreeRTOS task, so the UI never freezes.
 enum class AiState { Idle, Working, Done, Failed, Cancelled };

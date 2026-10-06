@@ -264,12 +264,27 @@ void networkBegin() {
   join();
 }
 
+bool radioOn = true;
 void networkTick() {
-  if (WiFi.status() != WL_CONNECTED && millis() - lastAttempt > 20000) {
+  if (radioOn && WiFi.status() != WL_CONNECTED && millis() - lastAttempt > 20000) {
     WiFi.disconnect();
     join();
   }
 }
+
+void networkSetEnabled(bool on) {
+  // Control Center Wi-Fi toggle: off turns the radio off entirely (saves power).
+  radioOn = on;
+  if (on) {
+    WiFi.mode(WIFI_STA);
+    join();
+  } else {
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+  }
+}
+
+bool networkEnabled() { return radioOn; }
 
 bool networkConnected() { return WiFi.status() == WL_CONNECTED; }
 
