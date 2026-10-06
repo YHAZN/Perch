@@ -46,6 +46,11 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send_error(404)
         return super().do_GET()
 
+    def end_headers(self):
+        # Always serve the latest design; a cached page hid changes during review.
+        self.send_header('Cache-Control', 'no-store')
+        super().end_headers()
+
     def live(self, path):
         try:
             if path == '/live/stop':
@@ -59,7 +64,6 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_response(status)
         self.send_header('Content-Type', mime)
         self.send_header('Content-Length', str(len(data)))
-        self.send_header('Cache-Control', 'no-store')
         self.end_headers()
         self.wfile.write(data)
 

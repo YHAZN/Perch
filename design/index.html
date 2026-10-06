@@ -171,6 +171,264 @@
         opacity: 0.55;
       }
 
+      /* Face: the watch-face home. Clock plus one Smart Stack card. */
+      .clock {
+        position: absolute;
+        left: 22px;
+        top: 22px;
+        font-size: 52px;
+        line-height: 1;
+        font-weight: 500;
+        letter-spacing: -0.03em;
+        font-variant-numeric: tabular-nums;
+      }
+      .date {
+        position: absolute;
+        left: 24px;
+        top: 80px;
+        font-size: var(--t-body);
+        color: var(--mist);
+      }
+      .stack {
+        position: absolute;
+        left: 12px;
+        right: 12px;
+        bottom: 22px;
+        height: 108px;
+        border-radius: 26px;
+        overflow: hidden;
+        background: var(--graphite);
+      }
+      .card {
+        position: absolute;
+        inset: 0;
+        padding: 14px 30px 14px 16px;
+        text-align: left;
+        width: 100%;
+        transition:
+          transform var(--dur) var(--ease),
+          opacity var(--dur) var(--ease);
+      }
+      .card.above {
+        transform: translateY(-100%);
+        opacity: 0;
+      }
+      .card.below {
+        transform: translateY(100%);
+        opacity: 0;
+      }
+      .card .k {
+        font-size: var(--t-small);
+        color: var(--mist);
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .card .k i {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        border: 2px solid var(--lens);
+      }
+      .card .v {
+        font-size: var(--t-body);
+        font-weight: 500;
+        line-height: 21px;
+        margin-top: 6px;
+        display: -webkit-box;
+        -webkit-line-clamp: 3;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+      }
+      .card.photo-card {
+        padding: 0;
+      }
+      .card.photo-card img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+      }
+      .card.photo-card .k {
+        position: absolute;
+        left: 16px;
+        bottom: 12px;
+        color: var(--ink);
+        text-shadow: 0 1px 4px #000;
+      }
+      .dots {
+        position: absolute;
+        right: 12px;
+        top: 50%;
+        transform: translateY(-50%);
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        z-index: 2;
+      }
+      .dots i {
+        width: 5px;
+        height: 5px;
+        border-radius: 3px;
+        background: rgba(255, 255, 255, 0.3);
+      }
+      .dots i.on {
+        background: var(--ink);
+        height: 12px;
+      }
+      .face-status {
+        position: absolute;
+        right: 26px;
+        top: 26px;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 4px;
+      }
+
+      /* App grid: honeycomb of round icons, like watchOS. Icons shrink toward the edges. */
+      .grid {
+        position: absolute;
+        inset: 0;
+        overflow-y: auto;
+        scrollbar-width: none;
+      }
+      .grid::-webkit-scrollbar {
+        display: none;
+      }
+      .grid-inner {
+        position: relative;
+        height: 330px;
+      }
+      .icon {
+        position: absolute;
+        width: 62px;
+        height: 62px;
+        margin: -31px 0 0 -31px;
+        border-radius: 50%;
+        background: #2a2c31;
+        display: grid;
+        place-items: center;
+        transition: transform 120ms var(--ease);
+      }
+      .icon svg {
+        width: 28px;
+        height: 28px;
+        stroke: var(--ink);
+        fill: none;
+        stroke-width: 1.8;
+      }
+      .icon.lens {
+        background: var(--lens);
+      }
+      .icon.lens svg {
+        stroke: #000;
+      }
+      .icon.soon {
+        background: #1c1d20;
+      }
+      .icon.soon svg {
+        stroke: var(--mist);
+      }
+      .icon-name {
+        position: absolute;
+        top: 10px;
+        left: 0;
+        right: 0;
+        text-align: center;
+        font-size: var(--t-small);
+        font-weight: 600;
+        opacity: 0;
+        transition: opacity 120ms;
+        pointer-events: none;
+        z-index: 5;
+        text-shadow: 0 1px 4px #000;
+      }
+
+      /* Control Center: pulled down from the top edge over whatever is on screen. */
+      .control {
+        position: absolute;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.86);
+        backdrop-filter: blur(10px);
+        z-index: 40;
+        transform: translateY(-100%);
+        transition: transform var(--dur) var(--ease);
+        padding: 26px 0 0;
+      }
+      .control.show {
+        transform: none;
+      }
+      .control .row-c {
+        display: flex;
+        justify-content: center;
+        gap: 18px;
+        margin-top: 16px;
+      }
+      .toggle {
+        width: 60px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 6px;
+        font-size: 11px;
+        color: var(--mist);
+      }
+      .toggle span {
+        width: 56px;
+        height: 56px;
+        border-radius: 50%;
+        background: #2a2c31;
+        display: grid;
+        place-items: center;
+      }
+      .toggle svg {
+        width: 24px;
+        height: 24px;
+        stroke: var(--ink);
+        fill: none;
+        stroke-width: 1.8;
+      }
+      .toggle.on span {
+        background: var(--ink);
+      }
+      .toggle.on svg {
+        stroke: #000;
+      }
+      .toggle.on #t-model-l {
+        color: #000 !important;
+      }
+      .control .grab {
+        width: 36px;
+        height: 4px;
+        border-radius: 2px;
+        background: rgba(255, 255, 255, 0.35);
+        margin: 0 auto;
+      }
+      .control .meta {
+        text-align: center;
+        font-size: var(--t-small);
+        color: var(--mist);
+        margin-top: 18px;
+      }
+
+      /* Physical button on the side of the device (the XIAO BOOT button, used like a crown). */
+      .stage {
+        position: relative;
+      }
+      .crown {
+        position: absolute;
+        left: calc(240px * var(--zoom) + 8px);
+        top: calc(74px * var(--zoom));
+        width: 12px;
+        height: calc(46px * var(--zoom));
+        border-radius: 4px;
+        background: #3a3c41;
+        box-shadow: inset -2px 0 0 #232427;
+      }
+      .crown:active {
+        transform: translateX(-2px);
+      }
+
       /* Full-bleed content with controls floating on a scrim, never in their own rows. */
       .bleed {
         position: absolute;
@@ -582,7 +840,87 @@
           ><span class="pill" id="pill-battery">Battery 8%</span>
         </div>
 
-        <section class="screen home on" id="home">
+        <section class="screen on" id="face">
+          <div class="clock" id="clock">3:24</div>
+          <div class="date" id="date">Tue 6 Oct</div>
+          <div class="face-status" id="face-status"></div>
+          <div class="stack" id="stack">
+            <button class="card" data-open="answer">
+              <div class="k"><i></i>Last answer, 2 min ago</div>
+              <div class="v">myMethod is O(n³) when data is a LinkedList.</div>
+            </button>
+            <button class="card below photo-card" data-open="photos">
+              <img src="/captures/camera-test.jpg" alt="" />
+              <div class="k">Last photo</div>
+            </button>
+            <button class="card below" data-open="settings" id="wifi-card">
+              <div class="k">Wi-Fi</div>
+              <div class="v">Not connected. Tap to choose a network.</div>
+            </button>
+            <div class="dots" id="dots"></div>
+          </div>
+        </section>
+
+        <section class="screen" id="apps">
+          <div class="icon-name" id="icon-name"></div>
+          <div class="grid" id="grid">
+            <div class="grid-inner">
+              <button class="icon" data-open="camera" data-name="Camera" style="left: 50px; top: 58px">
+                <svg viewBox="0 0 28 28">
+                  <rect x="3" y="7" width="22" height="16" rx="4" />
+                  <circle cx="14" cy="15" r="4.5" />
+                  <path d="M10 7l1.6-3h4.8L18 7" />
+                </svg>
+              </button>
+              <button class="icon lens" data-open="ask" data-name="Ask" style="left: 120px; top: 58px">
+                <svg viewBox="0 0 28 28">
+                  <circle cx="14" cy="14" r="9.5" />
+                  <circle cx="14" cy="14" r="3.5" />
+                </svg>
+              </button>
+              <button class="icon" data-open="photos" data-name="Photos" style="left: 190px; top: 58px">
+                <svg viewBox="0 0 28 28">
+                  <rect x="3.5" y="5" width="21" height="18" rx="4" />
+                  <path d="M4 20l6-6 4.5 4.5 3-3L23 21" />
+                  <circle cx="18" cy="10" r="1.6" />
+                </svg>
+              </button>
+              <button class="icon" data-open="history" data-name="History" style="left: 85px; top: 124px">
+                <svg viewBox="0 0 28 28">
+                  <path d="M5 14a9 9 0 1 0 2.8-6.5" />
+                  <path d="M4.5 4.5v4h4" />
+                  <path d="M14 9v5l3.5 2" />
+                </svg>
+              </button>
+              <button class="icon" data-open="settings" data-name="Settings" style="left: 155px; top: 124px">
+                <svg viewBox="0 0 28 28">
+                  <path d="M4 9h12M21 9h3M4 19h3M12 19h12" />
+                  <circle cx="18.5" cy="9" r="2.5" />
+                  <circle cx="9.5" cy="19" r="2.5" />
+                </svg>
+              </button>
+              <button class="icon soon" data-open="soon-gestures" data-name="Gestures" style="left: 50px; top: 190px">
+                <svg viewBox="0 0 28 28">
+                  <path
+                    d="M10 14V6.5a1.8 1.8 0 0 1 3.6 0V13M13.6 12V5a1.8 1.8 0 0 1 3.6 0v8M17.2 12.5V8a1.8 1.8 0 0 1 3.6 0v8.5c0 4-2.7 7-6.8 7-3 0-4.6-1.4-6.3-4l-2.6-4.2a1.7 1.7 0 0 1 2.8-2L10 16"
+                  />
+                </svg>
+              </button>
+              <button class="icon soon" data-open="soon-remote" data-name="Remote" style="left: 120px; top: 190px">
+                <svg viewBox="0 0 28 28">
+                  <rect x="3" y="6" width="22" height="14" rx="3" />
+                  <path d="M8 24h12M7 10h1M11 10h1M15 10h1M19 10h2M8 15h12" />
+                </svg>
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <section class="screen" id="soon">
+          <div class="empty"><p id="soon-text">Not built yet.</p></div>
+        </section>
+
+        <section class="screen home" id="home">
           <button class="app-row" data-open="camera">
             <svg viewBox="0 0 20 20">
               <rect x="2" y="5" width="16" height="12" rx="3" />
@@ -742,15 +1080,51 @@
           </div>
         </section>
 
+        <div class="control" id="control">
+          <div class="grab"></div>
+          <div class="row-c">
+            <button class="toggle on" id="t-wifi">
+              <span
+                ><svg viewBox="0 0 24 24">
+                  <path d="M2.5 9a14 14 0 0 1 19 0M5.5 12.5a9.5 9.5 0 0 1 13 0M8.7 15.8a5 5 0 0 1 6.6 0" />
+                  <circle cx="12" cy="19" r="1.2" /></svg></span
+              >Wi-Fi
+            </button>
+            <button class="toggle" id="t-bright">
+              <span
+                ><svg viewBox="0 0 24 24">
+                  <circle cx="12" cy="12" r="4" />
+                  <path
+                    d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.2 5.2l1.4 1.4M17.4 17.4l1.4 1.4M5.2 18.8l1.4-1.4M17.4 6.6l1.4-1.4"
+                  /></svg></span
+              >Bright
+            </button>
+          </div>
+          <div class="row-c">
+            <button class="toggle" id="t-model">
+              <span style="font-weight: 600; font-size: 15px; color: var(--ink)" id="t-model-l">G</span>Model
+            </button>
+            <button class="toggle" id="t-privacy">
+              <span
+                ><svg viewBox="0 0 24 24">
+                  <rect x="3" y="7" width="18" height="12" rx="3" />
+                  <circle cx="12" cy="13" r="3" />
+                  <path d="M3 4l18 18" /></svg></span
+              >Camera off
+            </button>
+          </div>
+          <div class="meta">Swipe up to close</div>
+        </div>
         <div class="home-bar" id="home-bar"></div>
       </div>
+      <button class="crown" id="crown" aria-label="Side button"></button>
     </div>
 
     <aside class="panel">
       <h1>Perch OS: design prototype</h1>
       <p class="sub">
-        True 240×284 pixels shown at 2×. Click to tap, drag to swipe, hold to long-press. Swipe up from the bottom edge
-        to go home. This page is a review tool, not firmware.
+        True 240×284 pixels shown at 2×. Click to tap, drag to swipe, hold to long-press. The bar to the right of the
+        screen is the physical side button. This page is a review tool, not firmware.
       </p>
 
       <h2>Screens</h2>
@@ -763,6 +1137,7 @@
         <label><input type="checkbox" id="sim-empty" /> No photos</label>
         <label><input type="checkbox" id="sim-zoom" checked /> 2× zoom</label>
         <label><input type="checkbox" id="sim-live" checked /> Live camera from board</label>
+        <label><input type="checkbox" id="sim-list" /> App list instead of grid</label>
       </div>
       <p class="note" id="live-status"></p>
 
@@ -778,6 +1153,34 @@
 
     <script>
       const CONTROLS = {
+        face: [
+          ['Clock and date', 'The face is home. Time appears once Wi-Fi has set the clock; there is no clock battery.'],
+          [
+            'Smart Stack card',
+            'One glanceable card: last answer, last photo, or a problem that needs you (offline). Swipe the card up or down for the next one; tap opens its app.',
+          ],
+          ['Swipe up on the face', 'Opens the app grid.'],
+          ['Swipe down from the top edge', 'Control Center: Wi-Fi, brightness, model, camera off.'],
+          [
+            'Side button',
+            'From any app: back to the face. On the face: the app grid. Same job as the Apple Watch crown press.',
+          ],
+        ],
+        apps: [
+          [
+            'Round app icons',
+            'Honeycomb rows scroll vertically, so the grid holds as many apps as we add. Icons shrink near the rounded edges.',
+          ],
+          ['Name on touch', 'No labels under icons; the name appears at the top while your finger is down.'],
+          ['Dim icons', 'Planned apps (Gestures, Remote). Shown here only to judge how the grid scales.'],
+        ],
+        control: [
+          ['Wi-Fi', 'On/off. Long-press for the network list (P3).'],
+          ['Bright', 'Cycles three brightness levels.'],
+          ['Model', 'Gemini or GPT, the same setting as Settings > Model.'],
+          ['Camera off', 'Stops the camera entirely, for privacy.'],
+        ],
+        soon: [['Placeholder', 'This app is planned, not built.']],
         home: [
           ['Five app rows', 'The only way into each app. Labels are the content; no icon grid, no product name.'],
           [
@@ -840,7 +1243,7 @@
       };
 
       const device = document.getElementById('device');
-      let current = 'home';
+      let current = 'face';
       const stack = [];
 
       function show(id, { back = false } = {}) {
@@ -856,22 +1259,71 @@
           to.style.transform = '';
           to.classList.add('on');
         });
-        if (!back && current !== 'home') stack.push(current);
+        if (!back && !['home', 'face', 'apps'].includes(current)) stack.push(current);
         current = id;
-        document.getElementById('home-bar').style.opacity = id === 'home' ? 0 : 1;
+        document.getElementById('home-bar').style.opacity = ['face', 'apps', 'home'].includes(id) ? 0 : 1;
+        if (id === 'apps') {
+          document.getElementById('grid').scrollTop = 0;
+          fisheye();
+        }
         if (id === 'answer') document.getElementById('answer-scroll').scrollTop = 0;
         if (id === 'photos') flashCount();
         render();
       }
       function goHome() {
         stack.length = 0;
-        show('home', { back: true });
+        closeControl();
+        show('face', { back: true });
         closeSheet();
         stopThinking();
       }
       function goBack() {
-        show(stack.pop() || 'home', { back: true });
+        show(stack.pop() || 'face', { back: true });
       }
+      function appView() {
+        return document.getElementById('sim-list').checked ? 'home' : 'apps';
+      }
+      document.getElementById('crown').onclick = () =>
+        current === 'face' ? (closeControl(), show(appView())) : goHome();
+
+      // Smart Stack
+      let card = 0;
+      function cards() {
+        return [...document.querySelectorAll('#stack .card')].filter((c) => c.style.display !== 'none');
+      }
+      function cycle(step) {
+        const list = cards();
+        card = Math.max(0, Math.min(list.length - 1, card + step));
+        list.forEach((c, i) => {
+          c.classList.toggle('above', i < card);
+          c.classList.toggle('below', i > card);
+        });
+        document.getElementById('dots').innerHTML = list
+          .map((_, i) => `<i class="${i === card ? 'on' : ''}"></i>`)
+          .join('');
+      }
+      // Control Center
+      let controlOpen = false;
+      function openControl() {
+        document.getElementById('control').classList.add('show');
+        controlOpen = true;
+        render();
+      }
+      function closeControl() {
+        document.getElementById('control').classList.remove('show');
+        controlOpen = false;
+      }
+      // Icons shrink toward the rounded edges of the screen, like watchOS.
+      function fisheye() {
+        const grid = document.getElementById('grid');
+        for (const icon of grid.querySelectorAll('.icon')) {
+          const cy = parseFloat(icon.style.top) - grid.scrollTop,
+            cx = parseFloat(icon.style.left);
+          const d = Math.hypot((cx - 120) / 120, (cy - 142) / 142);
+          icon.style.transform = `scale(${Math.max(0.55, Math.min(1, 1.25 - d * 0.55))})`;
+        }
+      }
+      document.getElementById('grid').addEventListener('scroll', fisheye);
 
       // Pointer gestures, measured in device pixels.
       let start = null,
@@ -888,8 +1340,14 @@
         start = pt(e);
         moved = false;
         device.setPointerCapture(e.pointerId);
-        scrollEl = e.target.closest('.scroll');
+        scrollEl = e.target.closest('.scroll, .grid');
         scrollStart = scrollEl ? scrollEl.scrollTop : 0;
+        const icon = e.target.closest('.icon');
+        if (icon) {
+          const n = document.getElementById('icon-name');
+          n.textContent = icon.dataset.name;
+          n.style.opacity = 1;
+        }
         clearTimeout(longTimer);
         longTimer = setTimeout(() => {
           if (!moved) longPress();
@@ -910,18 +1368,44 @@
           dy = p.y - start.y,
           s = start;
         start = null;
-        if (s.y >= 244 && dy < -40 && current !== 'home') return goHome();
+        document.getElementById('icon-name').style.opacity = 0;
+        const vertical = Math.abs(dy) > 40 && Math.abs(dy) > Math.abs(dx);
+        const target = document.elementFromPoint(e.clientX, e.clientY) || device;
+        if (controlOpen) {
+          if (vertical && dy < 0) return closeControl();
+          if (!moved && target.closest('.toggle')) return tap(target);
+          if (!moved) return closeControl();
+          return;
+        }
+        if (s.y < 30 && vertical && dy > 0) return openControl();
+        if (current === 'face' && vertical) {
+          const onStack = s.y > 284 - 22 - 108 && s.y < 284 - 22;
+          if (onStack) return cycle(dy < 0 ? 1 : -1);
+          if (dy < 0) return show(appView());
+        }
+        if (s.y >= 244 && dy < -40 && current !== 'face') return goHome();
         if (Math.abs(dx) > 40 && Math.abs(dx) > Math.abs(dy) && current === 'photos') return nextPhoto(dx < 0 ? 1 : -1);
         if (Math.abs(dx) > 50 && dx > 0 && Math.abs(dy) < 30 && s.x < 30 && current !== 'home') return goBack();
         if (moved) return;
-        const target = document.elementFromPoint(e.clientX, e.clientY);
         tap(target);
       });
       device.addEventListener('click', (e) => e.preventDefault(), true);
 
       function tap(el) {
         if (!el) return;
+        const toggle = el.closest('.toggle');
+        if (toggle) {
+          if (toggle.id === 't-model') {
+            setModel(document.getElementById('t-model-l').textContent === 'G' ? 'GPT' : 'Gemini');
+          } else toggle.classList.toggle('on');
+          return render();
+        }
         const open = el.closest('[data-open]');
+        if (open && open.dataset.open.startsWith('soon-')) {
+          document.getElementById('soon-text').textContent =
+            open.dataset.name + ' is planned for the gesture and remote-control update.';
+          return show('soon');
+        }
         if (open) return show(open.dataset.open);
         const model = el.closest('[data-model]');
         if (model) {
@@ -1001,15 +1485,31 @@
       }
       function setModel(name) {
         document.getElementById('model-val').textContent = name;
+        document.getElementById('t-model-l').textContent = name === 'Gemini' ? 'G' : 'GPT';
         for (const n of ['Gemini', 'GPT']) document.getElementById('chk-' + n).textContent = n === name ? '✓' : '';
       }
 
       function render() {
         const offline = document.getElementById('sim-offline').checked;
-        document.getElementById('pill-offline').classList.toggle('show', offline && current !== 'home');
+        document
+          .getElementById('pill-offline')
+          .classList.toggle('show', offline && !['home', 'face', 'apps'].includes(current));
+        document.getElementById('face-status').innerHTML =
+          (offline ? '<span class="pill show"><i></i>Offline</span>' : '') +
+          (document.getElementById('sim-battery').checked ? '<span class="pill show">8%</span>' : '');
+        document.getElementById('wifi-card').style.display = offline ? '' : 'none';
+        document.getElementById('t-wifi').classList.toggle('on', !offline);
+        const now = new Date();
+        document.getElementById('clock').textContent = now
+          .toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+          .replace(/\s?[AP]M/i, '');
+        document.getElementById('date').textContent = now
+          .toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' })
+          .replace(',', '');
+        cycle(0);
         document
           .getElementById('pill-battery')
-          .classList.toggle('show', document.getElementById('sim-battery').checked);
+          .classList.toggle('show', document.getElementById('sim-battery').checked && current !== 'face');
         document.getElementById('ask-meta').textContent = offline ? 'Offline' : '';
         document.getElementById('photo-meta').textContent = document.getElementById('sim-empty').checked
           ? ''
@@ -1020,25 +1520,46 @@
         document.getElementById('wifi-val').textContent = offline ? 'Not connected' : 'guest';
         const jump = document.getElementById('jump');
         jump.innerHTML = '';
-        for (const id of ['home', 'camera', 'ask', 'answer', 'photos', 'history', 'settings', 'model']) {
+        for (const id of [
+          'face',
+          'apps',
+          'control',
+          'camera',
+          'ask',
+          'answer',
+          'photos',
+          'history',
+          'settings',
+          'model',
+          'home',
+        ]) {
           const b = document.createElement('button');
-          b.textContent = id;
-          b.className = id === current || (id === 'photos' && current === 'photos-empty') ? 'cur' : '';
+          b.textContent = id === 'home' ? 'list view' : id;
+          b.className = (
+            controlOpen ? id === 'control' : id === current || (id === 'photos' && current === 'photos-empty')
+          )
+            ? 'cur'
+            : '';
           b.onclick = () => {
             stopThinking();
             closeSheet();
             stack.length = 0;
+            if (id === 'control') return openControl();
+            closeControl();
             show(id);
           };
           jump.appendChild(b);
         }
         document.getElementById('controls').innerHTML =
-          (CONTROLS[current] || []).map(([n, why]) => `<li><b>${n}.</b> ${why}</li>`).join('') +
-          (current !== 'home'
-            ? '<li><b>Swipe up from the bottom edge.</b> Home, same on every screen. No back or home buttons.</li>'
+          (CONTROLS[controlOpen ? 'control' : current] || [])
+            .map(([n, why]) => `<li><b>${n}.</b> ${why}</li>`)
+            .join('') +
+          (!['face', 'apps', 'home'].includes(current) && !controlOpen
+            ? '<li><b>Swipe up from the bottom edge, or press the side button.</b> Back to the face, same on every screen. No on-screen back or home buttons.</li>'
             : '');
       }
-      for (const id of ['sim-offline', 'sim-battery', 'sim-empty']) document.getElementById(id).onchange = render;
+      for (const id of ['sim-offline', 'sim-battery', 'sim-empty', 'sim-list'])
+        document.getElementById(id).onchange = render;
       document.getElementById('sim-zoom').onchange = (e) =>
         document.getElementById('stage').style.setProperty('--zoom', e.target.checked ? 2 : 1);
       // Live viewfinder: real QVGA frames from the board through the USB bridge.
