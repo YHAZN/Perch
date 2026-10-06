@@ -622,10 +622,10 @@
         </section>
 
         <section class="screen" id="camera">
-          <img class="bleed" src="/captures/worksheet-full-resolution.jpg" alt="" />
+          <img class="bleed" id="viewfinder" src="/captures/worksheet-full-resolution.jpg" alt="" />
           <div class="scrim-bottom"></div>
           <button class="thumb" data-open="photos" aria-label="Last photo">
-            <img src="/captures/verified-worksheet-view.jpg" alt="" />
+            <img src="/captures/camera-test.jpg" alt="" />
           </button>
           <button class="iris" id="shutter" aria-label="Take photo"></button>
           <div class="flash" id="flash"></div>
@@ -664,7 +664,7 @@
         </section>
 
         <section class="screen" id="photos">
-          <img class="bleed" id="photo-img" src="/captures/verified-worksheet-view.jpg" alt="" />
+          <img class="bleed" id="photo-img" src="/captures/camera-test.jpg" alt="" />
           <div class="photo-count" id="photo-count">1 of 3</div>
         </section>
 
@@ -679,7 +679,7 @@
               </div>
             </button>
             <button class="row" data-open="answer">
-              <img src="/captures/verified-worksheet-view.jpg" alt="" />
+              <img src="/captures/camera-test.jpg" alt="" />
               <div class="txt">
                 <div class="one">Question 3 asks for the worst case…</div>
                 <div class="two">Yesterday</div>
@@ -765,7 +765,9 @@
         <label><input type="checkbox" id="sim-battery" /> Low battery</label>
         <label><input type="checkbox" id="sim-empty" /> No photos</label>
         <label><input type="checkbox" id="sim-zoom" checked /> 2× zoom</label>
+        <label><input type="checkbox" id="sim-live" checked /> Live camera from board</label>
       </div>
+      <p class="note" id="live-status"></p>
 
       <h2>Every control on this screen, and why it exists</h2>
       <ul class="controls" id="controls"></ul>
@@ -976,7 +978,7 @@
       }
 
       const PHOTOS = [
-        '/captures/verified-worksheet-view.jpg',
+        '/captures/camera-test.jpg',
         '/captures/worksheet-full-resolution.jpg',
         '/captures/full-resolution-3.jpg',
       ];
@@ -1036,6 +1038,57 @@
       for (const id of ['sim-offline', 'sim-battery', 'sim-empty']) document.getElementById(id).onchange = render;
       document.getElementById('sim-zoom').onchange = (e) =>
         document.getElementById('stage').style.setProperty('--zoom', e.target.checked ? 2 : 1);
+      // Live viewfinder: real QVGA frames from the board through the USB bridge.
+      let liveOn = 0,
+        liveFrames = 0,
+        liveSince = 0,
+        lastDigest = '';
+      // Two overlapping requests hide HTTP overhead; the bridge still reads the board one frame at a time.
+      function liveLoop() {
+        if (liveOn) return;
+        liveFrames = 0;
+        liveSince = performance.now();
+        liveWorker();
+        liveWorker();
+      }
+      async function liveWorker() {
+        liveOn++;
+        const img = document.getElementById('viewfinder'),
+          status = document.getElementById('live-status');
+        while (current === 'camera' && document.getElementById('sim-live').checked) {
+          try {
+            const response = await fetch('/live', { cache: 'no-store' });
+            if (!response.ok) throw new Error();
+            const blob = await response.blob();
+            // The bridge may hand both requests the same cached frame; count and show only new ones.
+            const digest = new Uint8Array(await crypto.subtle.digest('SHA-1', await blob.arrayBuffer())).join();
+            if (digest === lastDigest) continue;
+            lastDigest = digest;
+            const url = URL.createObjectURL(blob);
+            img.onload = () => URL.revokeObjectURL(url);
+            img.src = url;
+            const seconds = (performance.now() - liveSince) / 1000;
+            liveFrames++;
+            if (seconds > 1)
+              status.textContent = `Live from board: ${(liveFrames / seconds).toFixed(1)} FPS (QVGA preview, cropped to fill)`;
+          } catch {
+            status.textContent = 'Board bridge unavailable: showing a still photo.';
+            img.src = '/captures/worksheet-full-resolution.jpg';
+            break;
+          }
+        }
+        if (--liveOn) return;
+        if (current !== 'camera') {
+          fetch('/live/stop');
+          status.textContent = '';
+        }
+      }
+      const baseRender = render;
+      render = function () {
+        baseRender();
+        if (current === 'camera' && document.getElementById('sim-live').checked) liveLoop();
+      };
+      document.getElementById('sim-live').onchange = render;
       document.getElementById('home-bar').style.opacity = 0;
       render();
     </script>
