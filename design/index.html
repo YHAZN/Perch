@@ -47,6 +47,7 @@
         color: inherit;
         background: none;
         border: 0;
+        padding: 0;
         cursor: pointer;
       }
 
@@ -186,6 +187,7 @@
         height: 110px;
         background: linear-gradient(transparent, rgba(0, 0, 0, 0.62) 55%);
       }
+      /* Shutter: one ring. Press fills it, so the feedback lands on touch-down. */
       .iris {
         position: absolute;
         left: 50%;
@@ -194,20 +196,25 @@
         height: 58px;
         margin-left: -29px;
         border-radius: 50%;
-        border: 3px solid var(--ink);
-        display: grid;
-        place-items: center;
+        border: 3.5px solid var(--ink);
+        transition:
+          background-color 90ms var(--ease),
+          transform 120ms var(--ease);
       }
-      .iris::after {
-        content: '';
-        width: 44px;
-        height: 44px;
-        border-radius: 50%;
-        background: var(--ink);
-        transition: transform 120ms var(--ease);
+      .iris:active,
+      .iris.pressed {
+        background: rgba(243, 244, 245, 0.85);
+        transform: scale(0.94);
       }
-      .iris:active::after {
-        transform: scale(0.86);
+      /* Whole 4:3 frame, no crop: what you see is exactly what the photo captures.
+   320x240 preview shown at 240x180 is a 0.75x downscale, so it stays sharp. */
+      #viewfinder {
+        position: absolute;
+        left: 0;
+        top: 18px;
+        width: 240px;
+        height: 180px;
+        object-fit: cover;
       }
       .thumb {
         position: absolute;
@@ -622,8 +629,7 @@
         </section>
 
         <section class="screen" id="camera">
-          <img class="bleed" id="viewfinder" src="/captures/worksheet-full-resolution.jpg" alt="" />
-          <div class="scrim-bottom"></div>
+          <img id="viewfinder" src="/captures/worksheet-full-resolution.jpg" alt="" />
           <button class="thumb" data-open="photos" aria-label="Last photo">
             <img src="/captures/camera-test.jpg" alt="" />
           </button>
@@ -789,7 +795,7 @@
           ],
         ],
         camera: [
-          ['Viewfinder', 'Fills the screen. The photo is the interface.'],
+          ['Viewfinder', 'The whole camera frame, uncropped, so the photo contains exactly what you framed.'],
           ['Shutter (iris)', 'One primary action. Takes a full-resolution photo, no AI, no network.'],
           ['Last-photo thumbnail', 'Confirms the capture landed and opens Photos. Appears only after a capture.'],
           ['Home bar', 'Hint for the system swipe up. Not a button you need to aim at.'],
@@ -948,6 +954,9 @@
       }
 
       function shutter() {
+        const b = document.getElementById('shutter');
+        b.classList.add('pressed');
+        setTimeout(() => b.classList.remove('pressed'), 140);
         const f = document.getElementById('flash');
         f.classList.remove('go');
         void f.offsetWidth;
@@ -1070,7 +1079,7 @@
             const seconds = (performance.now() - liveSince) / 1000;
             liveFrames++;
             if (seconds > 1)
-              status.textContent = `Live from board: ${(liveFrames / seconds).toFixed(1)} FPS (QVGA preview, cropped to fill)`;
+              status.textContent = `Live from board: ${(liveFrames / seconds).toFixed(1)} FPS (320×240 preview, full frame)`;
           } catch {
             status.textContent = 'Board bridge unavailable: showing a still photo.';
             img.src = '/captures/worksheet-full-resolution.jpg';
