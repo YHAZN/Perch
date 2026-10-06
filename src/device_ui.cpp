@@ -380,6 +380,8 @@ void tuneCamera(char profile) {
     delay(100);
   }
 }
+// Lower number = less JPEG compression. 20 showed visible blocks in the viewfinder.
+constexpr int PREVIEW_QUALITY = 12;
 bool previewActive = false;
 framesize_t stillSize = FRAMESIZE_QXGA;
 int stillQuality = 8;
@@ -417,7 +419,7 @@ bool ensurePreviewMode() {
   if (!sensor) return false;
   stillSize = sensor->status.framesize;
   stillQuality = sensor->status.quality;
-  if (sensor->set_framesize(sensor, FRAMESIZE_QVGA) || sensor->set_quality(sensor, 20)) {
+  if (sensor->set_framesize(sensor, FRAMESIZE_QVGA) || sensor->set_quality(sensor, PREVIEW_QUALITY)) {
     sensor->set_framesize(sensor, stillSize);
     sensor->set_quality(sensor, stillQuality);
     return false;
