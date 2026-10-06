@@ -1,0 +1,1043 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Perch OS design prototype</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600&display=swap" rel="stylesheet" />
+    <style>
+      /* Design tokens. These map 1:1 onto the firmware token layer (P2). */
+      :root {
+        --void: #000000; /* background; matches the bezel so rounded corners vanish */
+        --graphite: #1a1b1e; /* raised surfaces */
+        --line: #2a2c30; /* separators */
+        --mist: #8b9097; /* secondary text */
+        --ink: #f3f4f5; /* primary text */
+        --lens: #ffb547; /* the device is doing something: focus, thinking, recording */
+        --danger: #ff6b5e;
+        --t-large: 24px;
+        --t-body: 16px;
+        --t-small: 12px;
+        --r-panel: 40px; /* physical corner radius estimate, verify on the real panel */
+        --safe-x: 16px;
+        --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+        --dur: 220ms;
+      }
+      * {
+        box-sizing: border-box;
+        margin: 0;
+      }
+      body {
+        background: #2b2d31;
+        color: #d9dbde;
+        font:
+          14px/1.5 Figtree,
+          system-ui,
+          sans-serif;
+        min-height: 100vh;
+        display: flex;
+        gap: 48px;
+        align-items: flex-start;
+        justify-content: center;
+        padding: 40px 24px;
+      }
+      button {
+        font: inherit;
+        color: inherit;
+        background: none;
+        border: 0;
+        cursor: pointer;
+      }
+
+      /* Physical device, drawn at true pixel size then scaled for review. */
+      .stage {
+        flex: none;
+        width: calc(240px * var(--zoom));
+        height: calc(284px * var(--zoom));
+        --zoom: 2;
+      }
+      .device {
+        width: 240px;
+        height: 284px;
+        transform: scale(var(--zoom));
+        transform-origin: 0 0;
+        border-radius: var(--r-panel);
+        overflow: hidden;
+        position: relative;
+        background: var(--void);
+        font-family: Figtree, system-ui, sans-serif;
+        color: var(--ink);
+        user-select: none;
+        touch-action: none;
+        box-shadow:
+          0 0 0 7px #0d0d0f,
+          0 0 0 8px #3a3c41;
+      }
+      .screen {
+        position: absolute;
+        inset: 0;
+        opacity: 0;
+        pointer-events: none;
+        transition:
+          opacity var(--dur) var(--ease),
+          transform var(--dur) var(--ease);
+        transform: scale(0.94);
+      }
+      .screen.on {
+        opacity: 1;
+        pointer-events: auto;
+        transform: none;
+      }
+      .screen.under {
+        transform: scale(1.04);
+      }
+
+      .home-bar {
+        position: absolute;
+        bottom: 6px;
+        left: 100px;
+        width: 40px;
+        height: 4px;
+        border-radius: 2px;
+        background: rgba(255, 255, 255, 0.45);
+        z-index: 20;
+        transition: opacity var(--dur);
+      }
+      .status {
+        position: absolute;
+        top: 8px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 30;
+        display: flex;
+        gap: 6px;
+      }
+      .pill {
+        font-size: var(--t-small);
+        font-weight: 500;
+        padding: 2px 8px;
+        border-radius: 10px;
+        background: rgba(0, 0, 0, 0.6);
+        color: var(--ink);
+        display: none;
+        align-items: center;
+        gap: 5px;
+      }
+      .pill.show {
+        display: flex;
+      }
+      .pill i {
+        width: 6px;
+        height: 6px;
+        border-radius: 3px;
+        background: var(--danger);
+      }
+
+      /* Home: a typographic list, not an icon grid. */
+      .home {
+        padding: 14px 0 0;
+      }
+      .app-row {
+        height: 52px;
+        width: 100%;
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        padding: 0 var(--safe-x) 0 22px;
+        text-align: left;
+      }
+      .app-row svg {
+        width: 20px;
+        height: 20px;
+        stroke: var(--mist);
+        fill: none;
+        stroke-width: 1.6;
+        flex: none;
+      }
+      .app-row span {
+        font-size: var(--t-large);
+        font-weight: 600;
+        letter-spacing: -0.01em;
+        flex: 1;
+      }
+      .app-row small {
+        font-size: var(--t-small);
+        color: var(--mist);
+      }
+      .app-row:active span,
+      .row:active {
+        opacity: 0.55;
+      }
+
+      /* Full-bleed content with controls floating on a scrim, never in their own rows. */
+      .bleed {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+      }
+      .scrim-bottom {
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        height: 110px;
+        background: linear-gradient(transparent, rgba(0, 0, 0, 0.62) 55%);
+      }
+      .iris {
+        position: absolute;
+        left: 50%;
+        bottom: 22px;
+        width: 58px;
+        height: 58px;
+        margin-left: -29px;
+        border-radius: 50%;
+        border: 3px solid var(--ink);
+        display: grid;
+        place-items: center;
+      }
+      .iris::after {
+        content: '';
+        width: 44px;
+        height: 44px;
+        border-radius: 50%;
+        background: var(--ink);
+        transition: transform 120ms var(--ease);
+      }
+      .iris:active::after {
+        transform: scale(0.86);
+      }
+      .thumb {
+        position: absolute;
+        left: 26px;
+        bottom: 32px;
+        width: 38px;
+        height: 38px;
+        border-radius: 9px;
+        overflow: hidden;
+        border: 1.5px solid rgba(255, 255, 255, 0.7);
+      }
+      .thumb img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+      }
+      .flash {
+        position: absolute;
+        inset: 0;
+        background: #fff;
+        opacity: 0;
+        pointer-events: none;
+      }
+      .flash.go {
+        animation: flash 260ms ease-out;
+      }
+      @keyframes flash {
+        0% {
+          opacity: 0.85;
+        }
+        100% {
+          opacity: 0;
+        }
+      }
+
+      /* Ask */
+      .ask-btn {
+        position: absolute;
+        left: 50%;
+        bottom: 20px;
+        transform: translateX(-50%);
+        height: 46px;
+        padding: 0 22px 0 8px;
+        border-radius: 23px;
+        background: rgba(20, 21, 24, 0.72);
+        backdrop-filter: blur(8px);
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: var(--t-body);
+        font-weight: 600;
+        white-space: nowrap;
+      }
+      .ask-btn .ring {
+        width: 30px;
+        height: 30px;
+        border-radius: 50%;
+        border: 2.5px solid var(--lens);
+      }
+      .ask-btn:active {
+        transform: translateX(-50%) scale(0.96);
+      }
+      .hint {
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 74px;
+        text-align: center;
+        font-size: var(--t-small);
+        color: rgba(255, 255, 255, 0.7);
+      }
+      .thinking {
+        position: absolute;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.58);
+        backdrop-filter: blur(3px);
+        display: none;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 14px;
+      }
+      .thinking.show {
+        display: flex;
+      }
+      .breath {
+        width: 64px;
+        height: 64px;
+        border-radius: 50%;
+        border: 3px solid var(--lens);
+        animation: breath 1.6s ease-in-out infinite;
+      }
+      @keyframes breath {
+        50% {
+          transform: scale(0.82);
+          opacity: 0.55;
+        }
+      }
+      .thinking p {
+        font-size: var(--t-body);
+        font-weight: 500;
+      }
+      .thinking button {
+        font-size: var(--t-small);
+        color: var(--mist);
+        padding: 10px 16px;
+        margin-top: 18px;
+      }
+      .sheet {
+        position: absolute;
+        left: 10px;
+        right: 10px;
+        bottom: 10px;
+        border-radius: 22px;
+        background: rgba(26, 27, 30, 0.94);
+        transform: translateY(120%);
+        transition: transform var(--dur) var(--ease);
+        z-index: 25;
+        padding: 6px 0;
+      }
+      .sheet.show {
+        transform: none;
+      }
+      .sheet button {
+        display: block;
+        width: 100%;
+        height: 44px;
+        font-size: var(--t-body);
+        font-weight: 500;
+      }
+      .sheet button + button {
+        border-top: 1px solid var(--line);
+      }
+
+      /* Reading screens */
+      .scroll {
+        position: absolute;
+        inset: 0;
+        overflow-y: auto;
+        scrollbar-width: none;
+      }
+      .scroll::-webkit-scrollbar {
+        display: none;
+      }
+      /* Text never collides with the home bar: reading screens fade out at the bottom edge. */
+      #answer::after,
+      #history::after,
+      #settings::after {
+        content: '';
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        height: 28px;
+        background: linear-gradient(transparent, var(--void));
+        pointer-events: none;
+      }
+      .answer-photo {
+        height: 84px;
+        position: relative;
+      }
+      .answer-photo img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        opacity: 0.9;
+      }
+      .answer-photo::after {
+        content: '';
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(transparent 30%, var(--void));
+      }
+      .answer-text {
+        padding: 2px var(--safe-x) 36px 18px;
+        font-size: var(--t-body);
+        line-height: 22px;
+      }
+      .answer-text p + p {
+        margin-top: 10px;
+      }
+      .answer-text .lead {
+        font-size: var(--t-large);
+        line-height: 28px;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+      }
+      .answer-text .meta {
+        font-size: var(--t-small);
+        color: var(--mist);
+        margin-top: 16px;
+      }
+
+      .title {
+        font-size: var(--t-large);
+        font-weight: 600;
+        letter-spacing: -0.01em;
+        padding: 18px 0 8px 22px;
+      }
+      .row {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        min-height: 52px;
+        width: 100%;
+        padding: 6px var(--safe-x) 6px 18px;
+        text-align: left;
+      }
+      .row + .row {
+        border-top: 1px solid var(--line);
+      }
+      .row img {
+        width: 40px;
+        height: 40px;
+        border-radius: 8px;
+        object-fit: cover;
+        flex: none;
+      }
+      .row .txt {
+        flex: 1;
+        min-width: 0;
+      }
+      .row .one {
+        font-size: var(--t-body);
+        font-weight: 500;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .row .two {
+        font-size: var(--t-small);
+        color: var(--mist);
+      }
+      .row .val {
+        font-size: var(--t-body);
+        color: var(--mist);
+      }
+      .check {
+        color: var(--lens);
+        font-weight: 600;
+      }
+      .slider {
+        flex: 1;
+        height: 6px;
+        border-radius: 3px;
+        background: var(--line);
+        position: relative;
+        margin-left: 4px;
+      }
+      .slider i {
+        position: absolute;
+        inset: 0 30% 0 0;
+        border-radius: 3px;
+        background: var(--ink);
+      }
+      .empty {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 14px;
+        padding: 0 30px;
+        text-align: center;
+      }
+      .empty p {
+        color: var(--mist);
+        font-size: var(--t-body);
+      }
+      .empty button {
+        font-size: var(--t-body);
+        font-weight: 600;
+        height: 44px;
+        padding: 0 20px;
+        border-radius: 22px;
+        background: var(--graphite);
+      }
+      .photo-count {
+        position: absolute;
+        top: 12px;
+        left: 0;
+        right: 0;
+        text-align: center;
+        font-size: var(--t-small);
+        color: rgba(255, 255, 255, 0.8);
+        transition: opacity var(--dur);
+        text-shadow: 0 1px 3px #000;
+      }
+
+      /* Review panel (developer only, outside the device) */
+      .panel {
+        width: 340px;
+        flex: none;
+      }
+      .panel h1 {
+        font-size: 20px;
+        font-weight: 600;
+        color: #fff;
+      }
+      .panel .sub {
+        color: #9a9ea5;
+        margin: 4px 0 20px;
+      }
+      .panel h2 {
+        font-size: 13px;
+        font-weight: 600;
+        color: #fff;
+        margin: 22px 0 8px;
+      }
+      .jump {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .jump button,
+      .toggles label {
+        padding: 5px 11px;
+        border-radius: 14px;
+        background: #3a3c41;
+        font-size: 13px;
+      }
+      .jump button.cur {
+        background: #fff;
+        color: #000;
+      }
+      .toggles {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .toggles label {
+        cursor: pointer;
+        display: flex;
+        gap: 6px;
+        align-items: center;
+      }
+      .controls {
+        list-style: none;
+        padding: 0;
+      }
+      .controls li {
+        padding: 7px 0;
+        border-top: 1px solid #3a3c41;
+      }
+      .controls b {
+        color: #fff;
+        font-weight: 600;
+      }
+      .note {
+        color: #9a9ea5;
+        font-size: 13px;
+        margin-top: 18px;
+      }
+      :focus-visible {
+        outline: 2px solid var(--lens);
+        outline-offset: 2px;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .screen,
+        .sheet {
+          transition: none;
+        }
+        .breath {
+          animation: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="stage" id="stage">
+      <div class="device" id="device">
+        <div class="status">
+          <span class="pill" id="pill-offline"><i></i>Offline</span
+          ><span class="pill" id="pill-battery">Battery 8%</span>
+        </div>
+
+        <section class="screen home on" id="home">
+          <button class="app-row" data-open="camera">
+            <svg viewBox="0 0 20 20">
+              <rect x="2" y="5" width="16" height="12" rx="3" />
+              <circle cx="10" cy="11" r="3.2" />
+              <path d="M7 5l1.2-2h3.6L13 5" /></svg
+            ><span>Camera</span>
+          </button>
+          <button class="app-row" data-open="ask">
+            <svg viewBox="0 0 20 20">
+              <circle cx="10" cy="10" r="7.5" />
+              <circle cx="10" cy="10" r="3" /></svg
+            ><span>Ask</span><small id="ask-meta"></small>
+          </button>
+          <button class="app-row" data-open="photos">
+            <svg viewBox="0 0 20 20">
+              <rect x="2.5" y="3.5" width="15" height="13" rx="3" />
+              <path d="M3 14l4.5-4.5 3.5 3.5 2-2 4 4" /></svg
+            ><span>Photos</span><small id="photo-meta">3</small>
+          </button>
+          <button class="app-row" data-open="history">
+            <svg viewBox="0 0 20 20">
+              <path d="M3.5 10a6.5 6.5 0 1 0 2-4.7" />
+              <path d="M3 3.5v3h3" />
+              <path d="M10 6.5V10l2.5 1.5" /></svg
+            ><span>History</span>
+          </button>
+          <button class="app-row" data-open="settings">
+            <svg viewBox="0 0 20 20">
+              <path d="M3 6h9M15 6h2M3 14h2M8 14h9" />
+              <circle cx="13.5" cy="6" r="1.8" />
+              <circle cx="6.5" cy="14" r="1.8" /></svg
+            ><span>Settings</span>
+          </button>
+        </section>
+
+        <section class="screen" id="camera">
+          <img class="bleed" src="/captures/worksheet-full-resolution.jpg" alt="" />
+          <div class="scrim-bottom"></div>
+          <button class="thumb" data-open="photos" aria-label="Last photo">
+            <img src="/captures/verified-worksheet-view.jpg" alt="" />
+          </button>
+          <button class="iris" id="shutter" aria-label="Take photo"></button>
+          <div class="flash" id="flash"></div>
+        </section>
+
+        <section class="screen" id="ask">
+          <img class="bleed" id="ask-photo" src="/captures/worksheet-full-resolution.jpg" alt="" />
+          <div class="scrim-bottom"></div>
+          <div class="hint" id="ask-hint">Hold for a new photo</div>
+          <button class="ask-btn" id="ask-btn"><span class="ring"></span>Ask about this</button>
+          <div class="thinking" id="thinking">
+            <div class="breath"></div>
+            <p>Reading the page</p>
+            <button id="cancel">Cancel</button>
+          </div>
+          <div class="sheet" id="ask-sheet">
+            <button id="new-photo">Take new photo and ask</button><button id="sheet-close">Keep this photo</button>
+          </div>
+        </section>
+
+        <section class="screen" id="answer">
+          <div class="scroll" id="answer-scroll">
+            <div class="answer-photo"><img src="/captures/worksheet-full-resolution.jpg" alt="" /></div>
+            <div class="answer-text">
+              <p class="lead">myMethod is O(n³) when data is a LinkedList.</p>
+              <p>The outer loop runs 2n times and calls foo(data) each time.</p>
+              <p>
+                Inside foo, the loop runs n times and calls lst.get(i). On a LinkedList, get(i) walks the list, so it
+                costs up to n steps.
+              </p>
+              <p>That makes foo O(n²), assuming hiddenMethod is O(1). Multiplying by the 2n outer calls gives O(n³).</p>
+              <p>With an ArrayList, get(i) is O(1), so the same code would be O(n²).</p>
+              <p class="meta">Answered by Gemini, 2 min ago</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="screen" id="photos">
+          <img class="bleed" id="photo-img" src="/captures/verified-worksheet-view.jpg" alt="" />
+          <div class="photo-count" id="photo-count">1 of 3</div>
+        </section>
+
+        <section class="screen" id="history">
+          <div class="scroll">
+            <div class="title">History</div>
+            <button class="row" data-open="answer">
+              <img src="/captures/worksheet-full-resolution.jpg" alt="" />
+              <div class="txt">
+                <div class="one">myMethod is O(n³) when data is…</div>
+                <div class="two">2 min ago</div>
+              </div>
+            </button>
+            <button class="row" data-open="answer">
+              <img src="/captures/verified-worksheet-view.jpg" alt="" />
+              <div class="txt">
+                <div class="one">Question 3 asks for the worst case…</div>
+                <div class="two">Yesterday</div>
+              </div>
+            </button>
+            <button class="row" data-open="answer">
+              <img src="/captures/full-resolution-3.jpg" alt="" />
+              <div class="txt">
+                <div class="one">The photo is too blurry to read…</div>
+                <div class="two">Mon</div>
+              </div>
+            </button>
+          </div>
+        </section>
+
+        <section class="screen" id="settings">
+          <div class="scroll">
+            <div class="title">Settings</div>
+            <button class="row" id="row-wifi">
+              <div class="txt"><div class="one">Wi-Fi</div></div>
+              <span class="val" id="wifi-val">guest</span>
+            </button>
+            <button class="row" data-open="model">
+              <div class="txt"><div class="one">Model</div></div>
+              <span class="val" id="model-val">Gemini</span>
+            </button>
+            <div class="row">
+              <div class="txt" style="flex: none"><div class="one">Brightness</div></div>
+              <div class="slider"><i></i></div>
+            </div>
+            <div class="row">
+              <div class="txt">
+                <div class="one">Storage</div>
+                <div class="two">Photos and history on the SD card</div>
+              </div>
+              <span class="val">29 GB</span>
+            </div>
+          </div>
+        </section>
+
+        <section class="screen" id="model">
+          <div class="title">Model</div>
+          <button class="row" data-model="Gemini">
+            <div class="txt">
+              <div class="one">Gemini</div>
+              <div class="two">Key saved</div>
+            </div>
+            <span class="check" id="chk-Gemini">✓</span>
+          </button>
+          <button class="row" data-model="GPT">
+            <div class="txt">
+              <div class="one">GPT</div>
+              <div class="two">No key saved</div>
+            </div>
+            <span class="check" id="chk-GPT"></span>
+          </button>
+        </section>
+
+        <section class="screen" id="photos-empty">
+          <div class="empty">
+            <p>No photos yet.</p>
+            <button data-open="camera">Open Camera</button>
+          </div>
+        </section>
+
+        <div class="home-bar" id="home-bar"></div>
+      </div>
+    </div>
+
+    <aside class="panel">
+      <h1>Perch OS: design prototype</h1>
+      <p class="sub">
+        True 240×284 pixels shown at 2×. Click to tap, drag to swipe, hold to long-press. Swipe up from the bottom edge
+        to go home. This page is a review tool, not firmware.
+      </p>
+
+      <h2>Screens</h2>
+      <div class="jump" id="jump"></div>
+
+      <h2>Simulate</h2>
+      <div class="toggles">
+        <label><input type="checkbox" id="sim-offline" /> Offline</label>
+        <label><input type="checkbox" id="sim-battery" /> Low battery</label>
+        <label><input type="checkbox" id="sim-empty" /> No photos</label>
+        <label><input type="checkbox" id="sim-zoom" checked /> 2× zoom</label>
+      </div>
+
+      <h2>Every control on this screen, and why it exists</h2>
+      <ul class="controls" id="controls"></ul>
+
+      <p class="note">
+        Content is sample data. Photos are real captures from your board; the answer text is written for this mock-up,
+        not a model response. Gallery and multi-entry history need the SD card (P4). Today's firmware keeps one photo
+        and one answer.
+      </p>
+    </aside>
+
+    <script>
+      const CONTROLS = {
+        home: [
+          ['Five app rows', 'The only way into each app. Labels are the content; no icon grid, no product name.'],
+          [
+            'Right-side notes',
+            'Shown only when they change what you would do: "Offline" on Ask, photo count on Photos.',
+          ],
+        ],
+        camera: [
+          ['Viewfinder', 'Fills the screen. The photo is the interface.'],
+          ['Shutter (iris)', 'One primary action. Takes a full-resolution photo, no AI, no network.'],
+          ['Last-photo thumbnail', 'Confirms the capture landed and opens Photos. Appears only after a capture.'],
+          ['Home bar', 'Hint for the system swipe up. Not a button you need to aim at.'],
+        ],
+        ask: [
+          ['Photo', 'Shows exactly what will be sent.'],
+          [
+            'Ask about this',
+            'The one primary action. Sends this photo. Amber ring marks the only paid, network action.',
+          ],
+          [
+            'Hold anywhere',
+            'Opens "Take new photo and ask". Replaces the tiny corner camera icon from the old design.',
+          ],
+          ['Cancel (while thinking)', 'The request runs in the background; you can always leave.'],
+        ],
+        answer: [
+          ['Photo header', 'Context for what was asked. Fades into the text, no frame.'],
+          [
+            'Answer text',
+            'First sentence large: the answer first, reasoning after. Scroll vertically, no page buttons.',
+          ],
+          ['Model and time', 'One quiet line at the end, for trust. Not repeated at the top.'],
+        ],
+        photos: [
+          ['Photo', 'Full screen. Swipe left/right for the next photo.'],
+          ['"1 of 3"', 'Appears on tap and fades; position in the gallery.'],
+        ],
+        history: [
+          [
+            'Answer rows',
+            'Thumbnail plus first line: enough to recognise the question. Tap to read again, no new request.',
+          ],
+        ],
+        settings: [
+          ['Wi-Fi', 'Opens network picker and password entry (P3).'],
+          ['Model', 'The only place the AI provider is shown or changed.'],
+          ['Brightness', 'Direct slider, no confirm.'],
+          ['Storage', 'Read-only. Tells you where your data lives.'],
+        ],
+        model: [
+          [
+            'Gemini / GPT rows',
+            'Pick one; the amber check marks the active model. Missing keys are stated, not hidden.',
+          ],
+        ],
+        'photos-empty': [['Open Camera', 'An empty screen points to the action that fills it.']],
+      };
+
+      const device = document.getElementById('device');
+      let current = 'home';
+      const stack = [];
+
+      function show(id, { back = false } = {}) {
+        if (id === 'photos' && document.getElementById('sim-empty').checked) id = 'photos-empty';
+        if (id === current) return;
+        const from = document.getElementById(current),
+          to = document.getElementById(id);
+        from.classList.remove('on');
+        from.classList.toggle('under', !back);
+        to.classList.remove('under');
+        if (back) to.style.transform = 'scale(1.04)';
+        requestAnimationFrame(() => {
+          to.style.transform = '';
+          to.classList.add('on');
+        });
+        if (!back && current !== 'home') stack.push(current);
+        current = id;
+        document.getElementById('home-bar').style.opacity = id === 'home' ? 0 : 1;
+        if (id === 'answer') document.getElementById('answer-scroll').scrollTop = 0;
+        if (id === 'photos') flashCount();
+        render();
+      }
+      function goHome() {
+        stack.length = 0;
+        show('home', { back: true });
+        closeSheet();
+        stopThinking();
+      }
+      function goBack() {
+        show(stack.pop() || 'home', { back: true });
+      }
+
+      // Pointer gestures, measured in device pixels.
+      let start = null,
+        longTimer = null,
+        moved = false,
+        scrollEl = null,
+        scrollStart = 0;
+      const zoom = () => parseFloat(getComputedStyle(document.getElementById('stage')).getPropertyValue('--zoom'));
+      function pt(e) {
+        const r = device.getBoundingClientRect();
+        return { x: (e.clientX - r.left) / zoom(), y: (e.clientY - r.top) / zoom() };
+      }
+      device.addEventListener('pointerdown', (e) => {
+        start = pt(e);
+        moved = false;
+        device.setPointerCapture(e.pointerId);
+        scrollEl = e.target.closest('.scroll');
+        scrollStart = scrollEl ? scrollEl.scrollTop : 0;
+        clearTimeout(longTimer);
+        longTimer = setTimeout(() => {
+          if (!moved) longPress();
+        }, 500);
+      });
+      device.addEventListener('pointermove', (e) => {
+        if (!start) return;
+        const p = pt(e),
+          dy = p.y - start.y;
+        if (Math.hypot(p.x - start.x, dy) > 6) moved = true;
+        if (scrollEl && start.y < 254) scrollEl.scrollTop = scrollStart - dy;
+      });
+      device.addEventListener('pointerup', (e) => {
+        clearTimeout(longTimer);
+        if (!start) return;
+        const p = pt(e),
+          dx = p.x - start.x,
+          dy = p.y - start.y,
+          s = start;
+        start = null;
+        if (s.y >= 244 && dy < -40 && current !== 'home') return goHome();
+        if (Math.abs(dx) > 40 && Math.abs(dx) > Math.abs(dy) && current === 'photos') return nextPhoto(dx < 0 ? 1 : -1);
+        if (Math.abs(dx) > 50 && dx > 0 && Math.abs(dy) < 30 && s.x < 30 && current !== 'home') return goBack();
+        if (moved) return;
+        const target = document.elementFromPoint(e.clientX, e.clientY);
+        tap(target);
+      });
+      device.addEventListener('click', (e) => e.preventDefault(), true);
+
+      function tap(el) {
+        if (!el) return;
+        const open = el.closest('[data-open]');
+        if (open) return show(open.dataset.open);
+        const model = el.closest('[data-model]');
+        if (model) {
+          setModel(model.dataset.model);
+          return setTimeout(goBack, 180);
+        }
+        const id = (el.closest('button') || {}).id;
+        if (id === 'shutter') return shutter();
+        if (id === 'ask-btn') return startThinking();
+        if (id === 'cancel') return stopThinking();
+        if (id === 'new-photo') {
+          closeSheet();
+          return shutterThen(startThinking);
+        }
+        if (id === 'sheet-close') return closeSheet();
+        if (current === 'photos') flashCount();
+        if (document.getElementById('ask-sheet').classList.contains('show')) closeSheet();
+      }
+      function longPress() {
+        if (current === 'ask' && !thinking) document.getElementById('ask-sheet').classList.add('show');
+      }
+      function closeSheet() {
+        document.getElementById('ask-sheet').classList.remove('show');
+      }
+
+      function shutter() {
+        const f = document.getElementById('flash');
+        f.classList.remove('go');
+        void f.offsetWidth;
+        f.classList.add('go');
+      }
+      function shutterThen(fn) {
+        const f = document.querySelector('#ask .bleed');
+        f.style.opacity = 0.3;
+        setTimeout(() => {
+          f.style.opacity = 1;
+          fn();
+        }, 220);
+      }
+
+      let thinking = null;
+      function startThinking() {
+        if (document.getElementById('sim-offline').checked) return;
+        document.getElementById('thinking').classList.add('show');
+        thinking = setTimeout(() => {
+          stopThinking();
+          show('answer');
+        }, 2600);
+      }
+      function stopThinking() {
+        clearTimeout(thinking);
+        thinking = null;
+        document.getElementById('thinking').classList.remove('show');
+      }
+
+      const PHOTOS = [
+        '/captures/verified-worksheet-view.jpg',
+        '/captures/worksheet-full-resolution.jpg',
+        '/captures/full-resolution-3.jpg',
+      ];
+      let photoIndex = 0;
+      function nextPhoto(step) {
+        photoIndex = Math.min(PHOTOS.length - 1, Math.max(0, photoIndex + step));
+        document.getElementById('photo-img').src = PHOTOS[photoIndex];
+        flashCount();
+      }
+      let countTimer;
+      function flashCount() {
+        const c = document.getElementById('photo-count');
+        c.textContent = `${photoIndex + 1} of ${PHOTOS.length}`;
+        c.style.opacity = 1;
+        clearTimeout(countTimer);
+        countTimer = setTimeout(() => (c.style.opacity = 0), 1400);
+      }
+      function setModel(name) {
+        document.getElementById('model-val').textContent = name;
+        for (const n of ['Gemini', 'GPT']) document.getElementById('chk-' + n).textContent = n === name ? '✓' : '';
+      }
+
+      function render() {
+        const offline = document.getElementById('sim-offline').checked;
+        document.getElementById('pill-offline').classList.toggle('show', offline && current !== 'home');
+        document
+          .getElementById('pill-battery')
+          .classList.toggle('show', document.getElementById('sim-battery').checked);
+        document.getElementById('ask-meta').textContent = offline ? 'Offline' : '';
+        document.getElementById('photo-meta').textContent = document.getElementById('sim-empty').checked
+          ? ''
+          : PHOTOS.length;
+        const btn = document.getElementById('ask-btn');
+        btn.lastChild.textContent = offline ? 'Ask when online' : 'Ask about this';
+        btn.style.opacity = offline ? 0.6 : 1;
+        document.getElementById('wifi-val').textContent = offline ? 'Not connected' : 'guest';
+        const jump = document.getElementById('jump');
+        jump.innerHTML = '';
+        for (const id of ['home', 'camera', 'ask', 'answer', 'photos', 'history', 'settings', 'model']) {
+          const b = document.createElement('button');
+          b.textContent = id;
+          b.className = id === current || (id === 'photos' && current === 'photos-empty') ? 'cur' : '';
+          b.onclick = () => {
+            stopThinking();
+            closeSheet();
+            stack.length = 0;
+            show(id);
+          };
+          jump.appendChild(b);
+        }
+        document.getElementById('controls').innerHTML =
+          (CONTROLS[current] || []).map(([n, why]) => `<li><b>${n}.</b> ${why}</li>`).join('') +
+          (current !== 'home'
+            ? '<li><b>Swipe up from the bottom edge.</b> Home, same on every screen. No back or home buttons.</li>'
+            : '');
+      }
+      for (const id of ['sim-offline', 'sim-battery', 'sim-empty']) document.getElementById(id).onchange = render;
+      document.getElementById('sim-zoom').onchange = (e) =>
+        document.getElementById('stage').style.setProperty('--zoom', e.target.checked ? 2 : 1);
+      document.getElementById('home-bar').style.opacity = 0;
+      render();
+    </script>
+  </body>
+</html>
