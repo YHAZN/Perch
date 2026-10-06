@@ -9,15 +9,18 @@
 #include <Preferences.h>
 #include <time.h>
 #include "ai_client.h"
+#include "clock.h"
 #include "display.h"
 #include "storage.h"
 
 namespace {
 constexpr int W = 240, H = 284;
 // Bottom strip reserved for the system swipe-up. Nothing tappable lives here.
-constexpr int HOME_ZONE = 250;
-// Distance from the bottom edge to the lowest tappable control (just above the home zone).
-constexpr int ABOVE_HOME = H - HOME_ZONE + 4;
+constexpr int HOME_ZONE = 236;
+// Distance from the bottom edge to the lowest tappable control (clear of the home zone).
+constexpr int ABOVE_HOME = H - HOME_ZONE + 14;
+// Drag this far (or flick) to commit the home gesture; less springs back.
+constexpr int COMMIT_DRAG = 70;
 
 // Design tokens (design/index.html :root)
 lv_color_t VOID_, GRAPHITE, ICON_BG, LINE, MIST, INK, LENS;
@@ -71,6 +74,7 @@ lv_obj_t *noticeText;
 lv_obj_t *homeBar;
 
 // Touch injected by the USB mirror ('T' command)
+uint8_t spiMhz = 10;
 bool injecting = false;
 int injectX = 0, injectY = 0;
 // Physical touch tracking for the home swipe
@@ -100,12 +104,15 @@ lv_obj_t *circle(lv_obj_t *parent, int size, lv_color_t border, int width, lv_co
   lv_obj_set_style_bg_opa(o, fillOpa, 0);
   return o;
 }
+// Every app is a full-screen layer on one LVGL screen, so two can be on screen at once
+// (the face shows underneath an app while you drag it away).
+lv_obj_t *root = nullptr;
 lv_obj_t *screenBase() {
-  lv_obj_t *s = lv_obj_create(nullptr);
-  lv_obj_remove_style_all(s);
+  lv_obj_t *s = plain(root);
+  lv_obj_set_size(s, W, H);
   lv_obj_set_style_bg_color(s, VOID_, 0);
   lv_obj_set_style_bg_opa(s, LV_OPA_COVER, 0);
-  lv_obj_remove_flag(s, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_flag(s, LV_OBJ_FLAG_HIDDEN);
   return s;
 }
 lv_obj_t *scrimBottom(lv_obj_t *parent, int height) {
@@ -209,26 +216,109 @@ const char *screenName() {
   }
 }
 void refreshDynamic();
-void show(Screen next) {
+lv_obj_t *layer(Screen s) { return scr[(int)s]; }
+void setY(void *o, int32_t v) { lv_obj_set_y((lv_obj_t *)o, v); }
+// Motion: ease-out when something arrives, ease-in when it leaves (design/index.html --ease).
+void animY(lv_obj_t *o, int from, int to, uint32_t ms, lv_anim_path_cb_t path, lv_anim_completed_cb_t done) {
+  lv_anim_delete(o, setY);
+  lv_anim_t a;
+  lv_anim_init(&a);
+  lv_anim_set_var(&a, o);
+  lv_anim_set_values(&a, from, to);
+  lv_anim_set_duration(&a, ms);
+  lv_anim_set_path_cb(&a, path);
+  lv_anim_set_exec_cb(&a, setY);
+  if (done) lv_anim_set_completed_cb(&a, done);
+  lv_anim_start(&a);
+}
+// Only the current layer stays visible once motion has finished.
+void settleLayers(lv_anim_t * = nullptr) {
+  for (int i = 0; i < 9; ++i) {
+    if (i == (int)current) continue;
+    lv_anim_delete(scr[i], setY);
+    lv_obj_set_y(scr[i], 0);
+    lv_obj_add_flag(scr[i], LV_OBJ_FLAG_HIDDEN);
+  }
+  lv_obj_set_y(layer(current), 0);
+}
+void enter(Screen next) {
   if (next != Screen::Camera) stopPreview();
   liveRequested = next == Screen::Camera;
-  if (next == current) return;
   current = next;
   refreshDynamic();
-  lv_screen_load_anim(scr[(int)next], LV_SCR_LOAD_ANIM_FADE_IN, 160, 0, false);
   const bool chrome = next != Screen::Face && next != Screen::Apps;
   if (chrome) lv_obj_remove_flag(homeBar, LV_OBJ_FLAG_HIDDEN);
   else lv_obj_add_flag(homeBar, LV_OBJ_FLAG_HIDDEN);
+}
+// Opening something: it rises a short distance into place over what was there.
+void show(Screen next) {
+  if (next == current) {
+    enter(next);
+    return;
+  }
+  lv_obj_t *to = layer(next);
+  lv_obj_remove_flag(to, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_move_foreground(to);
+  enter(next);
+  animY(to, 28, 0, 200, lv_anim_path_ease_out, settleLayers);
 }
 void notice(const String &message, Screen back) {
   lv_label_set_text(noticeText, message.c_str());
   noticeReturn = back;
   show(Screen::Notice);
 }
+// Going home: the app lifts away and the face is underneath. Used by flicks and the mirror.
+void leaveTo(Screen under, int fromY) {
+  lv_obj_t *top = layer(current), *below = layer(under);
+  lv_obj_remove_flag(below, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_set_y(below, 0);
+  lv_obj_move_foreground(top);
+  enter(under);
+  animY(top, fromY, -H, 180, lv_anim_path_ease_in, settleLayers);
+}
+void openApps(int fromY = H) {
+  lv_obj_t *grid = layer(Screen::Apps);
+  lv_obj_remove_flag(grid, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_move_foreground(grid);
+  enter(Screen::Apps);
+  animY(grid, fromY, 0, 220, lv_anim_path_ease_out, settleLayers);
+}
 void goHome() {
   // Same gesture everywhere: from an app to the face, from the face to the app grid.
-  if (current == Screen::Face) show(Screen::Apps);
-  else show(Screen::Face);
+  if (current == Screen::Face) openApps();
+  else leaveTo(Screen::Face, 0);
+}
+
+// Interactive home gesture: the layer follows the finger, then commits or springs back.
+bool dragging = false;
+void dragHome(int dy) {
+  if (!dragging) {
+    dragging = true;
+    if (current == Screen::Face) {
+      lv_obj_t *grid = layer(Screen::Apps);
+      lv_obj_remove_flag(grid, LV_OBJ_FLAG_HIDDEN);
+      lv_obj_move_foreground(grid);
+    } else {
+      lv_obj_t *face = layer(Screen::Face);
+      lv_obj_remove_flag(face, LV_OBJ_FLAG_HIDDEN);
+      lv_obj_set_y(face, 0);
+      lv_obj_move_foreground(layer(current));
+    }
+  }
+  if (current == Screen::Face) lv_obj_set_y(layer(Screen::Apps), H - dy);
+  else lv_obj_set_y(layer(current), -dy);
+}
+void releaseHome(int dy, int speed) {
+  if (!dragging) return;
+  dragging = false;
+  const bool commit = dy > COMMIT_DRAG || (dy > 24 && speed > 600);
+  if (current == Screen::Face) {
+    if (commit) openApps(H - dy);
+    else animY(layer(Screen::Apps), H - dy, H, 200, lv_anim_path_ease_out, settleLayers);
+  } else {
+    if (commit) leaveTo(Screen::Face, -dy);
+    else animY(layer(current), -dy, 0, 220, lv_anim_path_ease_out, settleLayers);
+  }
 }
 
 // ---------- content ----------
@@ -456,7 +546,7 @@ void buildFace() {
   lv_obj_add_event_cb(
       s,
       [](lv_event_t *) {
-        if (lv_indev_get_gesture_dir(lv_indev_active()) == LV_DIR_TOP) show(Screen::Apps);
+        if (lv_indev_get_gesture_dir(lv_indev_active()) == LV_DIR_TOP && current == Screen::Face) openApps();
       },
       LV_EVENT_GESTURE, nullptr);
 }
@@ -775,19 +865,27 @@ void readTouch(lv_indev_t *, lv_indev_data_t *data) {
     y = injectY;
     pressed = true;
   } else pressed = touchRead(x, y);
+  static unsigned long moveAt = 0;
+  static int speed = 0;  // upward px/s, smoothed, for flick detection
   if (pressed) {
+    const unsigned long now = millis();
     if (!fingerDown) {
       fingerDown = true;
       downX = x;
       downY = y;
-      homeGesture = downY >= HOME_ZONE;
+      speed = 0;
+      // The bottom strip belongs to the system: drag up from it to go home; taps do nothing.
+      homeGesture = downY >= HOME_ZONE && !injecting;
+    } else if (now > moveAt) {
+      speed = (speed + (lastY - y) * 1000 / (int)(now - moveAt)) / 2;
     }
+    moveAt = now;
     lastX = x;
     lastY = y;
+    if (homeGesture && downY - y > 6) dragHome(downY - y);
   } else if (fingerDown) {
     fingerDown = false;
-    // The bottom strip belongs to the system: a swipe up there is "home", taps do nothing.
-    if (homeGesture && downY - lastY > 30) goHome();
+    if (homeGesture) releaseHome(max(0, downY - lastY), speed);
     homeGesture = false;
   }
   if (homeGesture) {
@@ -906,8 +1004,10 @@ void initDeviceUi() {
   framebuffer = (uint16_t *)ps_malloc(W * H * 2);
   livePixels = (uint16_t *)ps_calloc(W * H, 2);
   photoPixels = (uint16_t *)ps_calloc(W * H, 2);
-  const bool lcd = displayBegin();
-  Serial.printf("DISPLAY lcd=%d touch=%d\n", lcd, touchAvailable());
+  // Screen link speed is stored so it can be tuned for the wiring without reflashing ('Y').
+  spiMhz = constrain(settings.getUChar("lcd-mhz", 10), 5, 80);
+  const bool lcd = displayBegin(spiMhz * 1000000UL);
+  Serial.printf("DISPLAY lcd=%d touch=%d spi=%uMHz\n", lcd, touchAvailable(), spiMhz);
   if (!framebuffer || !livePixels || !photoPixels) {
     Serial.println("DISPLAY_ERROR Out of PSRAM");
     framebuffer = nullptr;
@@ -930,6 +1030,11 @@ void initDeviceUi() {
   touch = lv_indev_create();
   lv_indev_set_type(touch, LV_INDEV_TYPE_POINTER);
   lv_indev_set_read_cb(touch, readTouch);
+  root = lv_screen_active();
+  lv_obj_remove_style_all(root);
+  lv_obj_set_style_bg_color(root, VOID_, 0);
+  lv_obj_set_style_bg_opa(root, LV_OPA_COVER, 0);
+  lv_obj_remove_flag(root, LV_OBJ_FLAG_SCROLLABLE);
 
   setupImage(liveDsc, livePixels);
   setupImage(photoDsc, photoPixels);
@@ -952,7 +1057,8 @@ void initDeviceUi() {
   lv_obj_remove_flag(homeBar, LV_OBJ_FLAG_CLICKABLE);
 
   refreshDynamic();
-  lv_screen_load(scr[(int)Screen::Face]);
+  lv_obj_remove_flag(layer(Screen::Face), LV_OBJ_FLAG_HIDDEN);
+  enter(Screen::Face);
   const uint32_t start = micros();
   lv_refr_now(display);
   Serial.printf("DISPLAY first frame %lu us\n", (unsigned long)(micros() - start));
@@ -997,6 +1103,41 @@ void handleDeviceButton(char command) {
       return;
     }
     sendFrame();
+    return;
+  }
+  if (command == 'Y') {
+    // Screen link speed in MHz, stored, then restart (the clock survives a software restart).
+    const int mhz = Serial.readStringUntil('\n').toInt();
+    if (mhz < 5 || mhz > 80) {
+      Serial.println("SCREEN_ERROR Invalid speed");
+      return;
+    }
+    settings.putUChar("lcd-mhz", mhz);
+    Serial.printf("LCD_SPEED %d MHz, restarting\n", mhz);
+    Serial.flush();
+    delay(100);
+    ESP.restart();
+  }
+  if (command == 'Z') {
+    // PC clock over USB (sent by the bridge when it connects). No screen reply.
+    const uint32_t epoch = strtoul(Serial.readStringUntil('\n').c_str(), nullptr, 10);
+    if (epoch > 1700000000) {
+      clockSet(epoch);
+      refreshDynamic();
+    }
+    return;
+  }
+  if (command == 'B') {
+    // Full-screen redraw benchmark: LVGL render + SPI transfer, averaged over 10 frames.
+    uint32_t total = 0;
+    for (int i = 0; i < 10; ++i) {
+      lv_obj_invalidate(root);
+      const uint32_t t = micros();
+      lv_refr_now(display);
+      total += micros() - t;
+    }
+    Serial.printf("BENCH full_frame_ms=%.1f fps=%.1f spi=%uMHz transfer_ms=%.1f\n", total / 10000.0f, 1e7f / total,
+                  spiMhz, displayLastPresentMicros() / 1000.0f);
     return;
   }
   if (command == 'n') {

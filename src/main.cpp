@@ -6,6 +6,7 @@
 #include "wifi_secrets.h"
 #include "device_ui.h"
 #include "ai_client.h"
+#include "clock.h"
 
 void testWifi(const char *ssid = WIFI_TEST_SSID, const char *password = WIFI_TEST_PASSWORD) {
   WiFi.mode(WIFI_STA);
@@ -145,6 +146,7 @@ void setup() {
   Serial.setTxTimeoutMs(1000);
   const unsigned long start = millis();
   while (!Serial && millis() - start < 5000) { delay(10); }
+  clockBegin();
   printStatus();
   startCamera();
   initDeviceUi();

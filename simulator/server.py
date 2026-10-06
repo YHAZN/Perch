@@ -37,6 +37,8 @@ def device_connection(name):
         CONNECTION.rts = False
         CONNECTION.open()
         CONNECTION.set_buffer_size(rx_size=2_000_000, tx_size=8192)
+        # Give the board the PC's clock: it has no clock battery and may be offline.
+        CONNECTION.write(b'Z%d\n' % int(time.time()))
     try:
         yield CONNECTION
     except (serial.SerialException, OSError):

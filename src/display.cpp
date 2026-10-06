@@ -13,8 +13,6 @@ constexpr int W = 240, H = 284;
 // Waveshare's demo drives this panel with no RAM offset and colour inversion on.
 constexpr int GAP_X = 0, GAP_Y = 0;
 constexpr int STRIP_ROWS = 24;
-// 40 MHz is fine on a PCB; long loose jumper wires need a slower clock.
-constexpr uint32_t SPI_HZ = 10 * 1000 * 1000;
 constexpr uint8_t TOUCH_ADDR = 0x15;
 constexpr int BL_CHANNEL = 7;
 
@@ -38,7 +36,7 @@ bool touchWrite(uint8_t reg, uint8_t value) {
 }
 }  // namespace
 
-bool displayBegin() {
+bool displayBegin(uint32_t spiHz) {
   // Keep the microSD card deselected so LCD traffic on the shared bus is ignored.
   pinMode(PIN_SD_CS, OUTPUT);
   digitalWrite(PIN_SD_CS, HIGH);
@@ -64,7 +62,7 @@ bool displayBegin() {
   esp_lcd_panel_io_spi_config_t ioConfig = {};
   ioConfig.dc_gpio_num = PIN_LCD_DC;
   ioConfig.cs_gpio_num = PIN_LCD_CS;
-  ioConfig.pclk_hz = SPI_HZ;
+  ioConfig.pclk_hz = spiHz;
   ioConfig.lcd_cmd_bits = 8;
   ioConfig.lcd_param_bits = 8;
   ioConfig.spi_mode = 0;

@@ -256,7 +256,7 @@ void join() {
 }  // namespace
 
 void networkBegin() {
-  // US Eastern time. SNTP keeps retrying until Wi-Fi is up.
+  // Wi-Fi time replaces any build or USB time once it arrives. SNTP retries until online.
   configTzTime("EST5EDT,M3.2.0,M11.1.0", "time.google.com", "pool.ntp.org");
   WiFi.persistent(false);
   WiFi.mode(WIFI_STA);

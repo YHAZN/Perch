@@ -15,3 +15,6 @@ include/wifi_secrets.h
 *.pem
 .env
 .env.*
+
+# Generated at build time
+include/build_time.h
