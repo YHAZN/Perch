@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Device preview</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <p class="eyebrow">DEVICE SCREEN / USB MIRROR</p>
+          <h1>Device preview</h1>
+        </div>
+        <span id="connection" class="badge">Checking USB…</span>
+      </header>
+      <div class="layout">
+        <section class="device-panel" aria-label="Temporary handheld display">
+          <div class="device">
+            <div class="device-top"><span>PERCH</span><span>01 / PROTOTYPE</span></div>
+            <canvas id="screen" width="240" height="284" role="img" aria-label="240 by 284 device screen"></canvas>
+            <div class="hardware-controls">
+              <button id="prev" aria-label="Previous answer page">↑</button
+              ><button id="capture" class="shutter">Capture</button
+              ><button id="next" aria-label="Next answer page">↓</button>
+            </div>
+            <div class="device-bottom">CAMERA TERMINAL / 240 x 284</div>
+          </div>
+          <div class="screen-controls">
+            <button id="home">Home</button><button id="viewPhoto">Photo</button
+            ><button id="rotatePhoto">Rotate photo</button><button id="deviceStatus">Device status</button
+            ><label><input id="nativeSize" type="checkbox" /> 240 x 284 at 1:1</label>
+          </div>
+
+          <p id="screenDescription" class="hint" aria-live="polite">Waiting for the device screen.</p>
+        </section>
+        <details class="workbench">
+          <summary>PC setup &amp; diagnostics</summary>
+          <article class="card provider-card">
+            <p class="eyebrow">AI PROVIDER</p>
+            <h2>Choose your AI</h2>
+            <div class="provider-switch" role="group" aria-label="AI provider">
+              <button id="providerGemini" aria-pressed="false">Gemini</button
+              ><button id="providerGpt" aria-pressed="false">GPT</button>
+            </div>
+            <p id="providerInfo" class="detail" aria-live="polite">Reading the device setting...</p>
+            <p>
+              Gemini testing needs a Google AI Studio API key. Free-tier availability depends on the model and your
+              quota.
+            </p>
+            <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer"
+              >Get a Gemini API key</a
+            >
+            <form id="keyForm">
+              <label id="keyLabel" for="apiKey">Gemini API key</label
+              ><input
+                id="apiKey"
+                type="password"
+                autocomplete="off"
+                spellcheck="false"
+                maxlength="512"
+                placeholder="Paste your API key here"
+                required
+              />
+              <div class="actions">
+                <button id="saveKey" type="submit">Save key to device</button
+                ><button id="removeKey" type="button">Remove saved key</button>
+              </div>
+            </form>
+            <p id="keyStatus" class="detail" aria-live="polite">Checking saved key...</p>
+            <p>The key is stored on your ESP32. This page never displays a saved key.</p>
+            <p>See sends your photo to the selected API from the ESP32 when you press the shutter.</p>
+          </article>
+          <article class="card preview-card" hidden>
+            <p class="eyebrow">LIVE FRAMING</p>
+            <h2>Line up your picture</h2>
+            <div class="preview-window">
+              <img id="liveImage" hidden alt="Live camera framing preview" /><span id="previewPlaceholder"
+                >Start preview to position the camera</span
+              >
+            </div>
+            <div class="actions"><button id="liveToggle" aria-pressed="false">Start preview</button></div>
+            <p id="liveInfo" class="detail" aria-live="polite">
+              Small preview; Capture saves the full-resolution photo.
+            </p>
+          </article>
+          <article class="card">
+            <p class="eyebrow">ORIGINAL CAMERA FILE</p>
+            <h2>Inspect the full photo</h2>
+            <p>
+              The device preview is small. Open the original JPEG from the same capture to check whether the text is
+              readable.
+            </p>
+            <button id="original">Original photo</button
+            ><a id="downloadPhoto" hidden download="tiny-ai-photo.jpg">Save JPEG</a
+            ><img
+              id="originalImage"
+              hidden
+              alt="Original full resolution camera capture"
+              style="width: 100%; margin-top: 16px"
+            />
+            <p id="originalInfo" class="detail"></p>
+          </article>
+          <article class="card">
+            <p class="eyebrow">01 / DEVICE-RENDERED SCREEN</p>
+            <h2>A window into your device</h2>
+            <p>
+              The ESP32 draws the entire screen in its memory. This window receives those pixels over USB and returns
+              your button presses.
+            </p>
+            <div id="captureInfo" class="detail">Waiting for the first screen frame.</div>
+            <div class="actions"><button id="refresh">Refresh screen</button></div>
+            <span id="transport" class="detail" aria-live="polite">Connecting…</span>
+          </article>
+          <article class="card">
+            <p class="eyebrow">02 / ON-DEVICE INTERACTION</p>
+            <h2>Read, one page at a time</h2>
+            <p>
+              Try the sample answer stored on the ESP32. The device handles fonts, wrapping, and page navigation. The
+              sample is separate from real AI answers.
+            </p>
+            <div class="actions"><button id="demo">Demo answer</button></div>
+            <span class="detail">Use the arrow buttons, or your keyboard's up/down keys.</span>
+          </article>
+          <article class="card">
+            <p class="eyebrow">03 / CONNECTIVITY</p>
+            <h2>Test Wi-Fi independently</h2>
+            <p>The USB screen works even while board Wi-Fi is unavailable.</p>
+            <div class="actions">
+              <button id="status">Board status</button><button id="campus">Test campus guest</button
+              ><button id="hotspot">Test hotspot</button>
+            </div>
+            <pre id="log" aria-live="polite">Waiting for the board…</pre>
+          </article>
+        </details>
+      </div>
+      <p id="error" role="alert" hidden></p>
+      <footer>ESP32 APPLICATION / PC DISPLAY <span>Device-rendered apps</span></footer>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>
