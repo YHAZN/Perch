@@ -5,6 +5,7 @@
 #include <WiFi.h>
 #include "wifi_secrets.h"
 #include "device_ui.h"
+#include "ai_client.h"
 
 void testWifi(const char *ssid = WIFI_TEST_SSID, const char *password = WIFI_TEST_PASSWORD) {
   WiFi.mode(WIFI_STA);
@@ -138,11 +139,16 @@ void printStatus() {
 
 void setup() {
   Serial.begin(115200);
+  Serial.setDebugOutput(false);
+  // The USB-serial driver treats a 100 ms pause in host reads as "unplugged" and then
+  // silently drops bytes while reporting success, truncating mirror frames. Allow 1 s.
+  Serial.setTxTimeoutMs(1000);
   const unsigned long start = millis();
   while (!Serial && millis() - start < 5000) { delay(10); }
   printStatus();
   startCamera();
   initDeviceUi();
+  networkBegin();
 }
 
 void loop() {
@@ -157,6 +163,7 @@ void loop() {
     handleDeviceButton(command);
   }
   deviceTick();
+  networkTick();
   static unsigned long lastHeartbeat = 0;
   if (millis() - lastHeartbeat >= 2000) {
     lastHeartbeat = millis();

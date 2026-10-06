@@ -19,7 +19,8 @@ namespace {
 constexpr int W = 240, H = 284;
 constexpr int TEXT_TOP = 55, LINE_HEIGHT = 22, FOOTER_TOP = H - 36;
 constexpr int LINES_PER_PAGE = (FOOTER_TOP - TEXT_TOP - 4) / LINE_HEIGHT + 1;
-constexpr uint16_t BG = 0x0841, PANEL = 0x18e3, INK = 0xf7be, MUTED = 0x9cd3, ACCENT = 0x4d9f;
+constexpr uint16_t BG = 0x0841, PANEL = 0x18e3, INK = 0xf7be, MUTED = 0x9cd3, ACCENT = 0x4d9f, LENS = 0xfda8;
+constexpr int BUSY_TOP = 76, BUSY_BOTTOM = 150, RING_Y = 113;
 class Surface : public Adafruit_GFX {
  public:
   uint16_t *pixels = nullptr;
@@ -28,7 +29,7 @@ class Surface : public Adafruit_GFX {
     if (pixels && x >= 0 && y >= 0 && x < W && y < H) pixels[y * W + x] = color;
   }
 } screen;
-enum class View { Desk, Home, Photo, AI, History, Answer, Status, Error };
+enum class View { Desk, Home, Photo, AI, History, Answer, Status, Error, Busy };
 enum class AppId { Camera, AI, Photos, History, Settings };
 struct AppEntry {
   const char *name;
@@ -55,6 +56,9 @@ uint8_t *savedJpeg = nullptr, *rgbScratch = nullptr;
 size_t jpegCapacity = 0, rgbCapacity = 0;
 int photoWidth = 0, photoHeight = 0;
 String problem;
+String busyLabel;
+bool pendingGemini = true;
+uint16_t *busyBand = nullptr;
 String lastAnswer;
 bool lastAnswerGemini = true;
 unsigned long sequence = 0;
@@ -291,6 +295,22 @@ void render() {
       body(WiFi.status() == WL_CONNECTED ? "Connected" : "Offline", 125, 177);
       footer("RUNNING ON ESP32", "V0.2");
       break;
+    case View::Busy: {
+      screen.fillScreen(BG);
+      if (photo && jpegBytes)
+        for (int y = 0; y < 180; ++y)
+          for (int x = 0; x < 240; ++x) screen.drawPixel(x, y + 32, photo[(y * 162 / 180) * 216 + x * 216 / 240]);
+      for (int i = 0; i < W * H; ++i) screen.pixels[i] = (screen.pixels[i] >> 2) & 0x39e7;
+      screen.setFont(&FreeSans18pt7b);
+      body(busyLabel, (W - textWidth(busyLabel)) / 2, 186, INK);
+      body("Cancel", (W - textWidth("Cancel")) / 2, 246, MUTED);
+      // Keep the clean background behind the ring so the animation can redraw just that band.
+      if (!busyBand) busyBand = (uint16_t *)ps_malloc(W * (BUSY_BOTTOM - BUSY_TOP) * 2);
+      if (busyBand) memcpy(busyBand, screen.pixels + BUSY_TOP * W, W * (BUSY_BOTTOM - BUSY_TOP) * 2);
+      for (int t = 0; t < 3; ++t) screen.drawCircle(120, RING_Y, 28 - t, LENS);
+      footer("", "");
+      break;
+    }
     case View::Error:
       header("Notice");
       {
@@ -340,6 +360,7 @@ void sendFrame() {
                      : view == View::History ? "history"
                      : view == View::Answer  ? "answer"
                      : view == View::Status  ? "status"
+                     : view == View::Busy    ? "busy"
                                              : "error";
   Serial.printf("SCREEN_BEGIN %u %lu %s %d %d %08lx %s %d %d %d\n", W * H * 2, ++sequence, name, page + 1, pageCount(),
                 (unsigned long)checksum, useGemini ? "gemini" : "gpt", settings.isKey("gemini-key"),
@@ -533,16 +554,6 @@ void takePhoto() {
   }
   esp_camera_fb_return(frame);
 }
-// The AI request still blocks the loop (P3 moves it to a task), so draw an
-// honest waiting state on the LCD before it starts instead of a frozen screen.
-void showWaiting(const char *label) {
-  if (!screen.pixels) return;
-  render();
-  for (int i = 0; i < W * H; ++i) screen.pixels[i] = (screen.pixels[i] >> 1) & 0x7bef;
-  screen.setFont(&FreeSans18pt7b);
-  body(label, (W - textWidth(label)) / 2, H / 2 + 6, INK);
-  displayPresent(screen.pixels);
-}
 void solveSavedPhoto() {
   activeApp = AppId::AI;
   stopPreview();
@@ -551,22 +562,22 @@ void solveSavedPhoto() {
     view = View::Error;
     return;
   }
-  showWaiting(useGemini ? "Asking Gemini" : "Asking GPT");
-  String key = settings.getString(useGemini ? "gemini-key" : "gpt-key", "");
-  String answer;
-  bool ok = requestImageAnswer(useGemini, key, savedJpeg, jpegBytes, answer);
-  key = "";
-  if (ok) {
-    // Persist only successful real answers. Demo and failed attempts cannot replace them.
-    lastAnswer = answer;
-    lastAnswerGemini = useGemini;
-    if (!saveLastAnswer(lastAnswer, lastAnswerGemini)) Serial.println("STORAGE_ERROR Answer not saved");
-    wrap(lastAnswer.c_str());
-    view = View::Answer;
-  } else {
-    problem = answer;
+  if (aiBusy()) {
+    problem = "The previous request is still finishing. Try again in a moment.";
     view = View::Error;
+    return;
   }
+  String key = settings.getString(useGemini ? "gemini-key" : "gpt-key", "");
+  const bool started = aiStart(useGemini, key, savedJpeg, jpegBytes);
+  key = "";
+  if (!started) {
+    problem = "Could not start the request. Not enough memory.";
+    view = View::Error;
+    return;
+  }
+  busyLabel = useGemini ? "Asking Gemini" : "Asking GPT";
+  pendingGemini = useGemini;
+  view = View::Busy;
 }
 // Shared by mirror taps ('T') and the physical touchscreen.
 char hitTest(int x, int y) {
@@ -585,7 +596,9 @@ char hitTest(int x, int y) {
     if (y >= 220 && y < 260 && x >= 24 && x <= 216) return jpegBytes ? 'q' : 'Q';
   } else if (view == View::History && !lastAnswer.isEmpty() && y >= 54 && y < 126) return 'b';
   else if (view == View::Status && y >= 52 && y < 96) return 'P';
-  else if (view == View::Error) {
+  else if (view == View::Busy) {
+    if (y >= 216 && y < 270 && x >= 50 && x < 190) return 'x';
+  } else if (view == View::Error) {
     if (y < 32 && x < 36) return 'X';
     if (activeApp == AppId::AI && jpegBytes && y >= 200 && y < 238) return 'q';
   }
@@ -620,6 +633,35 @@ void deviceTick() {
   static bool down = false;
   static int startX = 0, startY = 0, lastX = 0, lastY = 0, frames = 0;
   const unsigned long now = millis();
+  // Collect finished requests even if the user has moved to another app.
+  String result;
+  const AiState ai = aiPoll(result);
+  if (ai == AiState::Done) {
+    lastAnswer = result;
+    lastAnswerGemini = pendingGemini;
+    if (!saveLastAnswer(lastAnswer, lastAnswerGemini)) Serial.println("STORAGE_ERROR Answer not saved");
+    if (view == View::Busy) {
+      wrap(lastAnswer.c_str());
+      view = View::Answer;
+      fromTouch = true;
+      sendFrame();
+      fromTouch = false;
+    }
+  } else if (ai == AiState::Failed && view == View::Busy) {
+    problem = result;
+    view = View::Error;
+    fromTouch = true;
+    sendFrame();
+    fromTouch = false;
+  }
+  static unsigned long lastRing = 0;
+  if (view == View::Busy && busyBand && screen.pixels && now - lastRing >= 50) {
+    lastRing = now;
+    memcpy(screen.pixels + BUSY_TOP * W, busyBand, W * (BUSY_BOTTOM - BUSY_TOP) * 2);
+    const int radius = 26 + (int)(6 * sinf(now * 0.0039f));
+    for (int t = 0; t < 3; ++t) screen.drawCircle(120, RING_Y, radius - t, LENS);
+    displayPresent(screen.pixels, BUSY_TOP, BUSY_BOTTOM);
+  }
   if (now - lastPoll >= 15) {
     lastPoll = now;
     int x, y;
@@ -780,6 +822,10 @@ void handleDeviceButton(char command) {
       else view = View::History;
       break;
     case 'q': solveSavedPhoto(); break;
+    case 'x':
+      aiCancel();
+      if (view == View::Busy) view = View::AI;
+      break;
     case 'A':
       activeApp = AppId::AI;
       view = View::AI;
