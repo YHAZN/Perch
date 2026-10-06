@@ -206,16 +206,6 @@
         background: rgba(243, 244, 245, 0.85);
         transform: scale(0.94);
       }
-      /* Whole 4:3 frame, no crop: what you see is exactly what the photo captures.
-   320x240 preview shown at 240x180 is a 0.75x downscale, so it stays sharp. */
-      #viewfinder {
-        position: absolute;
-        left: 0;
-        top: 18px;
-        width: 240px;
-        height: 180px;
-        object-fit: cover;
-      }
       .thumb {
         position: absolute;
         left: 26px;
@@ -629,7 +619,8 @@
         </section>
 
         <section class="screen" id="camera">
-          <img id="viewfinder" src="/captures/worksheet-full-resolution.jpg" alt="" />
+          <img class="bleed" id="viewfinder" src="/captures/worksheet-full-resolution.jpg" alt="" />
+          <div class="scrim-bottom"></div>
           <button class="thumb" data-open="photos" aria-label="Last photo">
             <img src="/captures/camera-test.jpg" alt="" />
           </button>
@@ -795,7 +786,10 @@
           ],
         ],
         camera: [
-          ['Viewfinder', 'The whole camera frame, uncropped, so the photo contains exactly what you framed.'],
+          [
+            'Viewfinder',
+            'Fills the screen. 480×320 preview, so filling is a downscale and stays sharp. The photo captures a little more at the sides.',
+          ],
           ['Shutter (iris)', 'One primary action. Takes a full-resolution photo, no AI, no network.'],
           ['Last-photo thumbnail', 'Confirms the capture landed and opens Photos. Appears only after a capture.'],
           ['Home bar', 'Hint for the system swipe up. Not a button you need to aim at.'],
@@ -1079,7 +1073,7 @@
             const seconds = (performance.now() - liveSince) / 1000;
             liveFrames++;
             if (seconds > 1)
-              status.textContent = `Live from board: ${(liveFrames / seconds).toFixed(1)} FPS (320×240 preview, full frame)`;
+              status.textContent = `Live from board: ${(liveFrames / seconds).toFixed(1)} FPS (480×320 preview, filling the screen)`;
           } catch {
             status.textContent = 'Board bridge unavailable: showing a still photo.';
             img.src = '/captures/worksheet-full-resolution.jpg';

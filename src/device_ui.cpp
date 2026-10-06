@@ -382,6 +382,8 @@ void tuneCamera(char profile) {
 }
 // Lower number = less JPEG compression. 20 showed visible blocks in the viewfinder.
 constexpr int PREVIEW_QUALITY = 12;
+// 480x320 gives enough pixels to fill the 240x284 screen by downscaling, not upscaling.
+constexpr framesize_t PREVIEW_SIZE = FRAMESIZE_HVGA;
 bool previewActive = false;
 framesize_t stillSize = FRAMESIZE_QXGA;
 int stillQuality = 8;
@@ -396,7 +398,8 @@ void stopPreview() {
     if (f) esp_camera_fb_return(f);
   }
 }
-// QVGA 320x240 maps onto the 240x180 viewfinder at exactly 3:4.
+// Scale the preview frame to the 240x180 viewfinder height and centre-crop the width,
+// so any preview aspect ratio (HVGA is 3:2) keeps its proportions.
 bool decodePreview(camera_fb_t *f) {
   size_t needed = f->width * f->height * 2;
   if (needed > rgbCapacity) {
@@ -406,9 +409,10 @@ bool decodePreview(camera_fb_t *f) {
   }
   if (!livePixels) livePixels = (uint16_t *)ps_malloc(240 * 180 * 2);
   if (!rgbScratch || !livePixels || !jpg2rgb565(f->buf, f->len, rgbScratch, JPG_SCALE_NONE)) return false;
+  const int cropWidth = min<int>(f->width, f->height * 240 / 180), left = (f->width - cropWidth) / 2;
   for (int y = 0; y < 180; ++y)
     for (int x = 0; x < 240; ++x) {
-      size_t offset = ((y * f->height / 180) * f->width + x * f->width / 240) * 2;
+      size_t offset = ((y * f->height / 180) * f->width + left + x * cropWidth / 240) * 2;
       livePixels[y * 240 + x] = rgbScratch[offset] | (uint16_t(rgbScratch[offset + 1]) << 8);
     }
   return true;
@@ -419,7 +423,7 @@ bool ensurePreviewMode() {
   if (!sensor) return false;
   stillSize = sensor->status.framesize;
   stillQuality = sensor->status.quality;
-  if (sensor->set_framesize(sensor, FRAMESIZE_QVGA) || sensor->set_quality(sensor, PREVIEW_QUALITY)) {
+  if (sensor->set_framesize(sensor, PREVIEW_SIZE) || sensor->set_quality(sensor, PREVIEW_QUALITY)) {
     sensor->set_framesize(sensor, stillSize);
     sensor->set_quality(sensor, stillQuality);
     return false;
