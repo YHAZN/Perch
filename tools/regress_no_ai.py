@@ -74,5 +74,34 @@ original = base64.b64decode(post('/api/original')['image'].split(',')[-1])
 results.append(
     check('original JPEG valid', original[:2] == b'\xff\xd8' and original[-2:] == b'\xff\xd9', f'{len(original)} bytes')
 )
+# Background AI request, failure path only. GPT must have NO key saved, so the request
+# fails on the device before any network access: this can never become a paid call.
+status = post('/api/screen')
+if status['keys'].get('gpt'):
+    print('SKIP background request test: a GPT key is saved, refusing to risk a paid call')
+else:
+    original_provider = status['provider']
+    post('/api/button/provider/gpt')
+    post('/api/button/ai')
+    start = time.monotonic()
+    r = post('/api/button/retry')
+    results.append(
+        check(
+            'Ask returns immediately (busy or result)',
+            r['view'] in ('busy', 'error'),
+            f"{r['view']} in {time.monotonic() - start:.2f}s",
+        )
+    )
+    deadline = time.monotonic() + 20
+    while r['view'] == 'busy' and time.monotonic() < deadline:
+        time.sleep(0.5)
+        r = post('/api/screen')
+    results.append(check('background request reports its failure', r['view'] == 'error'))
+    save(r, 'regress-ai-no-key.bmp')
+    r = post('/api/touch', {'x': 18, 'y': 17})
+    results.append(check('notice back returns to Ask', r['view'] == 'ai'))
+    post('/api/button/provider/' + original_provider)
+    results.append(check('provider restored', post('/api/screen')['provider'] == original_provider))
+
 post('/api/button/home')
 print(f"{sum(results)}/{len(results)} passed")

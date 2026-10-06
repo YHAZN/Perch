@@ -145,6 +145,12 @@ def exchange(command, capture=False, screen=False):
                     for value in data:
                         checksum = ((checksum ^ value) * 16777619) & 0xFFFFFFFF
                     if len(data) != length or checksum != int(fields[6], 16):
+                        print(
+                            'SCREEN MISMATCH command=%r view=%s got=%d/%d checksum=%08x expected=%s'
+                            % (command[:1], fields[3].decode(), len(data), length, checksum, fields[6].decode()),
+                            flush=True,
+                        )
+                        (ROOT / 'captures' / 'bad-frame.bin').write_bytes(bytes(data))
                         raise RuntimeError('Screen transfer incomplete. Press Refresh screen.')
                     read_transfer_end(connection, b'SCREEN_END', deadline)
                     result = bitmap565(data)
