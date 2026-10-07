@@ -335,6 +335,7 @@ class Handler(BaseHTTPRequestHandler):
             '/api/button/see': 'C',
             '/api/button/control': 'D',
             '/api/button/apps': 'M',
+            '/api/button/remote': 'R',
             '/api/button/provider/gemini': 'G',
             '/api/button/provider/gpt': 'O',
             '/api/button/rotate': 'r',

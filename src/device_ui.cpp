@@ -14,6 +14,7 @@
 #include "camera.h"
 #include "clock.h"
 #include "display.h"
+#include "remote.h"
 #include "storage.h"
 
 namespace {
@@ -26,6 +27,8 @@ constexpr int TOP_ZONE = 22;
 constexpr int ABOVE_HOME = H - HOME_ZONE + 14;
 // Drag this far (or flick) to commit an edge gesture; less springs back.
 constexpr int COMMIT_DRAG = 70;
+// When Ask has earlier answers, its first screen ends this short so the list peeks in.
+constexpr int ASK_PEEK = 26;
 constexpr int MAX_PHOTOS = 12;
 // Left strip: drag right from here to go back one level.
 constexpr int BACK_ZONE = 24;
@@ -38,7 +41,7 @@ const lv_font_t *F_BODY = &lv_font_montserrat_16;
 const lv_font_t *F_LARGE = &lv_font_montserrat_24;
 const lv_font_t *F_CLOCK = &lv_font_montserrat_48;
 
-enum class Screen { Face, Apps, Camera, Ask, Answer, Photos, History, Settings, Model, Notice, Count };
+enum class Screen { Face, Apps, Camera, Ask, Answer, Photos, History, Settings, Model, Notice, Remote, Count };
 Screen current = Screen::Face;
 Screen noticeReturn = Screen::Ask;
 
@@ -93,7 +96,9 @@ lv_obj_t *askPhoto, *askEmpty, *askHint, *askPill, *askButtonLabel, *askOffline,
     *askSheet;
 lv_obj_t *answerScroll, *answerPhoto, *answerLead, *answerBody, *answerMeta;
 lv_obj_t *photosImage, *photosEmpty, *photoCounter;
-lv_obj_t *historyList, *historyEmpty;
+lv_obj_t *historyList, *historyEmpty, *askScroll, *askHero;
+lv_obj_t *remoteStatus, *remoteSlides, *remoteMediaPanel, *remoteModeLabel[2];
+bool remoteMediaMode = false;
 lv_obj_t *modelValue, *wifiValue, *brightSlider, *storageValue, *storageSub;
 lv_obj_t *modelCheck[2], *modelSub[2];
 lv_obj_t *noticeText;
@@ -182,6 +187,26 @@ void hide(lv_obj_t *o, bool hidden) {
 // Set a label only when the text differs: every set redraws the label's area.
 void setText(lv_obj_t *l, const char *t) {
   if (strcmp(lv_label_get_text(l), t) != 0) lv_label_set_text(l, t);
+}
+// Toast: one short line at the top that fades by itself. For confirmations and warnings that
+// do not need a decision ("Saved", "Blurry, hold still"). Never for errors that need action.
+lv_obj_t *toastBox = nullptr, *toastLabel = nullptr;
+void toast(const char *message) {
+  if (!toastBox) return;
+  lv_label_set_text(toastLabel, message);
+  lv_obj_remove_flag(toastBox, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_move_foreground(toastBox);
+  lv_anim_delete(toastBox, nullptr);
+  lv_obj_set_style_opa(toastBox, LV_OPA_COVER, 0);
+  lv_anim_t a;
+  lv_anim_init(&a);
+  lv_anim_set_var(&a, toastBox);
+  lv_anim_set_values(&a, 255, 0);
+  lv_anim_set_delay(&a, 1800);
+  lv_anim_set_duration(&a, 300);
+  lv_anim_set_exec_cb(&a, [](void *o, int32_t v) { lv_obj_set_style_opa((lv_obj_t *)o, v, 0); });
+  lv_anim_set_completed_cb(&a, [](lv_anim_t *x) { lv_obj_add_flag((lv_obj_t *)x->var, LV_OBJ_FLAG_HIDDEN); });
+  lv_anim_start(&a);
 }
 void onClick(lv_obj_t *o, void (*fn)()) {
   lv_obj_add_flag(o, LV_OBJ_FLAG_CLICKABLE);
@@ -612,7 +637,7 @@ void showAnswer(uint32_t id) {
   String body;
   AnswerInfo info;
   if (!loadAnswer(id, body, info)) {
-    notice("That answer could not be read.", Screen::History);
+    notice("That answer could not be read.", Screen::Ask);
     return;
   }
   // Answer first: the first sentence (or line) is set large, the rest as body text.
@@ -743,6 +768,11 @@ void refreshDynamic() {
   }
   setText(storageValue, freeKbCache ? (String(freeKbCache) + " KB free").c_str() : "");
   setText(storageSub, (String(photoCount) + " photos, " + answerCount + " answers on the device").c_str());
+  setText(remoteStatus, !remoteStarted()    ? ""
+                        : remoteConnected() ? "Connected"
+                                            : "Pair \"Perch\" in your computer's Bluetooth");
+  lv_obj_set_style_opa(remoteSlides, remoteConnected() ? LV_OPA_COVER : LV_OPA_40, 0);
+  lv_obj_set_style_opa(remoteMediaPanel, remoteConnected() ? LV_OPA_COVER : LV_OPA_40, 0);
   // Control Center: restyle only when a toggle actually changed.
   const String cc = String(networkEnabled()) + brightnessLevel + cameraOff + useGemini;
   if (cc != ccSignature) {
@@ -784,11 +814,44 @@ void refreshPhotos() { photoCount = listPhotos(photoIds, MAX_PHOTOS); }
 //  1. the viewfinder frame you were looking at becomes the on-screen photo at once;
 //  2. the sensor switches to 2048x1536 JPEG for the real photo;
 //  3. the result is handed to the UI, then saved to flash in the background.
+uint8_t *taskScratch = nullptr;  // owned by the camera task
+size_t taskScratchCapacity = 0;
 struct CaptureResult {
   uint8_t *jpeg = nullptr;
   size_t len = 0;
   String problem;
+  bool blurry = false;
 };
+// Burst capture, keeping the sharpest frame. Sharpness = variance of a Laplacian
+// over the centre of a 1/8-scale decode, where text usually is. Below the floor even the
+// best frame is soft, and the user is told to hold still.
+constexpr int BURST = 3;
+constexpr uint32_t BLUR_FLOOR = 35;
+uint32_t sharpness(const uint8_t *jpeg, size_t len, int width, int height) {
+  const int w = width / 8, h = height / 8;
+  if ((size_t)(w * h * 2) > taskScratchCapacity) {
+    free(taskScratch);
+    taskScratch = (uint8_t *)ps_malloc(w * h * 2);
+    taskScratchCapacity = taskScratch ? w * h * 2 : 0;
+  }
+  if (!taskScratch || !jpg2rgb565(jpeg, len, taskScratch, JPG_SCALE_8X)) return 0;
+  auto gray = [&](int x, int y) {
+    const uint16_t v = taskScratch[(y * w + x) * 2] | (taskScratch[(y * w + x) * 2 + 1] << 8);
+    return (int)(((v >> 11) << 1) + (((v >> 5) & 63)) + ((v & 31) << 1));  // ~luma, 0..187
+  };
+  int64_t sum = 0, sumSq = 0;
+  int n = 0;
+  for (int y = h / 4; y < h * 3 / 4; ++y)
+    for (int x = w / 4; x < w * 3 / 4; ++x) {
+      const int lap = 4 * gray(x, y) - gray(x - 1, y) - gray(x + 1, y) - gray(x, y - 1) - gray(x, y + 1);
+      sum += lap;
+      sumSq += (int64_t)lap * lap;
+      ++n;
+    }
+  if (!n) return 0;
+  const int64_t mean = sum / n;
+  return (uint32_t)(sumSq / n - mean * mean);
+}
 CaptureResult captureOut;
 volatile uint32_t savedPhotoId = 0;
 uint16_t *captureScreen = nullptr;  // filled by the task, swapped with photoPixels on accept
@@ -823,8 +886,6 @@ void saveTask(void *) {
     --savesPending;
   }
 }
-uint8_t *taskScratch = nullptr;
-size_t taskScratchCapacity = 0;
 
 void captureInTask() {
   CaptureResult r;
@@ -846,20 +907,29 @@ void captureInTask() {
       camera_fb_t *f = esp_camera_fb_get();
       if (f) esp_camera_fb_return(f);
     }
-    camera_fb_t *frame = esp_camera_fb_get();
-    if (!frame) {
-      r.problem = "No camera frame. Try again.";
-    } else if (frame->format != PIXFORMAT_JPEG || frame->len < 4 || frame->buf[0] != 0xff || frame->buf[1] != 0xd8 ||
-               frame->buf[frame->len - 2] != 0xff || frame->buf[frame->len - 1] != 0xd9) {
-      r.problem = "Incomplete photo. Try again.";
-    } else {
-      r.jpeg = (uint8_t *)ps_malloc(frame->len);
-      if (r.jpeg) {
-        memcpy(r.jpeg, frame->buf, frame->len);
-        r.len = frame->len;
-      } else r.problem = "Not enough memory for the photo.";
+    uint32_t best = 0;
+    for (int shot = 0; shot < BURST; ++shot) {
+      camera_fb_t *frame = esp_camera_fb_get();
+      if (!frame) continue;
+      const bool valid = frame->format == PIXFORMAT_JPEG && frame->len >= 4 && frame->buf[0] == 0xff &&
+                         frame->buf[1] == 0xd8 && frame->buf[frame->len - 2] == 0xff &&
+                         frame->buf[frame->len - 1] == 0xd9;
+      const uint32_t score = valid ? sharpness(frame->buf, frame->len, frame->width, frame->height) : 0;
+      Serial.printf("BURST %d sharpness=%lu\n", shot, (unsigned long)score);
+      if (valid && (!r.jpeg || score > best)) {
+        uint8_t *copy = (uint8_t *)ps_malloc(frame->len);
+        if (copy) {
+          memcpy(copy, frame->buf, frame->len);
+          free(r.jpeg);
+          r.jpeg = copy;
+          r.len = frame->len;
+          best = score;
+        }
+      }
+      esp_camera_fb_return(frame);
     }
-    if (frame) esp_camera_fb_return(frame);
+    if (!r.jpeg) r.problem = "No usable photo. Try again.";
+    r.blurry = r.jpeg && best < BLUR_FLOOR;
     if (r.jpeg && !haveScreen)
       haveScreen = decodeStoredWith(r.jpeg, r.len, captureScreen, taskScratch, taskScratchCapacity);
   }
@@ -923,6 +993,7 @@ bool acceptCapture(String &problem) {
     problem = captureOut.problem;
     return false;
   }
+  if (captureOut.blurry) toast("Blurry. Hold still and try again");
   free(savedJpeg);
   savedJpeg = captureOut.jpeg;
   jpegBytes = jpegCapacity = captureOut.len;
@@ -1039,10 +1110,12 @@ void rebuildHistory() {
   if (!historyDirty) return;
   historyDirty = false;
   lv_obj_clean(historyList);
-  hide(historyEmpty, answerCount > 0);
-  lv_obj_t *t = text(historyList, "History", F_LARGE, INK);
+  // With earlier answers, the question screen ends a little short so the list peeks in.
+  lv_obj_set_height(askHero, answerCount ? H - ASK_PEEK : H);
+  lv_obj_t *t = text(historyList, answerCount ? "Earlier" : "", F_SMALL, MIST);
   lv_obj_set_style_margin_left(t, 22, 0);
-  lv_obj_set_style_margin_bottom(t, 6, 0);
+  lv_obj_set_style_margin_top(t, 6, 0);
+  lv_obj_set_style_margin_bottom(t, 4, 0);
   for (int i = 0; i < answerCount; ++i) {
     String body;
     AnswerInfo info;
@@ -1088,9 +1161,10 @@ void onEnter(Screen s) {
     hide(photosImage, photoCount == 0);
     hide(photosEmpty, photoCount != 0);
     showPhoto(0);
-  } else if (s == Screen::History) {
+  } else if (s == Screen::Ask) {
     rebuildHistory();
-    lv_obj_scroll_to_y(historyList, 0, LV_ANIM_OFF);
+  } else if (s == Screen::Remote) {
+    remoteBegin();
   } else if (s == Screen::Apps) {
     lv_obj_scroll_to_y(layer(Screen::Apps), 0, LV_ANIM_OFF);
   }
@@ -1236,17 +1310,14 @@ void buildApps() {
       s, 190, 62, "Photos", ICON_BG, [] { show(Screen::Photos); },
       [](lv_obj_t *b) { glyphSymbol(b, LV_SYMBOL_IMAGE, INK); });
   appIcon(
-      s, 85, 128, "History", ICON_BG, [] { show(Screen::History); },
-      [](lv_obj_t *b) { glyphSymbol(b, LV_SYMBOL_LIST, INK); });
+      s, 85, 128, "Remote", ICON_BG, [] { show(Screen::Remote); },
+      [](lv_obj_t *b) { glyphSymbol(b, LV_SYMBOL_KEYBOARD, INK); });
   appIcon(
       s, 155, 128, "Settings", ICON_BG, [] { show(Screen::Settings); },
       [](lv_obj_t *b) { glyphSymbol(b, LV_SYMBOL_SETTINGS, INK); });
   appIcon(
-      s, 50, 194, "Gestures", ICON_DIM, [] { planned("Gestures"); },
+      s, 120, 194, "Gestures", ICON_DIM, [] { planned("Gestures"); },
       [](lv_obj_t *b) { glyphSymbol(b, LV_SYMBOL_EYE_OPEN, MIST); });
-  appIcon(
-      s, 120, 194, "Remote", ICON_DIM, [] { planned("Remote"); },
-      [](lv_obj_t *b) { glyphSymbol(b, LV_SYMBOL_KEYBOARD, MIST); });
   lv_obj_t *spacer = plain(s);  // room to scroll, as more apps arrive
   lv_obj_set_size(spacer, 1, 1);
   lv_obj_set_pos(spacer, 0, 330);
@@ -1294,18 +1365,34 @@ void buildCamera() {
   lv_obj_remove_flag(flash, LV_OBJ_FLAG_CLICKABLE);
 }
 
+// One app for asking and for what you asked before: the question is the first screen,
+// earlier answers continue below it (scroll down).
 void buildAsk() {
   lv_obj_t *s = scr[(int)Screen::Ask] = screenBase();
-  askPhoto = lv_image_create(s);
+  askScroll = plain(s);
+  lv_obj_set_size(askScroll, W, H);
+  lv_obj_add_flag(askScroll, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_scroll_dir(askScroll, LV_DIR_VER);
+  lv_obj_set_scrollbar_mode(askScroll, LV_SCROLLBAR_MODE_OFF);
+  lv_obj_set_flex_flow(askScroll, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_style_pad_bottom(askScroll, 56, 0);
+  askHero = plain(askScroll);
+  lv_obj_set_size(askHero, W, H);
+  lv_obj_set_style_clip_corner(askHero, false, 0);
+  lv_obj_t *hero = askHero;
+  askPhoto = lv_image_create(hero);
   lv_image_set_src(askPhoto, &photoDsc);
-  askEmpty = text(s, "No photo yet.", F_BODY, MIST);
+  askEmpty = text(hero, "No photo yet.", F_BODY, MIST);
   lv_obj_align(askEmpty, LV_ALIGN_CENTER, 0, -30);
-  scrimBottom(s, 120);
-  askOffline = text(s, "Offline", F_SMALL, INK);
+  scrimBottom(hero, 120);
+  askOffline = text(hero, "Offline", F_SMALL, INK);
   lv_obj_align(askOffline, LV_ALIGN_TOP_MID, 0, 26);
-  askHint = text(s, "Hold for a new photo", F_SMALL, MIST);
+  askHint = text(hero, "Hold for a new photo", F_SMALL, MIST);
   lv_obj_align(askHint, LV_ALIGN_BOTTOM_MID, 0, -ABOVE_HOME - 56);
-  askPill = pressedFeedback(plain(s));
+  historyList = plain(askScroll);
+  lv_obj_set_size(historyList, W, LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(historyList, LV_FLEX_FLOW_COLUMN);
+  askPill = pressedFeedback(plain(hero));
   lv_obj_set_size(askPill, 200, 46);
   lv_obj_align(askPill, LV_ALIGN_BOTTOM_MID, 0, -ABOVE_HOME);
   lv_obj_set_style_radius(askPill, 23, 0);
@@ -1319,10 +1406,10 @@ void buildAsk() {
     if (jpegBytes) startAsk();
     else captureAndAsk();
   });
-  // Long-press anywhere: new photo, then ask. Replaces the tiny corner icon of the old UI.
-  lv_obj_add_flag(s, LV_OBJ_FLAG_CLICKABLE);
+  // Long-press the photo: new photo, then ask. Replaces the tiny corner icon of the old UI.
+  lv_obj_add_flag(askHero, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_event_cb(
-      s,
+      askHero,
       [](lv_event_t *) {
         if (lv_obj_has_flag(busy, LV_OBJ_FLAG_HIDDEN) && !cameraOff) lv_obj_remove_flag(askSheet, LV_OBJ_FLAG_HIDDEN);
       },
@@ -1455,17 +1542,80 @@ lv_obj_t *row(lv_obj_t *s, int y, const char *label, lv_obj_t **value, int heigh
 }
 
 void buildHistory() {
-  lv_obj_t *s = scr[(int)Screen::History] = screenBase();
-  historyList = plain(s);
-  lv_obj_set_size(historyList, W, H);
-  lv_obj_add_flag(historyList, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_set_scroll_dir(historyList, LV_DIR_VER);
-  lv_obj_set_scrollbar_mode(historyList, LV_SCROLLBAR_MODE_OFF);
-  lv_obj_set_flex_flow(historyList, LV_FLEX_FLOW_COLUMN);
-  lv_obj_set_style_pad_top(historyList, 18, 0);
-  lv_obj_set_style_pad_bottom(historyList, 56, 0);
-  historyEmpty = text(s, "No answers yet.", F_BODY, MIST);
-  lv_obj_align(historyEmpty, LV_ALIGN_CENTER, 0, 0);
+  // Earlier answers live inside Ask now; this layer stays empty.
+  scr[(int)Screen::History] = screenBase();
+}
+
+// ---------- Remote: Bluetooth keyboard for slides and media ----------
+lv_obj_t *remoteZone(lv_obj_t *parent, int x, int w, const char *symbol, void (*fn)()) {
+  lv_obj_t *z = plain(parent);
+  lv_obj_set_size(z, w, 146);
+  lv_obj_set_pos(z, x, 64);
+  lv_obj_set_style_radius(z, 24, 0);
+  lv_obj_set_style_bg_color(z, GRAPHITE, 0);
+  lv_obj_set_style_bg_opa(z, LV_OPA_COVER, 0);
+  lv_obj_set_style_bg_color(z, ICON_BG, LV_STATE_PRESSED);
+  lv_obj_center(text(z, symbol, F_LARGE, INK));
+  onClick(z, fn);
+  return z;
+}
+lv_obj_t *remoteButton(lv_obj_t *parent, int x, int y, int size, const char *symbol, void (*fn)()) {
+  lv_obj_t *b = circle(parent, size, ICON_BG, 0, ICON_BG, LV_OPA_COVER);
+  lv_obj_set_pos(b, x - size / 2, y - size / 2);
+  lv_obj_set_style_bg_color(b, INK, LV_STATE_PRESSED);
+  lv_obj_t *l = text(b, symbol, size > 56 ? F_LARGE : F_BODY, INK);
+  lv_obj_set_style_text_color(l, VOID_, LV_STATE_PRESSED);
+  lv_obj_center(l);
+  onClick(b, fn);
+  return b;
+}
+void setRemoteMode(bool media) {
+  remoteMediaMode = media;
+  hide(remoteSlides, media);
+  hide(remoteMediaPanel, !media);
+  lv_obj_set_style_text_color(remoteModeLabel[0], media ? MIST : INK, 0);
+  lv_obj_set_style_text_color(remoteModeLabel[1], media ? INK : MIST, 0);
+}
+void buildRemote() {
+  lv_obj_t *s = scr[(int)Screen::Remote] = screenBase();
+  remoteStatus = text(s, "", F_SMALL, MIST);
+  lv_obj_set_width(remoteStatus, W - 70);
+  lv_obj_set_style_text_align(remoteStatus, LV_TEXT_ALIGN_CENTER, 0);
+  lv_label_set_long_mode(remoteStatus, LV_LABEL_LONG_WRAP);
+  lv_obj_align(remoteStatus, LV_ALIGN_TOP_MID, 0, 14);
+  // Slides: two big halves. Previous on the left, next on the right.
+  remoteSlides = plain(s);
+  lv_obj_set_size(remoteSlides, W, 220);
+  remoteZone(remoteSlides, 14, 102, LV_SYMBOL_LEFT, [] { remoteKey(RemoteKey::Left); });
+  remoteZone(remoteSlides, 124, 102, LV_SYMBOL_RIGHT, [] { remoteKey(RemoteKey::Right); });
+  // Media: play/pause in the middle, tracks either side, volume below.
+  remoteMediaPanel = plain(s);
+  lv_obj_set_size(remoteMediaPanel, W, 220);
+  remoteButton(remoteMediaPanel, 120, 112, 72, LV_SYMBOL_PLAY, [] { remoteMedia(RemoteMedia::PlayPause); });
+  remoteButton(remoteMediaPanel, 46, 112, 52, LV_SYMBOL_PREV, [] { remoteMedia(RemoteMedia::Previous); });
+  remoteButton(remoteMediaPanel, 194, 112, 52, LV_SYMBOL_NEXT, [] { remoteMedia(RemoteMedia::Next); });
+  remoteButton(remoteMediaPanel, 86, 180, 44, LV_SYMBOL_MINUS, [] { remoteMedia(RemoteMedia::VolumeDown); });
+  remoteButton(remoteMediaPanel, 154, 180, 44, LV_SYMBOL_PLUS, [] { remoteMedia(RemoteMedia::VolumeUp); });
+  // Mode switch: one quiet segmented pill.
+  lv_obj_t *mode = plain(s);
+  lv_obj_set_size(mode, 170, 36);
+  lv_obj_align(mode, LV_ALIGN_BOTTOM_MID, 0, -ABOVE_HOME + 6);
+  lv_obj_set_style_radius(mode, 18, 0);
+  lv_obj_set_style_bg_color(mode, GRAPHITE, 0);
+  lv_obj_set_style_bg_opa(mode, LV_OPA_COVER, 0);
+  const char *names[2] = {"Slides", "Media"};
+  for (int i = 0; i < 2; ++i) {
+    lv_obj_t *half = pressedFeedback(plain(mode));
+    lv_obj_set_size(half, 85, 36);
+    lv_obj_set_pos(half, i * 85, 0);
+    remoteModeLabel[i] = text(half, names[i], F_BODY, MIST);
+    lv_obj_center(remoteModeLabel[i]);
+    lv_obj_add_flag(half, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(
+        half, [](lv_event_t *e) { setRemoteMode(lv_event_get_user_data(e) != nullptr); }, LV_EVENT_CLICKED,
+        i ? (void *)1 : nullptr);
+  }
+  setRemoteMode(false);
 }
 
 void buildSettings() {
@@ -1700,6 +1850,7 @@ const char *screenName() {
     case Screen::Answer: return "answer";
     case Screen::Photos: return "photo";
     case Screen::History: return "history";
+    case Screen::Remote: return "remote";
     case Screen::Settings: return "status";
     case Screen::Model: return "model";
     default: return "error";
@@ -1909,6 +2060,7 @@ void initDeviceUi() {
   buildSettings();
   buildModel();
   buildNotice();
+  buildRemote();
   buildControl();
   // Back arrow for screens two levels deep (Answer from History, Model from Settings...).
   backButton = plain(lv_layer_top());
@@ -1953,6 +2105,17 @@ void initDeviceUi() {
         },
         LV_EVENT_CLICKED, nullptr);
   }
+  toastBox = plain(lv_layer_top());
+  lv_obj_set_size(toastBox, LV_SIZE_CONTENT, 30);
+  lv_obj_set_style_pad_hor(toastBox, 14, 0);
+  lv_obj_set_style_radius(toastBox, 15, 0);
+  lv_obj_set_style_bg_color(toastBox, GRAPHITE, 0);
+  lv_obj_set_style_bg_opa(toastBox, 240, 0);
+  lv_obj_align(toastBox, LV_ALIGN_TOP_MID, 0, 22);
+  toastLabel = text(toastBox, "", F_SMALL, INK);
+  lv_obj_center(toastLabel);
+  lv_obj_add_flag(toastBox, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_remove_flag(toastBox, LV_OBJ_FLAG_CLICKABLE);
   homeBar = plain(lv_layer_top());
   lv_obj_set_size(homeBar, 40, 4);
   lv_obj_set_style_radius(homeBar, 2, 0);
@@ -2074,7 +2237,7 @@ void handleDeviceButton(char command) {
     Serial.printf("PHOTO_SWIPE %lums (of %d photos)\n", (unsigned long)((micros() - t) / 1000), photoCount);
     goBack();
     historyDirty = true;
-    run("open_history", [] { show(Screen::History); });
+    run("open_ask", [] { show(Screen::Ask); });
     if (answerCount) {
       t = micros();
       showAnswer(answerIds[0]);
@@ -2131,7 +2294,11 @@ void handleDeviceButton(char command) {
     case 'C': show(Screen::Camera); break;
     case 'A': show(Screen::Ask); break;
     case 'p': show(Screen::Photos); break;
-    case 'H': show(Screen::History); break;
+    case 'H':
+      show(Screen::Ask);
+      if (answerCount) lv_obj_scroll_to_y(askScroll, H - ASK_PEEK - 30, LV_ANIM_OFF);
+      break;
+    case 'R': show(Screen::Remote); break;
     case 'i': show(Screen::Settings); break;
     case 'b':
       if (answerCount) showAnswer(answerIds[0]);
