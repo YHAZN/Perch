@@ -56,6 +56,7 @@ enum class Screen {
   Remote,
   Wifi,
   Password,
+  Gestures,
   Count
 };
 Screen current = Screen::Face;
@@ -348,6 +349,81 @@ volatile bool previewWanted = false;
 volatile uint32_t framesConverted = 0, convertMicros = 0;
 void convertPreview(const camera_fb_t *f, uint16_t *out, bool shade = true);
 void captureInTask();
+// Gestures without a PC or a model: a 32x24 brightness grid of each preview frame.
+//  - background: learned while the area is clear (and slowly afterwards where no hand is)
+//  - hand present: enough cells differ from the background
+//  - arm gate: hand present and still for 300 ms -> armed for 3 s (avoids the "Midas touch")
+//  - swipe: while armed, the centre of motion travels > 40% of the width within 500 ms
+constexpr int GX = 32, GY = 24, GCELLS = GX * GY;
+volatile bool gestureActive = false;
+volatile int gestureCalibrating = 0;  // frames left to learn the background
+volatile int gestureState = 0;        // 0 no hand, 1 hand, 2 armed
+volatile int gestureSwipe = 0;        // -1 left, +1 right (consumed by the UI)
+volatile uint32_t gestureSeq = 0;
+int16_t gBackground[GCELLS], gPrevious[GCELLS];
+void analyseGesture(const camera_fb_t *f) {
+  if (f->format != PIXFORMAT_RGB565) return;
+  const int sw = f->width, sh = f->height;
+  static int16_t lum[GCELLS];
+  for (int gy = 0; gy < GY; ++gy)
+    for (int gx = 0; gx < GX; ++gx) {
+      const uint8_t *px = f->buf + ((gy * sh / GY + sh / GY / 2) * sw + gx * sw / GX + sw / GX / 2) * 2;
+      const uint16_t v = (px[0] << 8) | px[1];
+      lum[gy * GX + gx] = ((v >> 11) << 1) + ((v >> 5) & 63) + ((v & 31) << 1);
+    }
+  const uint32_t now = millis();
+  if (gestureCalibrating > 0) {
+    for (int i = 0; i < GCELLS; ++i)
+      gBackground[i] = gestureCalibrating == 12 ? lum[i] : (gBackground[i] * 3 + lum[i]) / 4;
+    memcpy(gPrevious, lum, sizeof(lum));
+    --gestureCalibrating;
+    return;
+  }
+  int foreground = 0, motion = 0, motionX = 0;
+  for (int i = 0; i < GCELLS; ++i) {
+    const bool fg = abs(lum[i] - gBackground[i]) > 18;
+    foreground += fg;
+    if (abs(lum[i] - gPrevious[i]) > 15) {
+      ++motion;
+      motionX += i % GX;
+    }
+    // Learn slowly where there is no hand, so lighting drift does not look like a hand.
+    if (!fg) gBackground[i] += (lum[i] - gBackground[i]) / 16;
+  }
+  memcpy(gPrevious, lum, sizeof(lum));
+  static uint32_t stillSince = 0, armedUntil = 0, cooldownUntil = 0, trackStart = 0;
+  static int trackStartX = -1, lastX = -1;
+  const bool hand = foreground > GCELLS / 20 && foreground < GCELLS * 6 / 10;
+  const bool still = motion < GCELLS / 33;
+  if (hand && still) {
+    if (!stillSince) stillSince = now;
+    if (now - stillSince > 300) armedUntil = now + 3000;
+  } else {
+    stillSince = 0;
+  }
+  const bool armed = now < armedUntil;
+  if (armed && motion > GCELLS / 25 && now > cooldownUntil) {
+    const int x = motionX / motion;
+    if (trackStartX < 0 || now - trackStart > 500) {
+      trackStartX = x;
+      trackStart = now;
+    }
+    lastX = x;
+    if (abs(lastX - trackStartX) > GX * 4 / 10) {
+      gestureSwipe = lastX > trackStartX ? 1 : -1;
+      ++gestureSeq;
+      Serial.printf("GESTURE swipe=%d\n", gestureSwipe);
+      cooldownUntil = now + 700;
+      armedUntil = now + 1500;  // stay armed briefly for chains
+      trackStartX = -1;
+    }
+  } else if (!armed || motion <= GCELLS / 25) {
+    trackStartX = -1;
+  }
+  const int state = armed ? 2 : hand ? 1 : 0;
+  if (state != gestureState) Serial.printf("GESTURE state=%d fg=%d motion=%d\n", state, foreground, motion);
+  gestureState = state;
+}
 volatile bool captureRequested = false;
 void previewTask(void *) {
   for (;;) {
@@ -372,6 +448,7 @@ void previewTask(void *) {
       camera_fb_t *f = esp_camera_fb_get();
       if (f) {
         const uint32_t t = micros();
+        if (gestureActive) analyseGesture(f);
         convertPreview(f, liveBuf[back]);
         convertMicros += micros() - t;
         esp_camera_fb_return(f);
@@ -1298,6 +1375,9 @@ void onEnter(Screen s) {
     remoteBegin();
   } else if (s == Screen::Wifi) {
     startScan();
+  } else if (s == Screen::Gestures) {
+    remoteBegin();
+    gestureCalibrating = 12;  // ~1 s of frames to learn the empty scene
   } else if (s == Screen::Apps) {
     lv_obj_scroll_to_y(layer(Screen::Apps), 0, LV_ANIM_OFF);
   }
@@ -1450,8 +1530,8 @@ void buildApps() {
       s, 155, 128, "Settings", ICON_BG, [] { show(Screen::Settings); },
       [](lv_obj_t *b) { glyphSymbol(b, LV_SYMBOL_SETTINGS, INK); });
   appIcon(
-      s, 120, 194, "Gestures", ICON_DIM, [] { planned("Gestures"); },
-      [](lv_obj_t *b) { glyphSymbol(b, LV_SYMBOL_EYE_OPEN, MIST); });
+      s, 120, 194, "Gestures", ICON_BG, [] { show(Screen::Gestures); },
+      [](lv_obj_t *b) { glyphSymbol(b, LV_SYMBOL_EYE_OPEN, INK); });
   lv_obj_t *spacer = plain(s);  // room to scroll, as more apps arrive
   lv_obj_set_size(spacer, 1, 1);
   lv_obj_set_pos(spacer, 0, 330);
@@ -1966,6 +2046,72 @@ void buildPassword() {
       LV_EVENT_READY, nullptr);
 }
 
+// ---------- Gestures: wave to change slides on a paired computer ----------
+lv_obj_t *gestureView, *gestureRing, *gestureLabel, *gestureSub, *gestureArrow, *gestureFlipLabel;
+bool gestureFlip = false;
+void buildGestures() {
+  lv_obj_t *s = scr[(int)Screen::Gestures] = screenBase();
+  // The camera view stays dim: it is there to show the area Perch watches, not to read.
+  gestureView = lv_image_create(s);
+  lv_image_set_src(gestureView, &liveDsc);
+  lv_obj_set_style_image_opa(gestureView, LV_OPA_40, 0);
+  gestureRing = circle(s, 80, MIST, 3, VOID_, LV_OPA_TRANSP);
+  lv_obj_align(gestureRing, LV_ALIGN_CENTER, 0, -46);
+  gestureArrow = text(gestureRing, "", F_LARGE, INK);
+  lv_obj_center(gestureArrow);
+  gestureLabel = text(s, "", F_BODY, INK);
+  lv_obj_align(gestureLabel, LV_ALIGN_CENTER, 0, 10);
+  gestureSub = text(s, "", F_SMALL, MIST);
+  lv_obj_set_width(gestureSub, W - 24);
+  lv_obj_set_style_text_align(gestureSub, LV_TEXT_ALIGN_CENTER, 0);
+  lv_label_set_long_mode(gestureSub, LV_LABEL_LONG_WRAP);
+  lv_obj_align(gestureSub, LV_ALIGN_CENTER, 0, 32);
+  lv_obj_t *flip = pill(s, "Reverse", 110);
+  lv_obj_set_height(flip, 34);
+  gestureFlipLabel = lv_obj_get_child(flip, 0);
+  lv_obj_align(flip, LV_ALIGN_BOTTOM_MID, 0, -ABOVE_HOME + 10);
+  onClick(flip, [] {
+    gestureFlip = !gestureFlip;
+    settings.putBool("gesture-flip", gestureFlip);
+    toast(gestureFlip ? "Directions reversed" : "Directions normal");
+  });
+}
+void renderGestures() {
+  static int shownState = -1;
+  static uint32_t seenSeq = 0, previewUntil = 0;
+  const uint32_t now = millis();
+  if (gestureSeq != seenSeq) {
+    seenSeq = gestureSeq;
+    const int dir = gestureSwipe * (gestureFlip ? -1 : 1);
+    // Ghost preview first, then the key: you always see what is about to happen.
+    setText(gestureArrow, dir > 0 ? LV_SYMBOL_RIGHT : LV_SYMBOL_LEFT);
+    setText(gestureLabel, dir > 0 ? "Next slide" : "Previous slide");
+    lv_obj_set_style_border_color(gestureRing, LENS, 0);
+    lv_obj_set_style_bg_color(gestureRing, LENS, 0);
+    lv_obj_set_style_bg_opa(gestureRing, LV_OPA_30, 0);
+    lv_refr_now(display);
+    if (remoteConnected()) remoteKey(dir > 0 ? RemoteKey::Right : RemoteKey::Left);
+    previewUntil = now + 600;
+    shownState = -1;
+    return;
+  }
+  if (now < previewUntil) return;
+  const int state = gestureCalibrating > 0 ? 3 : gestureState;
+  if (state == shownState) return;
+  shownState = state;
+  lv_obj_set_style_bg_opa(gestureRing, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_color(gestureRing, state == 2 ? LENS : MIST, 0);
+  setText(gestureArrow, state == 2 ? LV_SYMBOL_LEFT "  " LV_SYMBOL_RIGHT : "");
+  setText(gestureLabel, state == 3   ? "Learning the scene"
+                        : state == 2 ? "Ready"
+                        : state == 1 ? "Hold still"
+                                     : "Show your hand");
+  setText(gestureSub, state == 3           ? "Keep your hand out of view"
+                      : state == 2         ? "Swipe left or right"
+                      : !remoteConnected() ? "Pair a computer in Remote first"
+                                           : "Hold your hand still to start");
+}
+
 // ---------- Remote: Bluetooth keyboard for slides and media ----------
 lv_obj_t *remoteZone(lv_obj_t *parent, int x, int w, const char *symbol, void (*fn)()) {
   lv_obj_t *z = plain(parent);
@@ -2281,6 +2427,7 @@ const char *screenName() {
     case Screen::History: return "history";
     case Screen::Remote: return "remote";
     case Screen::Wifi: return "wifi";
+    case Screen::Gestures: return "gestures";
     case Screen::Password: return "password";
     case Screen::Settings: return "status";
     case Screen::Model: return "model";
@@ -2417,6 +2564,7 @@ void initDeviceUi() {
   useGemini = settings.getBool("gemini", true);
   cameraOff = settings.getBool("camera-off", false);
   brightnessLevel = settings.getUChar("bright", 0) % 3;
+  gestureFlip = settings.getBool("gesture-flip", false);
   if (!storageBegin()) Serial.println("STORAGE_ERROR Flash filesystem unavailable");
   framebuffer = (uint16_t *)ps_malloc(W * H * 2);
   for (auto &b : liveBuf) b = (uint16_t *)ps_calloc(W * H, 2);
@@ -2493,6 +2641,7 @@ void initDeviceUi() {
   buildModel();
   buildNotice();
   buildRemote();
+  buildGestures();
   buildWifi();
   buildPassword();
   buildControl();
@@ -2734,6 +2883,7 @@ void handleDeviceButton(char command) {
       break;
     case 'R': show(Screen::Remote); break;
     case 'W': show(Screen::Wifi); break;
+    case 'E': show(Screen::Gestures); break;
     case 'L': {
       if (!micStart()) {
         Serial.println("MIC_ERROR start failed");
@@ -2925,11 +3075,14 @@ void deviceTick() {
   // Live viewfinder: the camera task converts frames; the UI shows the newest one.
   static unsigned long lastFpsReport = 0;
   static uint32_t shown = 0, convertedAtReport = 0;
-  if (current == Screen::Camera && !cameraOff && !ccOpen && now - lastSerialMs > 3000) {
+  const bool wantsCamera = current == Screen::Camera || current == Screen::Gestures;
+  gestureActive = current == Screen::Gestures && !ccOpen;
+  if (current == Screen::Gestures) renderGestures();
+  if (wantsCamera && !cameraOff && !ccOpen && now - lastSerialMs > 3000) {
     if (!previewWanted) ensurePreviewMode();
     if (takeLiveFrame()) {
       lv_image_cache_drop(&liveDsc);
-      lv_obj_invalidate(viewfinder);
+      lv_obj_invalidate(current == Screen::Gestures ? gestureView : viewfinder);
       ++shown;
     }
     if (now - lastFpsReport >= 5000) {
@@ -2946,7 +3099,7 @@ void deviceTick() {
   } else {
     lastFpsReport = 0;
     shown = 0;
-    if (current != Screen::Camera || cameraOff) stopPreview();
+    if (!wantsCamera || cameraOff) stopPreview();
   }
   lv_timer_handler();
 }
