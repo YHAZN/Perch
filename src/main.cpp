@@ -46,9 +46,13 @@ void capture(bool sendImage = false) {
     Serial.println("Camera unavailable; check initialization report.");
     return;
   }
-  // Discard the queued frame so the command captures the current scene.
+  // Discard the queued frame so the command captures the current scene; focus like a photo.
   camera_fb_t *queued = esp_camera_fb_get();
   if (queued) esp_camera_fb_return(queued);
+  if (cameraFocus(2000)) {
+    queued = esp_camera_fb_get();
+    if (queued) esp_camera_fb_return(queued);
+  }
   camera_fb_t *frame = esp_camera_fb_get();
   if (!frame) {
     Serial.println("CAPTURE FAILED: no frame returned.");
@@ -64,6 +68,7 @@ void capture(bool sendImage = false) {
     Serial.printf("Capture: %ux%u | %u bytes | JPEG markers: %s\n", static_cast<unsigned>(frame->width),
                   static_cast<unsigned>(frame->height), static_cast<unsigned>(frame->len), jpeg ? "PASS" : "FAIL");
   }
+  cameraReport();
   esp_camera_fb_return(frame);
   cameraSetMode(CameraMode::Off);  // do not leave the sensor streaming (heat)
 }

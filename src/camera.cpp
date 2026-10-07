@@ -2,10 +2,48 @@
 #include <Arduino.h>
 #include <esp_camera.h>
 #include <esp_log.h>
+#include <ESP32_OV5640_AF.h>
 
 namespace {
 CameraMode mode = CameraMode::Off;
 uint16_t sensorPid = 0;  // known after the first start
+OV5640 autofocus;
+int stillGainCeiling = GAINCEILING_8X;
+int stillAeLevel = 1;         // photos aim a little brighter than the sensor default
+int stillExposureFrames = 2;  // night mode may stretch exposure to this many frame times
+
+// OV5640 autofocus: Omnivision's focus firmware runs on the sensor's own MCU and is lost on
+// power-up, so it is loaded once (~4 KB over SCCB) and reloaded if the sensor reports it
+// missing. Status register 0x3029: 0x7F no firmware, 0x70 idle, 0x10 focused.
+bool afLoaded = false;  // since this boot (the sensor loses it only on power loss)
+bool lensHeld = false;  // the live view focused and the lens was frozen for the photo
+bool afLoad(sensor_t *s) {
+  const uint8_t status = s->get_reg(s, 0x3029, 0xFF);
+  // Before loading, the status register can read anything; only trust it after a load.
+  if (afLoaded && status != 0x7F && status != 0x7E) return true;
+  if (!autofocus.start(s)) {
+    Serial.println("CAMERA af: sensor id check failed");
+    return false;
+  }
+  const uint32_t t = millis();
+  const uint8_t rc = autofocus.focusInit();
+  afLoaded = rc == 0;
+  Serial.printf("CAMERA af firmware %s in %lums (status was %02X, now %02X)\n", afLoaded ? "loaded" : "FAILED",
+                (unsigned long)(millis() - t), status, s->get_reg(s, 0x3029, 0xFF));
+  return afLoaded;
+}
+// Send one AF command; the firmware clears 0x3023 when it has finished acting on it
+// (for a single focus, that is when focusing is done).
+bool afCommand(sensor_t *s, uint8_t command, uint32_t timeoutMs) {
+  s->set_reg(s, 0x3023, 0xFF, 0x01);
+  s->set_reg(s, 0x3022, 0xFF, command);
+  const uint32_t t = millis();
+  while (millis() - t < timeoutMs) {
+    if (s->get_reg(s, 0x3023, 0xFF) == 0x00) return true;
+    delay(10);
+  }
+  return false;
+}
 
 camera_config_t baseConfig() {
   // Seeed XIAO ESP32-S3 Sense camera connector mapping.
@@ -38,6 +76,17 @@ CameraMode cameraMode() { return mode; }
 
 bool cameraSetMode(CameraMode next) {
   if (next == mode) return true;
+  lensHeld = false;
+  if (mode == CameraMode::Preview && next == CameraMode::Still && afLoaded) {
+    // Continuous focus has been tracking the scene at ~27 FPS; freeze the lens where it is.
+    // A full-size focus search would take seconds (a few frames per second at 2048x1536).
+    sensor_t *s = esp_camera_sensor_get();
+    const uint8_t status = s ? s->get_reg(s, 0x3029, 0xFF) : 0;
+    lensHeld = s && (status == 0x10 || status == 0x20);
+    if (lensHeld && !afCommand(s, 0x06, 1000))
+      Serial.println("CAMERA focus pause not acknowledged");  // keep lens position
+    Serial.printf("CAMERA focus %s from live view (status %02X)\n", lensHeld ? "held" : "not locked", status);
+  }
   if (mode != CameraMode::Off) esp_camera_deinit();
   mode = CameraMode::Off;
   if (next == CameraMode::Off) return true;
@@ -78,15 +127,20 @@ bool cameraSetMode(CameraMode next) {
   // Correct the mirrored worksheet in the sensor, so photos and preview match the scene.
   sensor->set_hmirror(sensor, !sensor->status.hmirror);
   if (next == CameraMode::Still && sensor->id.PID == OV5640_PID) {
-    // No reset line on this board: the preview's night mode survives a driver restart and
-    // stretches full-size frames past the driver's timeout. Restore normal exposure limits.
-    sensor->set_reg(sensor, 0x3A00, 0x04, 0x00);
+    // No reset line: preview settings survive a driver restart, so photos set their own.
+    // Low gain plus a longer exposure gives less noise (the purple speckle and column lines
+    // get worse with gain); a burst of three then keeps the sharpest against hand shake.
     const int vts = (sensor->get_reg(sensor, 0x380E, 0xFF) << 8) | sensor->get_reg(sensor, 0x380F, 0xFF);
-    sensor->set_reg(sensor, 0x3A02, 0xFF, vts >> 8);
-    sensor->set_reg(sensor, 0x3A03, 0xFF, vts & 0xFF);
-    sensor->set_reg(sensor, 0x3A14, 0xFF, vts >> 8);
-    sensor->set_reg(sensor, 0x3A15, 0xFF, vts & 0xFF);
+    const int maxLines = vts * stillExposureFrames;
+    sensor->set_reg(sensor, 0x3A02, 0xFF, maxLines >> 8);
+    sensor->set_reg(sensor, 0x3A03, 0xFF, maxLines & 0xFF);
+    sensor->set_reg(sensor, 0x3A14, 0xFF, maxLines >> 8);
+    sensor->set_reg(sensor, 0x3A15, 0xFF, maxLines & 0xFF);
+    sensor->set_reg(sensor, 0x3A00, 0x04, stillExposureFrames > 1 ? 0x04 : 0x00);  // night mode
+    sensor->set_gainceiling(sensor, (gainceiling_t)stillGainCeiling);
+    sensor->set_ae_level(sensor, stillAeLevel);
   }
+  if (next == CameraMode::Preview && sensor->id.PID == OV5640_PID) sensor->set_ae_level(sensor, 0);
   if (next == CameraMode::Preview) {
     // Indoors, auto-exposure stretches each frame to gather light and the viewfinder drops
     // to ~10 FPS. For framing, prefer more gain (a little noise) over long exposures.
@@ -106,6 +160,44 @@ bool cameraSetMode(CameraMode next) {
       sensor->set_reg(sensor, 0x3A00, 0x04, 0x04);
     }
   }
+  if (sensor->id.PID == OV5640_PID && afLoad(sensor)) {
+    // Live view keeps refocusing as you move; a photo focuses once, on purpose, first.
+    if (next == CameraMode::Preview) afCommand(sensor, 0x04, 500);  // continuous
+  }
   mode = next;
   return true;
+}
+
+bool cameraFocus(uint32_t timeoutMs) {
+  sensor_t *sensor = esp_camera_sensor_get();
+  if (!sensor || sensor->id.PID != OV5640_PID || !afLoaded) return false;
+  if (lensHeld) return true;  // already focused in the live view
+  const uint32_t t = millis();
+  const bool acked = afCommand(sensor, 0x03, timeoutMs);  // single focus
+  const uint8_t status = sensor->get_reg(sensor, 0x3029, 0xFF);
+  Serial.printf("CAMERA focus %s in %lums (status %02X)\n",
+                status == 0x10 ? "locked"
+                : acked        ? "done, not locked"
+                               : "timed out",
+                (unsigned long)(millis() - t), status);
+  return status == 0x10;
+}
+
+void cameraSetStillGain(int ceiling) { stillGainCeiling = ceiling; }
+
+void cameraReport() {
+  sensor_t *s = esp_camera_sensor_get();
+  if (!s) return;
+  const int exposure =
+      ((s->get_reg(s, 0x3500, 0x0F) << 16) | (s->get_reg(s, 0x3501, 0xFF) << 8) | s->get_reg(s, 0x3502, 0xFF)) >> 4;
+  const int gain = ((s->get_reg(s, 0x350A, 0x03) << 8) | s->get_reg(s, 0x350B, 0xFF));
+  const int ceiling = ((s->get_reg(s, 0x3A18, 0x03) << 8) | s->get_reg(s, 0x3A19, 0xFF));
+  const int vts = (s->get_reg(s, 0x380E, 0xFF) << 8) | s->get_reg(s, 0x380F, 0xFF);
+  Serial.printf("CAMERA exposure=%d lines (frame %d) gain=%.1fx ceiling=%.1fx\n", exposure, vts, gain / 16.0f,
+                ceiling / 16.0f);
+}
+
+void cameraSetStillExposure(int aeLevel, int maxFrames) {
+  stillAeLevel = aeLevel;
+  stillExposureFrames = maxFrames < 1 ? 1 : maxFrames > 4 ? 4 : maxFrames;
 }

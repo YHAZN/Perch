@@ -1074,14 +1074,8 @@ void captureInTask() {
   CaptureResult r;
   const uint32_t t0 = millis();
   bool haveScreen = false;
-  if (cameraMode() == CameraMode::Preview) {
-    camera_fb_t *f = esp_camera_fb_get();
-    if (f) {
-      convertPreview(f, captureScreen, false);
-      esp_camera_fb_return(f);
-      haveScreen = true;
-    }
-  }
+  // The on-screen copy is decoded from the photo itself below: the fast preview frame is
+  // darker and its colours differ from what is saved and sent.
   if (!cameraSetMode(CameraMode::Still)) {
     r.problem = "Camera is unavailable.";
   } else {
@@ -1091,6 +1085,12 @@ void captureInTask() {
       camera_fb_t *f = esp_camera_fb_get();
       if (f) esp_camera_fb_return(f);
     }
+    // Close-up pages need the lens moved; then drop the frame exposed while it was moving.
+    if (cameraFocus(2000)) {
+      camera_fb_t *f = esp_camera_fb_get();
+      if (f) esp_camera_fb_return(f);
+    }
+    vTaskDelay(1);
     uint32_t best = 0;
     for (int shot = 0; shot < BURST; ++shot) {
       camera_fb_t *frame = esp_camera_fb_get();
@@ -1113,6 +1113,7 @@ void captureInTask() {
       esp_camera_fb_return(frame);
       vTaskDelay(1);  // each step is long; let core 0's idle task run so the watchdog stays fed
     }
+    cameraReport();
     if (!r.jpeg) r.problem = "No usable photo. Try again.";
     r.blurry = r.jpeg && best < BLUR_FLOOR;
     vTaskDelay(1);
@@ -2989,6 +2990,21 @@ void handleDeviceButton(char command) {
     if (kb > 0 && kb <= 2048) aiUploadTest((size_t)kb * 1024);
     return;
   }
+  if (command == '6') {
+    // Developer: "6<ae>,<frames>" photo brightness target and longest exposure, e.g. "61,2".
+    const String arg = Serial.readStringUntil('\n');
+    const int comma = arg.indexOf(',');
+    if (comma > 0) cameraSetStillExposure(arg.substring(0, comma).toInt(), arg.substring(comma + 1).toInt());
+    Serial.printf("STILL_EXPOSURE %s\n", arg.c_str());
+    return;
+  }
+  if (command == 'y') {
+    // Developer: gain ceiling for photos, "y2" = 8x (gainceiling_t: 0 = 2x ... 6 = 128x).
+    const int ceiling = Serial.readStringUntil('\n').toInt();
+    if (ceiling >= 0 && ceiling <= 6) cameraSetStillGain(ceiling);
+    Serial.printf("STILL_GAIN %d\n", ceiling);
+    return;
+  }
   if (command == 'Z') {
     // PC clock over USB (sent by the bridge when it connects). No screen reply.
     const uint32_t epoch = strtoul(Serial.readStringUntil('\n').c_str(), nullptr, 10);
@@ -3124,10 +3140,10 @@ void handleDeviceButton(char command) {
       xSemaphoreTake(camLock, portMAX_DELAY);
       sensor_t *sensor = esp_camera_sensor_get();
       if (sensor) {
-        static const uint16_t regs[] = {0x3034, 0x3035, 0x3036, 0x3037, 0x3108, 0x3824, 0x460C, 0x4837,
-                                        0x380C, 0x380D, 0x380E, 0x380F, 0x3808, 0x3809, 0x380A, 0x380B,
-                                        0x3814, 0x3815, 0x3A00, 0x3A02, 0x3A03, 0x3A14, 0x3A15, 0x3500,
-                                        0x3501, 0x3502, 0x350A, 0x350B, 0x3503, 0x5001, 0x3031};
+        static const uint16_t regs[] = {0x3034, 0x3035, 0x3036, 0x3037, 0x3108, 0x3824, 0x460C, 0x4837, 0x380C,
+                                        0x380D, 0x380E, 0x380F, 0x3808, 0x3809, 0x380A, 0x380B, 0x3814, 0x3815,
+                                        0x3A00, 0x3A02, 0x3A03, 0x3A14, 0x3A15, 0x3500, 0x3501, 0x3502, 0x350A,
+                                        0x350B, 0x3503, 0x5001, 0x3031, 0x3029, 0x3023};
         for (uint16_t r : regs) Serial.printf("REG %04X=%02X\n", r, sensor->get_reg(sensor, r, 0xFF));
       }
       xSemaphoreGive(camLock);
