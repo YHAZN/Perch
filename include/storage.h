@@ -15,6 +15,9 @@ int listPhotos(uint32_t *ids, int max);
 // Allocates in PSRAM; the caller frees `jpeg`.
 bool loadPhoto(uint32_t id, uint8_t *&jpeg, size_t &length);
 bool loadPhotoThumb(uint32_t id, uint16_t *thumb);
+// Screen-sized JPEG (240x284) kept beside each photo so Photos opens quickly.
+bool savePhotoScreen(uint32_t id, const uint8_t *jpeg, size_t length);
+bool loadPhotoScreen(uint32_t id, uint8_t *&jpeg, size_t &length);
 
 // Answer history, newest first, capped at ANSWER_KEEP entries.
 constexpr int ANSWER_KEEP = 20;

@@ -5,27 +5,22 @@
 #include <esp_lcd_panel_io.h>
 #include <esp_lcd_panel_ops.h>
 #include <esp_lcd_panel_vendor.h>
-#include <freertos/semphr.h>
 #include "board_pins.h"
 
 namespace {
-constexpr int W = 240, H = 284;
+constexpr int W = 240;
 // Waveshare's demo drives this panel with no RAM offset and colour inversion on.
 constexpr int GAP_X = 0, GAP_Y = 0;
-constexpr int STRIP_ROWS = 24;
 constexpr uint8_t TOUCH_ADDR = 0x15;
 constexpr int BL_CHANNEL = 7;
 
 esp_lcd_panel_handle_t panel = nullptr;
-uint16_t *strips[2] = {nullptr, nullptr};
-SemaphoreHandle_t stripFree = nullptr;
+void (*drawDone)() = nullptr;
 bool touchFound = false;
-uint32_t lastPresentMicros = 0;
 
-bool IRAM_ATTR stripDone(esp_lcd_panel_io_handle_t, esp_lcd_panel_io_event_data_t *, void *) {
-  BaseType_t woken = pdFALSE;
-  xSemaphoreGiveFromISR(stripFree, &woken);
-  return woken == pdTRUE;
+bool IRAM_ATTR transferDone(esp_lcd_panel_io_handle_t, esp_lcd_panel_io_event_data_t *, void *) {
+  if (drawDone) drawDone();
+  return false;
 }
 
 bool touchWrite(uint8_t reg, uint8_t value) {
@@ -36,7 +31,8 @@ bool touchWrite(uint8_t reg, uint8_t value) {
 }
 }  // namespace
 
-bool displayBegin(uint32_t spiHz) {
+bool displayBegin(uint32_t spiHz, void (*onDrawDone)()) {
+  drawDone = onDrawDone;
   // Keep the microSD card deselected so LCD traffic on the shared bus is ignored.
   pinMode(PIN_SD_CS, OUTPUT);
   digitalWrite(PIN_SD_CS, HIGH);
@@ -50,13 +46,8 @@ bool displayBegin(uint32_t spiHz) {
   bus.sclk_io_num = PIN_SPI_SCK;
   bus.quadwp_io_num = -1;
   bus.quadhd_io_num = -1;
-  bus.max_transfer_sz = W * STRIP_ROWS * 2 + 8;
+  bus.max_transfer_sz = W * DISPLAY_CHUNK_ROWS * 2 + 8;
   if (spi_bus_initialize(SPI2_HOST, &bus, SPI_DMA_CH_AUTO) != ESP_OK) return false;
-
-  stripFree = xSemaphoreCreateCounting(2, 2);
-  for (auto &strip : strips)
-    strip = (uint16_t *)heap_caps_malloc(W * STRIP_ROWS * 2, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
-  if (!stripFree || !strips[0] || !strips[1]) return false;
 
   esp_lcd_panel_io_handle_t io = nullptr;
   esp_lcd_panel_io_spi_config_t ioConfig = {};
@@ -67,7 +58,7 @@ bool displayBegin(uint32_t spiHz) {
   ioConfig.lcd_param_bits = 8;
   ioConfig.spi_mode = 0;
   ioConfig.trans_queue_depth = 4;
-  ioConfig.on_color_trans_done = stripDone;
+  ioConfig.on_color_trans_done = transferDone;
   if (esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)SPI2_HOST, &ioConfig, &io) != ESP_OK) return false;
 
   esp_lcd_panel_dev_config_t panelConfig = {};
@@ -100,28 +91,9 @@ bool displayBegin(uint32_t spiHz) {
 
 void displayBrightness(uint8_t level) { ledcWrite(BL_CHANNEL, level); }
 
-void displayPresent(const uint16_t *pixels, int y0, int y1) {
-  if (!panel || !pixels) return;
-  const uint32_t start = micros();
-  int index = 0;
-  for (int y = max(0, y0); y < min(H, y1); y += STRIP_ROWS, index ^= 1) {
-    const int rows = min(STRIP_ROWS, min(H, y1) - y);
-    xSemaphoreTake(stripFree, portMAX_DELAY);
-    // Framebuffer is little-endian RGB565; the panel expects big-endian.
-    const uint16_t *source = pixels + y * W;
-    uint16_t *target = strips[index];
-    for (int i = 0; i < rows * W; ++i) target[i] = __builtin_bswap16(source[i]);
-    esp_lcd_panel_draw_bitmap(panel, 0, y, W, y + rows, target);
-  }
-  // Wait until both strips are back so callers may reuse the framebuffer freely.
-  xSemaphoreTake(stripFree, portMAX_DELAY);
-  xSemaphoreTake(stripFree, portMAX_DELAY);
-  xSemaphoreGive(stripFree);
-  xSemaphoreGive(stripFree);
-  if (y0 <= 0 && y1 >= H) lastPresentMicros = micros() - start;
+void displayDraw(int x1, int y1, int x2, int y2, const uint16_t *pixels) {
+  if (panel) esp_lcd_panel_draw_bitmap(panel, x1, y1, x2, y2, pixels);
 }
-
-uint32_t displayLastPresentMicros() { return lastPresentMicros; }
 
 bool touchAvailable() { return touchFound; }
 
@@ -136,5 +108,5 @@ bool touchRead(int &x, int &y) {
   if ((fingers & 0x0F) == 0) return false;
   x = ((xh & 0x0F) << 8) | xl;
   y = ((yh & 0x0F) << 8) | yl;
-  return x < W && y < H;
+  return x < W && y < 284;
 }

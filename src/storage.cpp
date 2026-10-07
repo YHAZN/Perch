@@ -91,6 +91,7 @@ uint32_t savePhoto(const uint8_t *jpeg, size_t length, const uint16_t *thumb) {
     existing.pop_back();
     LittleFS.remove(path("/photos", oldest, ".jpg"));
     LittleFS.remove(path("/photos", oldest, ".thm"));
+    LittleFS.remove(path("/photos", oldest, ".scr"));
   }
   const uint32_t id = nextId();
   if (!writeFile(path("/photos", id, ".thm"), reinterpret_cast<const uint8_t *>(thumb), THUMB_BYTES)) return 0;
@@ -128,6 +129,28 @@ bool loadPhoto(uint32_t id, uint8_t *&jpeg, size_t &length) {
 }
 
 bool loadPhotoThumb(uint32_t id, uint16_t *thumb) { return mounted && readThumb(path("/photos", id, ".thm"), thumb); }
+
+bool savePhotoScreen(uint32_t id, const uint8_t *jpeg, size_t length) {
+  return mounted && writeFile(path("/photos", id, ".scr"), jpeg, length);
+}
+
+bool loadPhotoScreen(uint32_t id, uint8_t *&jpeg, size_t &length) {
+  jpeg = nullptr;
+  length = 0;
+  if (!mounted) return false;
+  File f = LittleFS.open(path("/photos", id, ".scr"), "r");
+  if (!f) return false;
+  length = f.size();
+  jpeg = static_cast<uint8_t *>(ps_malloc(length));
+  const bool ok = jpeg && f.read(jpeg, length) == length;
+  f.close();
+  if (!ok) {
+    free(jpeg);
+    jpeg = nullptr;
+    length = 0;
+  }
+  return ok;
+}
 
 // Answer file: "gemini|gpt <photoId> <when>\n" then the answer text.
 uint32_t saveAnswer(const String &text, bool gemini, uint32_t photoId, uint32_t when, const uint16_t *thumb) {

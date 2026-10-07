@@ -11,6 +11,7 @@
 #include <time.h>
 #include <vector>
 #include "ai_client.h"
+#include "camera.h"
 #include "clock.h"
 #include "display.h"
 #include "storage.h"
@@ -26,10 +27,8 @@ constexpr int ABOVE_HOME = H - HOME_ZONE + 14;
 // Drag this far (or flick) to commit an edge gesture; less springs back.
 constexpr int COMMIT_DRAG = 70;
 constexpr int MAX_PHOTOS = 12;
-// Lower number = less JPEG compression. 20 showed visible blocks in the viewfinder.
-constexpr int PREVIEW_QUALITY = 12;
-// 480x320 gives enough pixels to fill the 240x284 screen by downscaling, not upscaling.
-constexpr framesize_t PREVIEW_SIZE = FRAMESIZE_HVGA;
+// Left strip: drag right from here to go back one level.
+constexpr int BACK_ZONE = 24;
 const uint8_t BRIGHTNESS[] = {255, 140, 50};
 
 // Design tokens (design/index.html :root)
@@ -51,8 +50,10 @@ uint8_t spiMhz = 10;
 unsigned long sequence = 0;
 unsigned long lastSerialMs = 0;
 
-// Rendering
+// Rendering: LVGL draws chunks into two small internal buffers while the previous chunk is
+// still being sent by DMA. `framebuffer` keeps a full copy for the USB mirror.
 uint16_t *framebuffer = nullptr;
+uint16_t *drawBuffers[2] = {nullptr, nullptr};
 lv_display_t *display = nullptr;
 lv_indev_t *touch = nullptr;
 lv_obj_t *root = nullptr;
@@ -64,9 +65,8 @@ uint16_t *galleryPixels = nullptr;  // photo shown in Photos / Answer
 uint8_t *savedJpeg = nullptr, *rgbScratch = nullptr;
 size_t jpegBytes = 0, jpegCapacity = 0, rgbCapacity = 0;
 uint32_t latestPhotoId = 0;
-bool previewActive = false;
-framesize_t stillSize = FRAMESIZE_QXGA;
-int stillQuality = 8;
+// Bottom-of-viewfinder shading, baked into each preview frame (cheaper than blending a layer).
+uint8_t scrimRow[284];
 uint32_t photoIds[MAX_PHOTOS];
 int photoCount = 0, photoIndex = 0;
 lv_image_dsc_t liveDsc, photoDsc, galleryDsc;
@@ -105,7 +105,7 @@ bool ccOpen = false;
 bool injecting = false;
 int injectX = 0, injectY = 0;
 bool fingerDown = false;
-enum class Edge { None, Home, Control } edge = Edge::None;
+enum class Edge { None, Home, Control, Back } edge = Edge::None;
 int downX = 0, downY = 0, lastX = 0, lastY = 0;
 
 // ---------- widget helpers ----------
@@ -224,15 +224,17 @@ bool jpegSize(const uint8_t *b, size_t n, int &w, int &h) {
   return false;
 }
 // Decode a JPEG and fill the portrait screen: scale to the screen height, centre-crop the width.
-bool decodeToScreen(const uint8_t *jpeg, size_t len, int width, int height, uint16_t *out, jpg_scale_t scale) {
+bool decodeToScreen(const uint8_t *jpeg, size_t len, int width, int height, uint16_t *out, jpg_scale_t scale,
+                    uint8_t *&scratch, size_t &capacity) {
   const int div = scale == JPG_SCALE_8X ? 8 : scale == JPG_SCALE_4X ? 4 : scale == JPG_SCALE_2X ? 2 : 1;
   const int dw = width / div, dh = height / div;
   const size_t needed = dw * dh * 2;
-  if (needed > rgbCapacity) {
-    free(rgbScratch);
-    rgbScratch = (uint8_t *)ps_malloc(needed);
-    rgbCapacity = rgbScratch ? needed : 0;
+  if (needed > capacity) {
+    free(scratch);
+    scratch = (uint8_t *)ps_malloc(needed);
+    capacity = scratch ? needed : 0;
   }
+  uint8_t *rgbScratch = scratch;
   if (!rgbScratch || !out || !jpg2rgb565(jpeg, len, rgbScratch, scale)) return false;
   const int cropW = min(dw, dh * W / H), left = (dw - cropW) / 2;
   for (int y = 0; y < H; ++y) {
@@ -244,9 +246,16 @@ bool decodeToScreen(const uint8_t *jpeg, size_t len, int width, int height, uint
   }
   return true;
 }
-bool decodeStored(const uint8_t *jpeg, size_t len, uint16_t *out) {
+// Smallest decode that still covers the screen height (decoding at 1/4 or 1/8 is much faster).
+jpg_scale_t scaleFor(int h) {
+  return h / 8 >= H ? JPG_SCALE_8X : h / 4 >= H ? JPG_SCALE_4X : h / 2 >= H ? JPG_SCALE_2X : JPG_SCALE_NONE;
+}
+bool decodeStoredWith(const uint8_t *jpeg, size_t len, uint16_t *out, uint8_t *&scratch, size_t &capacity) {
   int w, h;
-  return jpegSize(jpeg, len, w, h) && decodeToScreen(jpeg, len, w, h, out, w >= 1024 ? JPG_SCALE_4X : JPG_SCALE_2X);
+  return jpegSize(jpeg, len, w, h) && decodeToScreen(jpeg, len, w, h, out, scaleFor(h), scratch, capacity);
+}
+bool decodeStored(const uint8_t *jpeg, size_t len, uint16_t *out) {
+  return decodeStoredWith(jpeg, len, out, rgbScratch, rgbCapacity);
 }
 // 64x64 thumbnail from the centre square of a 240x284 screen image.
 void makeThumb(const uint16_t *src, uint16_t *out) {
@@ -261,41 +270,122 @@ bool loadPhotoInto(uint32_t id, uint16_t *out) {
   }
   uint8_t *jpeg;
   size_t len;
-  if (!loadPhoto(id, jpeg, len)) return false;
+  // The small screen-sized copy decodes in ~0.1 s; the full photo is only a fallback.
+  if (!loadPhotoScreen(id, jpeg, len) && !loadPhoto(id, jpeg, len)) return false;
   const bool ok = decodeStored(jpeg, len, out);
   free(jpeg);
   return ok;
 }
 
 // ---------- camera ----------
-void stopPreview() {
-  if (!previewActive) return;
-  sensor_t *sensor = esp_camera_sensor_get();
-  sensor->set_framesize(sensor, stillSize);
-  sensor->set_quality(sensor, stillQuality);
-  previewActive = false;
-  for (int i = 0; i < 2; ++i) {
-    camera_fb_t *f = esp_camera_fb_get();
-    if (f) esp_camera_fb_return(f);
+// Viewfinder pipeline: a task on core 0 fetches and converts camera frames while the UI on
+// core 1 draws the previous one. Three buffers: front (on screen), ready (newest complete),
+// back (being written). camLock serialises every use of the camera driver.
+SemaphoreHandle_t camLock = nullptr;
+portMUX_TYPE liveMux = portMUX_INITIALIZER_UNLOCKED;
+uint16_t *liveBuf[3] = {nullptr, nullptr, nullptr};
+volatile int liveFront = 0, liveReady = -1;
+volatile bool previewWanted = false;
+volatile uint32_t framesConverted = 0, convertMicros = 0;
+void convertPreview(const camera_fb_t *f, uint16_t *out, bool shade = true);
+void captureInTask();
+volatile bool captureRequested = false;
+void previewTask(void *) {
+  for (;;) {
+    if (captureRequested) {
+      xSemaphoreTake(camLock, portMAX_DELAY);
+      captureInTask();
+      xSemaphoreGive(camLock);
+      captureRequested = false;
+      continue;
+    }
+    if (!previewWanted) {
+      vTaskDelay(pdMS_TO_TICKS(20));
+      continue;
+    }
+    int back = 0;
+    portENTER_CRITICAL(&liveMux);
+    while (back == liveFront || back == liveReady) ++back;
+    portEXIT_CRITICAL(&liveMux);
+    bool got = false;
+    xSemaphoreTake(camLock, portMAX_DELAY);
+    if (previewWanted && cameraMode() == CameraMode::Preview) {
+      camera_fb_t *f = esp_camera_fb_get();
+      if (f) {
+        const uint32_t t = micros();
+        convertPreview(f, liveBuf[back]);
+        convertMicros += micros() - t;
+        esp_camera_fb_return(f);
+        got = true;
+      }
+    }
+    xSemaphoreGive(camLock);
+    if (!got) {
+      vTaskDelay(pdMS_TO_TICKS(10));
+      continue;
+    }
+    portENTER_CRITICAL(&liveMux);
+    liveReady = back;
+    portEXIT_CRITICAL(&liveMux);
+    ++framesConverted;
   }
 }
+bool cameraSwitch(CameraMode mode) {
+  xSemaphoreTake(camLock, portMAX_DELAY);
+  const bool ok = cameraSetMode(mode);
+  xSemaphoreGive(camLock);
+  return ok;
+}
+void stopPreview() {
+  previewWanted = false;
+  if (cameraMode() == CameraMode::Preview) cameraSwitch(CameraMode::Off);
+}
 bool ensurePreviewMode() {
-  if (previewActive) return true;
-  sensor_t *sensor = esp_camera_sensor_get();
-  if (!sensor) return false;
-  stillSize = sensor->status.framesize;
-  stillQuality = sensor->status.quality;
-  if (sensor->set_framesize(sensor, PREVIEW_SIZE) || sensor->set_quality(sensor, PREVIEW_QUALITY)) {
-    sensor->set_framesize(sensor, stillSize);
-    sensor->set_quality(sensor, stillQuality);
-    return false;
-  }
-  previewActive = true;
-  for (int i = 0; i < 2; ++i) {
-    camera_fb_t *f = esp_camera_fb_get();
-    if (f) esp_camera_fb_return(f);
-  }
+  if (!cameraSwitch(CameraMode::Preview)) return false;
+  previewWanted = true;
   return true;
+}
+// Show the newest converted frame, if there is one. Returns true when the image changed.
+bool takeLiveFrame() {
+  bool changed = false;
+  portENTER_CRITICAL(&liveMux);
+  if (liveReady >= 0) {
+    liveFront = liveReady;
+    liveReady = -1;
+    changed = true;
+  }
+  portEXIT_CRITICAL(&liveMux);
+  if (changed) liveDsc.data = reinterpret_cast<const uint8_t *>(liveBuf[liveFront]);
+  return changed;
+}
+// Camera frame -> 240x284 screen: scale to height, centre-crop the width, and darken the
+// bottom so the shutter reads on any scene. Accepts JPEG (decoded here) or raw RGB565.
+uint8_t *previewScratch = nullptr;  // owned by the viewfinder task
+void convertPreview(const camera_fb_t *f, uint16_t *out, bool shade) {
+  const int sw = f->width, sh = f->height;
+  const uint8_t *src = f->buf;
+  bool bigEndian = true;
+  if (f->format == PIXFORMAT_JPEG) {
+    if (!previewScratch) previewScratch = (uint8_t *)ps_malloc(sw * sh * 2);
+    if (!previewScratch || !jpg2rgb565(f->buf, f->len, previewScratch, JPG_SCALE_NONE)) return;
+    src = previewScratch;
+    bigEndian = false;
+  }
+  const int cropW = min(sw, sh * W / H), left = (sw - cropW) / 2;
+  for (int y = 0; y < H; ++y) {
+    const uint8_t *row = src + (y * sh / H) * sw * 2;
+    const uint32_t m = shade ? scrimRow[y] : 255;
+    uint16_t *dst = out + y * W;
+    for (int x = 0; x < W; ++x) {
+      const uint8_t *px = row + (left + x * cropW / W) * 2;
+      uint16_t v = bigEndian ? (px[0] << 8) | px[1] : px[0] | (px[1] << 8);
+      if (m < 255) {
+        const uint32_t r = ((v >> 11) * m) >> 8, g = (((v >> 5) & 63) * m) >> 8, b = ((v & 31) * m) >> 8;
+        v = (r << 11) | (g << 5) | b;
+      }
+      dst[x] = v;
+    }
+  }
 }
 bool sendAcknowledged(const uint8_t *bytes, size_t length) {
   size_t offset = 0;
@@ -335,12 +425,20 @@ void settleLayers(lv_anim_t * = nullptr) {
   lv_obj_set_y(layer(current), 0);
 }
 void onEnter(Screen s);
+// Where "back" goes: each screen opened from somewhere remembers it. Home clears it.
+std::vector<Screen> backStack;
+lv_obj_t *backButton = nullptr;
 void enter(Screen next) {
   if (next != Screen::Camera) stopPreview();
   current = next;
   onEnter(next);
   refreshDynamic();
   hide(homeBar, next == Screen::Face || next == Screen::Apps);
+  // The back arrow appears on screens you reached from inside another app (two levels deep).
+  const bool showBack = !backStack.empty() && backStack.back() != Screen::Face && backStack.back() != Screen::Apps &&
+                        next != Screen::Notice;
+  if (backButton) hide(backButton, !showBack);
+  if (next == Screen::Face) backStack.clear();
 }
 // Opening something: it rises a short distance into place over what was there.
 void show(Screen next) {
@@ -348,6 +446,11 @@ void show(Screen next) {
     enter(next);
     return;
   }
+  if (next == Screen::Face) backStack.clear();
+  else if (current == Screen::Face || current == Screen::Apps) {
+    backStack.clear();
+    backStack.push_back(current);
+  } else backStack.push_back(current);
   lv_obj_t *to = layer(next);
   lv_obj_remove_flag(to, LV_OBJ_FLAG_HIDDEN);
   lv_obj_move_foreground(to);
@@ -362,6 +465,8 @@ void notice(const String &message, Screen back) {
 }
 // Going home: the app lifts away and the face is underneath.
 void leaveTo(Screen under, int fromY) {
+  if (under == Screen::Face) backStack.clear();
+  else if (!backStack.empty() && backStack.back() == under) backStack.pop_back();
   lv_obj_t *top = layer(current), *below = layer(under);
   lv_obj_remove_flag(below, LV_OBJ_FLAG_HIDDEN);
   lv_obj_set_y(below, 0);
@@ -375,6 +480,53 @@ void openApps(int fromY = H) {
   lv_obj_move_foreground(grid);
   enter(Screen::Apps);
   animY(grid, fromY, 0, 220, lv_anim_path_ease_out, settleLayers);
+}
+void setX(void *o, int32_t v) { lv_obj_set_x((lv_obj_t *)o, v); }
+void animX(lv_obj_t *o, int from, int to, uint32_t ms, lv_anim_path_cb_t path, lv_anim_completed_cb_t done) {
+  lv_anim_delete(o, setX);
+  lv_anim_t a;
+  lv_anim_init(&a);
+  lv_anim_set_var(&a, o);
+  lv_anim_set_values(&a, from, to);
+  lv_anim_set_duration(&a, ms);
+  lv_anim_set_path_cb(&a, path);
+  lv_anim_set_exec_cb(&a, setX);
+  if (done) lv_anim_set_completed_cb(&a, done);
+  lv_anim_start(&a);
+}
+void resetX(lv_anim_t *a) {
+  for (int i = 0; i < (int)Screen::Count; ++i) lv_obj_set_x(scr[i], 0);
+  settleLayers(a);
+}
+Screen backTarget() { return backStack.empty() ? Screen::Face : backStack.back(); }
+// Going back: the screen slides off to the right, revealing where you came from.
+void goBack(int fromX = 0) {
+  if (current == Screen::Face) return;
+  const Screen target = backTarget();
+  if (!backStack.empty()) backStack.pop_back();
+  lv_obj_t *top = layer(current), *below = layer(target);
+  lv_obj_remove_flag(below, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_set_pos(below, 0, 0);
+  lv_obj_move_foreground(top);
+  enter(target);
+  animX(top, fromX, W, 200, lv_anim_path_ease_in, resetX);
+}
+bool backDragging = false;
+void dragBack(int dx) {
+  if (!backDragging) {
+    backDragging = true;
+    lv_obj_t *below = layer(backTarget());
+    lv_obj_remove_flag(below, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_pos(below, 0, 0);
+    lv_obj_move_foreground(layer(current));
+  }
+  lv_obj_set_x(layer(current), dx);
+}
+void releaseBack(int dx, int speedX) {
+  if (!backDragging) return;
+  backDragging = false;
+  if (dx > COMMIT_DRAG || (dx > 24 && speedX > 600)) goBack(dx);
+  else animX(layer(current), dx, 0, 220, lv_anim_path_ease_out, resetX);
 }
 void goHome() {
   // Same gesture everywhere: from an app to the face, from the face to the app grid.
@@ -606,61 +758,171 @@ void flashOnce() {
   lv_anim_start(&a);
 }
 void refreshPhotos() { photoCount = listPhotos(photoIds, MAX_PHOTOS); }
-// Returns true when a new photo replaced the old one. Failures keep the previous photo.
-bool takePhoto(String &problem) {
+// ---------- capture ----------
+// Runs on the camera task (core 0) so the screen never freezes:
+//  1. the viewfinder frame you were looking at becomes the on-screen photo at once;
+//  2. the sensor switches to 2048x1536 JPEG for the real photo;
+//  3. the result is handed to the UI, then saved to flash in the background.
+struct CaptureResult {
+  uint8_t *jpeg = nullptr;
+  size_t len = 0;
+  String problem;
+};
+CaptureResult captureOut;
+volatile uint32_t savedPhotoId = 0;
+uint16_t *captureScreen = nullptr;  // filled by the task, swapped with photoPixels on accept
+volatile bool captureReady = false;
+volatile int savesPending = 0;
+#define photoSavePending (savesPending > 0)
+// Saving to flash takes ~3 s, so it runs on its own low-priority task with its own copies:
+// the viewfinder resumes at once and quick successive photos are all kept.
+struct SaveJob {
+  uint8_t *jpeg;
+  size_t len;
+  uint8_t *small;
+  size_t smallLen;
+  uint16_t thumb[THUMB * THUMB];
+};
+QueueHandle_t saveQueue = nullptr;
+void saveTask(void *) {
+  for (;;) {
+    SaveJob *job = nullptr;
+    if (xQueueReceive(saveQueue, &job, portMAX_DELAY) != pdTRUE || !job) continue;
+    const uint32_t t = millis();
+    const uint32_t id = savePhoto(job->jpeg, job->len, job->thumb);
+    if (id && job->small) savePhotoScreen(id, job->small, job->smallLen);
+    if (id) savedPhotoId = id;
+    else Serial.println("STORAGE_ERROR Photo not saved");
+    Serial.printf("PHOTO_SAVED id=%lu in %lums\n", (unsigned long)id, (unsigned long)(millis() - t));
+    free(job->jpeg);
+    free(job->small);
+    free(job);
+    --savesPending;
+  }
+}
+uint8_t *taskScratch = nullptr;
+size_t taskScratchCapacity = 0;
+
+void captureInTask() {
+  CaptureResult r;
+  const uint32_t t0 = millis();
+  bool haveScreen = false;
+  if (cameraMode() == CameraMode::Preview) {
+    camera_fb_t *f = esp_camera_fb_get();
+    if (f) {
+      convertPreview(f, captureScreen, false);
+      esp_camera_fb_return(f);
+      haveScreen = true;
+    }
+  }
+  if (!cameraSetMode(CameraMode::Still)) {
+    r.problem = "Camera is unavailable.";
+  } else {
+    // A freshly started sensor needs a couple of frames for exposure to settle.
+    for (int i = 0; i < 2; ++i) {
+      camera_fb_t *f = esp_camera_fb_get();
+      if (f) esp_camera_fb_return(f);
+    }
+    camera_fb_t *frame = esp_camera_fb_get();
+    if (!frame) {
+      r.problem = "No camera frame. Try again.";
+    } else if (frame->format != PIXFORMAT_JPEG || frame->len < 4 || frame->buf[0] != 0xff || frame->buf[1] != 0xd8 ||
+               frame->buf[frame->len - 2] != 0xff || frame->buf[frame->len - 1] != 0xd9) {
+      r.problem = "Incomplete photo. Try again.";
+    } else {
+      r.jpeg = (uint8_t *)ps_malloc(frame->len);
+      if (r.jpeg) {
+        memcpy(r.jpeg, frame->buf, frame->len);
+        r.len = frame->len;
+      } else r.problem = "Not enough memory for the photo.";
+    }
+    if (frame) esp_camera_fb_return(frame);
+    if (r.jpeg && !haveScreen)
+      haveScreen = decodeStoredWith(r.jpeg, r.len, captureScreen, taskScratch, taskScratchCapacity);
+  }
+  const uint32_t t1 = millis();
+  // Prepare what saving needs (own copies), then hand the photo to the UI at once.
+  SaveJob *job = r.jpeg ? (SaveJob *)ps_malloc(sizeof(SaveJob)) : nullptr;
+  if (job) {
+    job->jpeg = (uint8_t *)ps_malloc(r.len);
+    job->len = r.len;
+    job->small = nullptr;
+    job->smallLen = 0;
+    if (job->jpeg) memcpy(job->jpeg, r.jpeg, r.len);
+    makeThumb(captureScreen, job->thumb);
+    // A screen-sized copy makes browsing Photos fast.
+    uint16_t *swapped = (uint16_t *)ps_malloc(W * H * 2);
+    if (swapped) {
+      for (int i = 0; i < W * H; ++i) swapped[i] = __builtin_bswap16(captureScreen[i]);
+      fmt2jpg((uint8_t *)swapped, W * H * 2, W, H, PIXFORMAT_RGB565, 80, &job->small, &job->smallLen);
+      free(swapped);
+    }
+    if (!job->jpeg) {
+      free(job->small);
+      free(job);
+      job = nullptr;
+    }
+  }
+  if (job) {
+    ++savesPending;
+    if (xQueueSend(saveQueue, &job, 0) != pdTRUE) {
+      --savesPending;
+      free(job->jpeg);
+      free(job->small);
+      free(job);
+    }
+  }
+  captureOut = r;
+  captureReady = true;
+  Serial.printf("SHUTTER capture=%lums handoff=%lums\n", (unsigned long)(t1 - t0), (unsigned long)(millis() - t1));
+  if (previewWanted) cameraSetMode(CameraMode::Preview);
+}
+bool requestCapture(String &problem) {
   if (cameraOff) {
     problem = "Camera is off. Turn it on in Control Center.";
     return false;
   }
-  stopPreview();
-  if (!esp_camera_sensor_get()) {
-    problem = "Camera is unavailable.";
+  if (captureRequested || captureReady) {
+    problem = "Still taking the last photo.";
     return false;
   }
-  camera_fb_t *queued = esp_camera_fb_get();
-  if (queued) esp_camera_fb_return(queued);
-  camera_fb_t *frame = esp_camera_fb_get();
-  if (!frame) {
-    problem = "No camera frame. Try again.";
+  captureRequested = true;
+  return true;
+}
+// UI thread: take the finished capture. Failures keep the previous photo.
+bool acceptCapture(String &problem) {
+  if (!captureReady) {
+    problem = "The camera did not answer. Try again.";
     return false;
   }
-  if (frame->format != PIXFORMAT_JPEG || frame->len < 4 || frame->buf[0] != 0xff || frame->buf[1] != 0xd8 ||
-      frame->buf[frame->len - 2] != 0xff || frame->buf[frame->len - 1] != 0xd9) {
-    esp_camera_fb_return(frame);
-    problem = "Incomplete photo. Try again.";
+  captureReady = false;
+  if (!captureOut.jpeg) {
+    problem = captureOut.problem;
     return false;
   }
-  Serial.printf("CAPTURE_FRAME %u %u %u\n", frame->width, frame->height, frame->len);
-  uint8_t *jpegTarget = frame->len > jpegCapacity ? (uint8_t *)ps_malloc(frame->len) : savedJpeg;
-  uint16_t *decoded = (uint16_t *)ps_malloc(W * H * 2);
-  const bool ok = jpegTarget && decoded &&
-                  decodeToScreen(frame->buf, frame->len, frame->width, frame->height, decoded, JPG_SCALE_4X);
-  if (!ok) {
-    if (jpegTarget != savedJpeg) free(jpegTarget);
-    free(decoded);
-    esp_camera_fb_return(frame);
-    problem = "Image decode failed.";
-    return false;
-  }
-  if (jpegTarget != savedJpeg) {
-    free(savedJpeg);
-    savedJpeg = jpegTarget;
-    jpegCapacity = frame->len;
-  }
-  memcpy(savedJpeg, frame->buf, frame->len);
-  jpegBytes = frame->len;
-  memcpy(photoPixels, decoded, W * H * 2);
-  free(decoded);
-  esp_camera_fb_return(frame);
-  static uint16_t thumbPixels[THUMB * THUMB];  // 8 KB: too big for the loop task stack
-  makeThumb(photoPixels, thumbPixels);
-  latestPhotoId = savePhoto(savedJpeg, jpegBytes, thumbPixels);
-  if (!latestPhotoId) Serial.println("STORAGE_ERROR Photo not saved");
-  refreshPhotos();
+  free(savedJpeg);
+  savedJpeg = captureOut.jpeg;
+  jpegBytes = jpegCapacity = captureOut.len;
+  captureOut.jpeg = nullptr;
+  uint16_t *old = photoPixels;
+  photoPixels = captureScreen;
+  captureScreen = old;
+  photoDsc.data = reinterpret_cast<const uint8_t *>(photoPixels);
   lv_image_cache_drop(&photoDsc);
   lv_obj_invalidate(root);
   refreshDynamic();
   return true;
+}
+// Blocking form for flows that need the photo before continuing (capture-and-ask, mirror).
+// LVGL keeps running meanwhile, so animations stay smooth.
+bool takePhoto(String &problem) {
+  if (!requestCapture(problem)) return false;
+  const unsigned long start = millis();
+  while (!captureReady && millis() - start < 15000) {
+    lv_timer_handler();
+    delay(5);
+  }
+  return acceptCapture(problem);
 }
 void startAsk() {
   if (!jpegBytes) {
@@ -683,7 +945,7 @@ void startAsk() {
     return;
   }
   pendingGemini = useGemini;
-  pendingPhotoId = latestPhotoId;
+  pendingPhotoId = photoSavePending ? UINT32_MAX : latestPhotoId;
   lv_label_set_text(busyLabel, useGemini ? "Asking Gemini" : "Asking GPT");
   lv_obj_remove_flag(busy, LV_OBJ_FLAG_HIDDEN);
   show(Screen::Ask);
@@ -691,7 +953,11 @@ void startAsk() {
 void captureAndAsk() {
   String problem;
   show(Screen::Ask);
-  if (!takePhoto(problem)) {
+  lv_label_set_text(busyLabel, "Taking photo");
+  lv_obj_remove_flag(busy, LV_OBJ_FLAG_HIDDEN);
+  const bool ok = takePhoto(problem);
+  lv_obj_add_flag(busy, LV_OBJ_FLAG_HIDDEN);
+  if (!ok) {
     notice(problem, Screen::Ask);
     return;
   }
@@ -966,7 +1232,6 @@ void buildCamera() {
   lv_obj_t *s = scr[(int)Screen::Camera] = screenBase();
   viewfinder = lv_image_create(s);
   lv_image_set_src(viewfinder, &liveDsc);
-  scrimBottom(s, 110);
   cameraOffLabel = text(s, "Camera is off.\nTurn it on in Control Center.", F_BODY, MIST);
   lv_obj_set_style_text_align(cameraOffLabel, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_align(cameraOffLabel, LV_ALIGN_CENTER, 0, -20);
@@ -975,10 +1240,9 @@ void buildCamera() {
   lv_obj_align(shutter, LV_ALIGN_BOTTOM_MID, 0, -ABOVE_HOME);
   lv_obj_set_style_bg_opa(shutter, 215, LV_STATE_PRESSED);
   onClick(shutter, [] {
-    flashOnce();
-    lv_refr_now(display);
     String problem;
-    if (!takePhoto(problem)) notice(problem, Screen::Camera);
+    if (requestCapture(problem)) flashOnce();
+    else notice(problem, Screen::Camera);
   });
   thumb = lv_image_create(s);
   lv_image_set_src(thumb, &photoDsc);
@@ -1215,7 +1479,7 @@ void buildSettings() {
 
 void buildModel() {
   lv_obj_t *s = scr[(int)Screen::Model] = screenBase();
-  title(s, "Model");
+  lv_obj_set_x(title(s, "Model"), 58);
   const char *names[2] = {"Gemini", "GPT"};
   for (int i = 0; i < 2; ++i) {
     lv_obj_t *r = row(s, 58 + i * 60, names[i], nullptr, 60);
@@ -1229,7 +1493,7 @@ void buildModel() {
         r,
         [](lv_event_t *e) {
           setModel(lv_event_get_user_data(e) == nullptr);
-          leaveTo(Screen::Settings, 0);
+          goBack();
         },
         LV_EVENT_CLICKED, i == 0 ? nullptr : (void *)1);
   }
@@ -1243,7 +1507,7 @@ void buildNotice() {
   lv_obj_align(noticeText, LV_ALIGN_CENTER, 0, -30);
   lv_obj_t *ok = pill(s, "OK", 120);
   lv_obj_align(ok, LV_ALIGN_BOTTOM_MID, 0, -ABOVE_HOME);
-  onClick(ok, [] { show(noticeReturn); });
+  onClick(ok, [] { goBack(); });
 }
 
 lv_obj_t *ccToggle(lv_obj_t *parent, const char *label, lv_obj_t **labelOut) {
@@ -1317,11 +1581,16 @@ void buildControl() {
 }
 
 // ---------- LVGL glue ----------
-void flush(lv_display_t *d, const lv_area_t *area, uint8_t *) {
-  // Direct mode: the framebuffer already holds the full image; push only the dirty rows.
-  displayPresent(framebuffer, area->y1, area->y2 + 1);
-  lv_display_flush_ready(d);
+void flush(lv_display_t *, const lv_area_t *area, uint8_t *pixels) {
+  const int w = area->x2 - area->x1 + 1, h = area->y2 - area->y1 + 1;
+  // Keep the full-screen copy for the USB mirror (little-endian, before the swap).
+  for (int y = 0; y < h; ++y) memcpy(framebuffer + (area->y1 + y) * W + area->x1, pixels + y * w * 2, w * 2);
+  // The panel wants big-endian pixels. Send by DMA and return: LVGL renders the next
+  // chunk into the other buffer meanwhile; transferDone() releases this one.
+  lv_draw_sw_rgb565_swap(pixels, w * h);
+  displayDraw(area->x1, area->y1, area->x2 + 1, area->y2 + 1, reinterpret_cast<uint16_t *>(pixels));
 }
+void drawDone() { lv_display_flush_ready(display); }
 void readTouch(lv_indev_t *, lv_indev_data_t *data) {
   int x = 0, y = 0;
   bool pressed;
@@ -1331,21 +1600,25 @@ void readTouch(lv_indev_t *, lv_indev_data_t *data) {
     pressed = true;
   } else pressed = touchRead(x, y);
   static unsigned long moveAt = 0;
-  static int speed = 0;  // px/s, smoothed; positive = upward
+  static int speed = 0;   // px/s, smoothed; positive = upward
+  static int speedX = 0;  // px/s, smoothed; positive = rightward
   if (pressed) {
     const unsigned long now = millis();
     if (!fingerDown) {
       fingerDown = true;
       downX = x;
       downY = y;
-      speed = 0;
-      // Edges belong to the system: bottom drags home, top pulls Control Center.
-      edge = injecting                       ? Edge::None
-             : downY >= HOME_ZONE            ? Edge::Home
-             : (downY < TOP_ZONE && !ccOpen) ? Edge::Control
-                                             : Edge::None;
+      speed = speedX = 0;
+      // Edges belong to the system: bottom drags home, top pulls Control Center,
+      // left drags back one level.
+      edge = injecting                                                   ? Edge::None
+             : downY >= HOME_ZONE                                        ? Edge::Home
+             : (downY < TOP_ZONE && !ccOpen)                             ? Edge::Control
+             : (downX < BACK_ZONE && !ccOpen && current != Screen::Face) ? Edge::Back
+                                                                         : Edge::None;
     } else if (now > moveAt) {
       speed = (speed + (lastY - y) * 1000 / (int)(now - moveAt)) / 2;
+      speedX = (speedX + (x - lastX) * 1000 / (int)(now - moveAt)) / 2;
     }
     moveAt = now;
     lastX = x;
@@ -1355,10 +1628,22 @@ void readTouch(lv_indev_t *, lv_indev_data_t *data) {
       else dragHome(downY - y);
     }
     if (edge == Edge::Control && y - downY > 6) dragControl(y - downY);
+    if (edge == Edge::Back && x - downX > 6) dragBack(x - downX);
   } else if (fingerDown) {
     fingerDown = false;
     if (edge == Edge::Home) releaseHome(max(0, downY - lastY), speed);
     if (edge == Edge::Control) releaseControl(max(0, lastY - downY), speed);
+    if (edge == Edge::Back) {
+      // A tap on the left edge falls through to the app (so edge controls still work).
+      if (lastX - downX <= 6 && abs(lastY - downY) <= 6) {
+        edge = Edge::None;
+        data->point.x = lastX;
+        data->point.y = lastY;
+        data->state = LV_INDEV_STATE_RELEASED;
+        return;
+      }
+      releaseBack(max(0, lastX - downX), speedX);
+    }
     edge = Edge::None;
   }
   if (edge != Edge::None) {
@@ -1427,6 +1712,8 @@ void injectTap(int x, int y) {
   }
 }
 void tuneCamera(char profile) {
+  previewWanted = false;
+  if (!cameraSwitch(CameraMode::Still)) return;
   sensor_t *sensor = esp_camera_sensor_get();
   if (!sensor) return;
   static bool saved = false;
@@ -1458,22 +1745,36 @@ void previewToUsb() {
     Serial.println("CAPTURE FAILED Preview is not active");
     return;
   }
-  if (!esp_camera_sensor_get()) {
-    Serial.println("CAPTURE FAILED Camera unavailable");
-    return;
-  }
   if (!ensurePreviewMode()) {
     Serial.println("CAPTURE FAILED Preview setup failed");
     return;
   }
+  xSemaphoreTake(camLock, portMAX_DELAY);
   camera_fb_t *f = esp_camera_fb_get();
   if (!f) {
+    xSemaphoreGive(camLock);
     Serial.println("CAPTURE FAILED No preview frame");
     return;
   }
-  Serial.printf("JPEG_BEGIN %u\n", f->len);
-  const bool sent = sendAcknowledged(f->buf, f->len);
+  // Preview frames are raw pixels; compress one for the PC mirror.
+  uint8_t *jpeg = nullptr;
+  size_t len = 0;
+  const bool raw = f->format != PIXFORMAT_JPEG;
+  const bool encoded = raw ? frame2jpg(f, 60, &jpeg, &len) : true;
+  if (!raw) {
+    len = f->len;
+    jpeg = (uint8_t *)ps_malloc(len);
+    if (jpeg) memcpy(jpeg, f->buf, len);
+  }
   esp_camera_fb_return(f);
+  xSemaphoreGive(camLock);
+  if (!encoded || !jpeg) {
+    Serial.println("CAPTURE FAILED Preview encode failed");
+    return;
+  }
+  Serial.printf("JPEG_BEGIN %u\n", len);
+  const bool sent = sendAcknowledged(jpeg, len);
+  free(jpeg);
   Serial.println(sent ? "\nJPEG_END" : "\nCAPTURE FAILED Preview transfer failed");
 }
 void restoreLatestPhoto() {
@@ -1483,7 +1784,7 @@ void restoreLatestPhoto() {
   uint8_t *jpeg;
   size_t len;
   if (!loadPhoto(photoIds[0], jpeg, len)) return;
-  if (decodeStored(jpeg, len, photoPixels)) {
+  if (loadPhotoInto(photoIds[0], photoPixels)) {
     savedJpeg = jpeg;
     jpegBytes = jpegCapacity = len;
     latestPhotoId = photoIds[0];
@@ -1502,15 +1803,29 @@ void initDeviceUi() {
   brightnessLevel = settings.getUChar("bright", 0) % 3;
   if (!storageBegin()) Serial.println("STORAGE_ERROR Flash filesystem unavailable");
   framebuffer = (uint16_t *)ps_malloc(W * H * 2);
-  livePixels = (uint16_t *)ps_calloc(W * H, 2);
+  for (auto &b : liveBuf) b = (uint16_t *)ps_calloc(W * H, 2);
+  livePixels = liveBuf[0];
+  camLock = xSemaphoreCreateMutex();
+  xTaskCreatePinnedToCore(previewTask, "viewfinder", 4096, nullptr, 2, nullptr, 0);
+  saveQueue = xQueueCreate(3, sizeof(SaveJob *));
+  xTaskCreatePinnedToCore(saveTask, "photo-save", 4096, nullptr, 1, nullptr, 0);
   photoPixels = (uint16_t *)ps_calloc(W * H, 2);
+  captureScreen = (uint16_t *)ps_calloc(W * H, 2);
   galleryPixels = (uint16_t *)ps_calloc(W * H, 2);
   historyThumbs = (uint16_t *)ps_calloc(ANSWER_KEEP * THUMB * THUMB, 2);
   // Screen link speed is stored so it can be tuned for the wiring without reflashing ('Y').
   spiMhz = constrain(settings.getUChar("lcd-mhz", 10), 5, 80);
-  const bool lcd = displayBegin(spiMhz * 1000000UL);
+  const bool lcd = displayBegin(spiMhz * 1000000UL, drawDone);
+  for (auto &b : drawBuffers)
+    b = (uint16_t *)heap_caps_malloc(W * DISPLAY_CHUNK_ROWS * 2, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+  for (int y = 0; y < H; ++y) {
+    // Viewfinder shading: none above the bottom 110 px, then easing to ~33% brightness.
+    const int t = y - (H - 110);
+    scrimRow[y] = t <= 0 ? 255 : (uint8_t)(255 - (170 * min(t * 100 / 60, 100)) / 100);
+  }
   Serial.printf("DISPLAY lcd=%d touch=%d spi=%uMHz\n", lcd, touchAvailable(), spiMhz);
-  if (!framebuffer || !livePixels || !photoPixels || !galleryPixels || !historyThumbs) {
+  if (!framebuffer || !captureScreen || !liveBuf[1] || !liveBuf[2] || !livePixels || !photoPixels || !galleryPixels ||
+      !historyThumbs || !drawBuffers[0] || !drawBuffers[1]) {
     Serial.println("DISPLAY_ERROR Out of PSRAM");
     framebuffer = nullptr;
     return;
@@ -1535,7 +1850,8 @@ void initDeviceUi() {
   lv_init();
   lv_tick_set_cb(tick);
   display = lv_display_create(W, H);
-  lv_display_set_buffers(display, framebuffer, nullptr, W * H * 2, LV_DISPLAY_RENDER_MODE_DIRECT);
+  lv_display_set_buffers(display, drawBuffers[0], drawBuffers[1], W * DISPLAY_CHUNK_ROWS * 2,
+                         LV_DISPLAY_RENDER_MODE_PARTIAL);
   lv_display_set_flush_cb(display, flush);
   touch = lv_indev_create();
   lv_indev_set_type(touch, LV_INDEV_TYPE_POINTER);
@@ -1560,6 +1876,49 @@ void initDeviceUi() {
   buildModel();
   buildNotice();
   buildControl();
+  // Back arrow for screens two levels deep (Answer from History, Model from Settings...).
+  backButton = plain(lv_layer_top());
+  lv_obj_set_size(backButton, 34, 34);
+  lv_obj_set_pos(backButton, 14, 14);
+  lv_obj_set_style_radius(backButton, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_bg_color(backButton, GRAPHITE, 0);
+  lv_obj_set_style_bg_opa(backButton, 220, 0);
+  lv_obj_set_ext_click_area(backButton, 10);
+  lv_obj_set_style_opa(backButton, LV_OPA_60, LV_STATE_PRESSED);
+  lv_obj_center(text(backButton, LV_SYMBOL_LEFT, F_BODY, INK));
+  onClick(backButton, [] { goBack(); });
+  lv_obj_add_flag(backButton, LV_OBJ_FLAG_HIDDEN);
+  // First run only: how to move around. Three gestures cover everything.
+  if (!settings.getBool("guide-seen2", false)) {
+    lv_obj_t *guide = plain(lv_layer_top());
+    lv_obj_set_size(guide, W, H);
+    lv_obj_set_style_bg_color(guide, VOID_, 0);
+    lv_obj_set_style_bg_opa(guide, 245, 0);
+    lv_obj_add_flag(guide, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_t *col = plain(guide);
+    lv_obj_set_size(col, W - 44, LV_SIZE_CONTENT);
+    lv_obj_align(col, LV_ALIGN_TOP_MID, 0, 30);
+    lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(col, 14, 0);
+    const char *lines[][2] = {{LV_SYMBOL_UP "  Swipe up", "on the clock: apps"},
+                              {LV_SYMBOL_UP "  Up from the bottom", "home, from anywhere"},
+                              {LV_SYMBOL_RIGHT "  Right from the left", "back one step"}};
+    for (auto &line : lines) {
+      lv_obj_t *a = text(col, line[0], F_BODY, INK);
+      lv_obj_t *b = text(col, line[1], F_SMALL, MIST);
+      lv_obj_set_style_margin_top(b, -10, 0);
+      (void)a;
+    }
+    lv_obj_t *ok = pill(guide, "Got it", 130);
+    lv_obj_align(ok, LV_ALIGN_BOTTOM_MID, 0, -ABOVE_HOME);
+    lv_obj_add_event_cb(
+        ok,
+        [](lv_event_t *e) {
+          settings.putBool("guide-seen2", true);
+          lv_obj_delete(lv_obj_get_parent((lv_obj_t *)lv_event_get_target(e)));
+        },
+        LV_EVENT_CLICKED, nullptr);
+  }
   homeBar = plain(lv_layer_top());
   lv_obj_set_size(homeBar, 40, 4);
   lv_obj_set_style_radius(homeBar, 2, 0);
@@ -1649,8 +2008,7 @@ void handleDeviceButton(char command) {
       lv_refr_now(display);
       total += micros() - t;
     }
-    Serial.printf("BENCH full_frame_ms=%.1f fps=%.1f spi=%uMHz transfer_ms=%.1f\n", total / 10000.0f, 1e7f / total,
-                  spiMhz, displayLastPresentMicros() / 1000.0f);
+    Serial.printf("BENCH full_frame_ms=%.1f fps=%.1f spi=%uMHz\n", total / 10000.0f, 1e7f / total, spiMhz);
     return;
   }
   if (command == 'n') {
@@ -1743,6 +2101,7 @@ void deviceTick() {
   String result;
   const AiState ai = aiPoll(result);
   if (ai == AiState::Done) {
+    if (pendingPhotoId == UINT32_MAX) pendingPhotoId = latestPhotoId;
     static uint16_t th[THUMB * THUMB];  // 8 KB: too big for the loop task stack
     const bool haveThumb = pendingPhotoId && loadPhotoThumb(pendingPhotoId, th);
     const uint32_t when = clockKnown() ? (uint32_t)time(nullptr) : 0;
@@ -1758,33 +2117,45 @@ void deviceTick() {
     lv_obj_add_flag(busy, LV_OBJ_FLAG_HIDDEN);
     if (waiting && current == Screen::Ask) notice(result, Screen::Ask);
   }
+  if (captureReady && !captureRequested) {
+    String problem;
+    if (!acceptCapture(problem)) notice(problem, current == Screen::Camera ? Screen::Camera : Screen::Face);
+  }
+  if (savedPhotoId && savedPhotoId != latestPhotoId) {
+    latestPhotoId = savedPhotoId;
+    refreshPhotos();
+    refreshDynamic();
+  }
   static unsigned long lastRefresh = 0;
   if (now - lastRefresh > 1000 && !dragging && !fingerDown) {
     lastRefresh = now;
     refreshDynamic();
   }
-  // Live viewfinder on the LCD while the PC mirror is not streaming.
+  // Live viewfinder: the camera task converts frames; the UI shows the newest one.
   static unsigned long lastFpsReport = 0;
-  static int frames = 0;
-  if (current == Screen::Camera && !cameraOff && !ccOpen && now - lastSerialMs > 3000 && ensurePreviewMode()) {
-    camera_fb_t *f = esp_camera_fb_get();
-    if (f) {
-      const bool ok = decodeToScreen(f->buf, f->len, f->width, f->height, livePixels, JPG_SCALE_NONE);
-      esp_camera_fb_return(f);
-      if (ok) {
-        lv_image_cache_drop(&liveDsc);
-        lv_obj_invalidate(viewfinder);
-        ++frames;
-      }
+  static uint32_t shown = 0, convertedAtReport = 0;
+  if (current == Screen::Camera && !cameraOff && !ccOpen && now - lastSerialMs > 3000) {
+    if (!previewWanted) ensurePreviewMode();
+    if (takeLiveFrame()) {
+      lv_image_cache_drop(&liveDsc);
+      lv_obj_invalidate(viewfinder);
+      ++shown;
     }
     if (now - lastFpsReport >= 5000) {
-      if (lastFpsReport) Serial.printf("PREVIEW_FPS %.1f\n", frames * 1000.0f / (now - lastFpsReport));
+      const uint32_t converted = framesConverted;
+      if (lastFpsReport && converted > convertedAtReport)
+        Serial.printf("PREVIEW_FPS %.1f camera=%.1f convert=%lums\n", shown * 1000.0f / (now - lastFpsReport),
+                      (converted - convertedAtReport) * 1000.0f / (now - lastFpsReport),
+                      (unsigned long)(convertMicros / (converted - convertedAtReport) / 1000));
       lastFpsReport = now;
-      frames = 0;
+      shown = 0;
+      convertedAtReport = converted;
+      convertMicros = 0;
     }
   } else {
     lastFpsReport = 0;
-    frames = 0;
+    shown = 0;
+    if (current != Screen::Camera || cameraOff) stopPreview();
   }
   lv_timer_handler();
 }

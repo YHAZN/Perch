@@ -7,6 +7,7 @@
 #include "device_ui.h"
 #include "ai_client.h"
 #include "clock.h"
+#include "camera.h"
 
 void testWifi(const char *ssid = WIFI_TEST_SSID, const char *password = WIFI_TEST_PASSWORD) {
   WiFi.mode(WIFI_STA);
@@ -39,10 +40,9 @@ void testWifi(const char *ssid = WIFI_TEST_SSID, const char *password = WIFI_TES
   Serial.println("Wi-Fi test complete. Internet HTTPS and captive portal checks remain.");
 }
 
-bool cameraReady = false;
-
 void capture(bool sendImage = false) {
-  if (!cameraReady) {
+  // Diagnostic capture in still mode (the UI may have the camera off or in preview).
+  if (!cameraSetMode(CameraMode::Still)) {
     Serial.println("Camera unavailable; check initialization report.");
     return;
   }
@@ -67,63 +67,6 @@ void capture(bool sendImage = false) {
   esp_camera_fb_return(frame);
 }
 
-void startCamera() {
-  if (!psramFound()) {
-    Serial.println("CAMERA SKIPPED: PSRAM unavailable.");
-    return;
-  }
-  // Seeed XIAO ESP32-S3 Sense camera connector mapping.
-  camera_config_t config = {};
-  config.pin_pwdn = -1;
-  config.pin_reset = -1;
-  config.pin_xclk = 10;
-  config.pin_sccb_sda = 40;
-  config.pin_sccb_scl = 39;
-  config.pin_d0 = 15;
-  config.pin_d1 = 17;
-  config.pin_d2 = 18;
-  config.pin_d3 = 16;
-  config.pin_d4 = 14;
-  config.pin_d5 = 12;
-  config.pin_d6 = 11;
-  config.pin_d7 = 48;
-  config.pin_vsync = 38;
-  config.pin_href = 47;
-  config.pin_pclk = 13;
-  config.xclk_freq_hz = 20000000;
-  config.ledc_timer = LEDC_TIMER_0;
-  config.ledc_channel = LEDC_CHANNEL_0;
-  config.pixel_format = PIXFORMAT_JPEG;
-  config.frame_size = FRAMESIZE_QXGA;
-  config.jpeg_quality = 8;
-  config.fb_count = 1;
-  config.fb_location = CAMERA_FB_IN_PSRAM;
-  config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
-  const esp_err_t result = esp_camera_init(&config);
-  if (result != ESP_OK) {
-    Serial.printf("CAMERA INIT FAILED: %s (0x%x)\n", esp_err_to_name(result), result);
-    return;
-  }
-  cameraReady = true;
-#if defined(CONFIG_CAMERA_CONVERTER_ENABLED)
-  Serial.printf("CAMERA_CONVERTER_ENABLED=%d\n", CONFIG_CAMERA_CONVERTER_ENABLED);
-#else
-  Serial.println("CAMERA_CONVERTER_ENABLED=0 (not defined in this build)");
-#endif
-  sensor_t *sensor = esp_camera_sensor_get();
-  // Correct the mirrored worksheet in the sensor, including the saved JPEG.
-  sensor->set_hmirror(sensor, !sensor->status.hmirror);
-  Serial.printf("Camera ready. Sensor PID: 0x%04x\n", sensor->id.PID);
-  // Allow exposure to settle before reporting the first capture.
-  for (int i = 0; i < 5; ++i) {
-    camera_fb_t *frame = esp_camera_fb_get();
-    if (frame) esp_camera_fb_return(frame);
-    delay(100);
-  }
-  capture();
-  Serial.println("Commands: s = status, c = capture check, j = JPEG over USB.");
-}
-
 void printStatus() {
   Serial.println("\n=== Tiny AI: USB diagnostic ===");
   Serial.printf("Chip: %s, revision %d, %d cores\n", ESP.getChipModel(), ESP.getChipRevision(), ESP.getChipCores());
@@ -145,10 +88,10 @@ void setup() {
   // silently drops bytes while reporting success, truncating mirror frames. Allow 1 s.
   Serial.setTxTimeoutMs(1000);
   const unsigned long start = millis();
-  while (!Serial && millis() - start < 5000) { delay(10); }
+  // Brief wait so early lines reach a connected PC; standalone boots must not stall here.
+  while (!Serial && millis() - start < 800) { delay(10); }
   clockBegin();
   printStatus();
-  startCamera();
   initDeviceUi();
   networkBegin();
 }
