@@ -266,6 +266,19 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(200, result)
             except (serial.SerialException, RuntimeError, OSError, ValueError):
                 return self.reply(503, {'error': 'Preview interrupted. Check USB and retry.'})
+        if self.path == '/api/drag':
+            # Developer: a finger drag, system edges included (gesture checks).
+            try:
+                length = int(self.headers.get('Content-Length', '0'))
+                if not 1 <= length <= 128:
+                    return self.reply(400, {'error': 'Invalid drag.'})
+                d = json.loads(self.rfile.read(length))
+                v = [d.get(k) for k in ('x1', 'y1', 'x2', 'y2')] + [d.get('ms', 300)]
+                if any(type(n) is not int for n in v):
+                    return self.reply(400, {'error': 'Invalid drag.'})
+                return self.reply(200, exchange('!' + ','.join(str(n) for n in v) + '\n', screen=True))
+            except (serial.SerialException, RuntimeError, ValueError, OSError) as error:
+                return self.reply(503, {'error': str(error)})
         if self.path == '/api/touch':
             try:
                 length = int(self.headers.get('Content-Length', '0'))

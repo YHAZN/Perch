@@ -23,12 +23,13 @@
 
 namespace {
 constexpr int W = 240, H = 284;
-// System edges: drag up from the bottom strip for home, down from the top strip for
-// Control Center. Touches that start there never reach the app underneath.
-constexpr int HOME_ZONE = 236;
+// System edges: drag up from the bottom line (where the home bar is) for home, down from the
+// top line for Control Center, right from the left edge for back. An edge swipe starts only
+// when the finger moves in that direction; anything else goes to the app underneath.
+constexpr int HOME_ZONE = 262;
 constexpr int TOP_ZONE = 22;
-// Distance from the bottom edge to the lowest tappable control (clear of the home zone).
-constexpr int ABOVE_HOME = H - HOME_ZONE + 14;
+// Distance from the bottom edge to the lowest tappable control (clear of the home bar).
+constexpr int ABOVE_HOME = 62;
 // Drag this far (or flick) to commit an edge gesture; less springs back.
 constexpr int COMMIT_DRAG = 70;
 // When Ask has earlier answers, its first screen ends this short so the list peeks in.
@@ -36,7 +37,6 @@ constexpr int ASK_PEEK = 26;
 constexpr int MAX_PHOTOS = 12;
 // Left strip: drag right from here to go back one level.
 constexpr int BACK_ZONE = 24;
-const uint8_t BRIGHTNESS[] = {255, 140, 50};
 
 // Design tokens (design/index.html :root)
 lv_color_t VOID_, GRAPHITE, ICON_BG, ICON_DIM, LINE, MIST, INK, LENS;
@@ -67,8 +67,17 @@ Screen noticeReturn = Screen::Ask;
 
 Preferences settings;
 bool useGemini = true;
+// AI settings, saved per provider: model and effort (indexes into ai_client's lists).
+int geminiModel = 0, geminiEffort = 0, gptModel = 0, gptEffort = 0;
+// A question can span pages: earlier pages (saved photo ids, oldest first) give context for
+// the newest photo. "+ Page" appends; any other new photo starts a new question.
+std::vector<uint32_t> contextIds;
+bool appendingPage = false;
+// What the running AI request is for: an answer, or writing down what was said.
+enum class Pending { None, Answer, Transcribe } pending = Pending::None;
+String heardText;
 bool cameraOff = false;
-uint8_t brightnessLevel = 0;
+uint8_t brightnessPct = 100;  // 5..100, continuous (Control Center and Settings sliders)
 uint8_t spiMhz = 10;
 unsigned long sequence = 0;
 unsigned long lastSerialMs = 0;
@@ -139,12 +148,26 @@ unsigned long scanStartedAt = 0;
 lv_obj_t *modelValue, *wifiValue, *brightSlider, *storageValue, *storageSub;
 lv_obj_t *modelCheck[2], *modelSub[2];
 lv_obj_t *noticeText;
-lv_obj_t *homeBar;
-lv_obj_t *cc, *ccWifi, *ccBright, *ccBrightLabel, *ccModel, *ccModelLabel, *ccCamera;
+// Ask: pages and "what you said"
+lv_obj_t *pageBar, *pageChip, *addPageBtn, *pageBanner;
+lv_obj_t *heardSheet, *heardLabel;
+bool pageCamera = false;  // the camera was opened by "+ Page"; return to Ask after the shot
+void showHeard(const String &words);
+void addPage();
+int pageCount();
+void refreshAiScreen();
+// AI settings screen
+lv_obj_t *aiUseCheck[2], *aiUseSub[2];
+lv_obj_t *gemModelCheck[8], *gptModelCheck[8];
+lv_obj_t *effortSeg[2][AI_EFFORT_COUNT];
+String aiScreenSignature;
+lv_obj_t *homeBar, *topBar;
+lv_obj_t *cc, *ccWifi, *ccWifiLabel, *ccBright, *ccModel, *ccModelLabel, *ccCamera, *ccCameraLabel;
 bool ccOpen = false;
 
 // Touch
 bool injecting = false;
+bool injectEdges = false;  // injected drags exercise the system edges like a finger
 int injectX = 0, injectY = 0;
 bool fingerDown = false;
 enum class Edge { None, Home, Control, Back } edge = Edge::None;
@@ -278,6 +301,20 @@ void onClick(lv_obj_t *o, void (*fn)()) {
 lv_obj_t *pressedFeedback(lv_obj_t *o) {
   lv_obj_set_style_opa(o, LV_OPA_60, LV_STATE_PRESSED);
   return o;
+}
+// Compact pill for secondary actions on top of a photo: 34 px tall, 46 px touch target.
+lv_obj_t *chip(lv_obj_t *parent, const char *label) {
+  lv_obj_t *c = pressedFeedback(plain(parent));
+  lv_obj_set_size(c, LV_SIZE_CONTENT, 34);
+  lv_obj_set_style_pad_hor(c, 14, 0);
+  lv_obj_set_style_radius(c, 17, 0);
+  lv_obj_set_style_bg_color(c, GRAPHITE, 0);
+  lv_obj_set_style_bg_opa(c, 230, 0);
+  lv_obj_set_flex_flow(c, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(c, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+  text(c, label, F_SMALL, INK);
+  lv_obj_set_ext_click_area(c, 6);
+  return c;
 }
 String ago(uint32_t when) {
   const time_t now = time(nullptr);
@@ -609,7 +646,7 @@ void enter(Screen next) {
   current = next;
   onEnter(next);
   refreshDynamic();
-  hide(homeBar, next == Screen::Face || next == Screen::Apps);
+  hide(homeBar, false);  // the bottom line always does something: grid, home, or close
   // The back arrow appears on screens you reached from inside another app (two levels deep).
   const bool showBack = !backStack.empty() && backStack.back() != Screen::Face && backStack.back() != Screen::Apps &&
                         next != Screen::Notice;
@@ -754,9 +791,13 @@ void releaseHome(int dy, int speed) {
 }
 
 // Control Center: pulled down from the top edge over whatever is on screen.
-void ccClosed(lv_anim_t *) { lv_obj_add_flag(cc, LV_OBJ_FLAG_HIDDEN); }
+void ccClosed(lv_anim_t *) {
+  lv_obj_add_flag(cc, LV_OBJ_FLAG_HIDDEN);
+  if (topBar) lv_obj_remove_flag(topBar, LV_OBJ_FLAG_HIDDEN);
+}
 void openControl(int fromY = -H) {
   ccOpen = true;
+  if (topBar) lv_obj_add_flag(topBar, LV_OBJ_FLAG_HIDDEN);
   refreshDynamic();
   lv_obj_remove_flag(cc, LV_OBJ_FLAG_HIDDEN);
   lv_obj_move_foreground(cc);
@@ -773,6 +814,14 @@ void dragControl(int dy) {
   lv_obj_remove_flag(cc, LV_OBJ_FLAG_HIDDEN);
   lv_obj_move_foreground(cc);
   lv_obj_set_y(cc, min(0, -H + dy));
+}
+void dragControlClosed(int up) {
+  if (!ccOpen) return;
+  lv_obj_set_y(cc, -max(0, up));
+}
+void releaseControlClosed(int up, int speed) {
+  if (up > COMMIT_DRAG / 2 || (up > 16 && speed > 600)) closeControl(-up);
+  else animY(cc, -up, 0, 200, lv_anim_path_ease_out, nullptr);
 }
 void releaseControl(int dy, int speed) {
   if (dy > COMMIT_DRAG || (dy > 24 && speed < -600)) openControl(-H + dy);
@@ -915,7 +964,15 @@ void refreshDynamic() {
   hide(askPhoto, !photo);
   hide(askEmpty, photo);
   hide(askHint, !photo || !online);
-  setText(askButtonLabel, !online ? "Ask when online" : photo ? "Ask about this" : "Capture and ask");
+  const int pages = pageCount();
+  setText(askButtonLabel, !online     ? "Ask when online"
+                          : !photo    ? "Capture and ask"
+                          : pages > 1 ? (String("Ask about ") + pages + " pages").c_str()
+                                      : "Ask about this");
+  hide(pageBar, !photo);
+  hide(pageChip, pages < 2);
+  if (pages > 1) setText(lv_obj_get_child(pageChip, 0), (String(pages) + " pages  " LV_SYMBOL_CLOSE).c_str());
+  hide(pageBanner, !pageCamera);
   const lv_opa_t pillOpa = online ? LV_OPA_COVER : LV_OPA_60;
   if (lv_obj_get_style_opa(askPill, 0) != pillOpa) lv_obj_set_style_opa(askPill, pillOpa, 0);
   // Camera privacy
@@ -923,7 +980,8 @@ void refreshDynamic() {
   hide(shutter, cameraOff);
   hide(cameraOffLabel, !cameraOff);
   // Settings and Model
-  setText(modelValue, useGemini ? "Gemini" : "GPT");
+  setText(modelValue, useGemini ? GEMINI_MODELS[constrain(geminiModel, 0, GEMINI_MODEL_COUNT - 1)].label
+                                : GPT_MODELS[constrain(gptModel, 0, GPT_MODEL_COUNT - 1)].label);
   setText(wifiValue, !networkEnabled() ? "Off" : online ? networkName().c_str() : "Not connected");
   // Wi-Fi list: show results when a scan finishes; rescan every 20 s while it is open.
   if (current == Screen::Wifi) {
@@ -936,10 +994,7 @@ void refreshDynamic() {
     if (current == Screen::Wifi) startScan();
   }
   if (keyCache < 0) keyCache = (settings.isKey("gemini-key") ? 1 : 0) | (settings.isKey("gpt-key") ? 2 : 0);
-  for (int i = 0; i < 2; ++i) {
-    setText(modelCheck[i], (i == 0) == useGemini ? LV_SYMBOL_OK : "");
-    setText(modelSub[i], (keyCache >> i) & 1 ? "Key saved" : "No key saved");
-  }
+  if (current == Screen::Model) refreshAiScreen();
   setText(storageValue, freeKbCache ? (String(freeKbCache) + " KB free").c_str() : "");
   setText(storageSub, (String(photoCount) + " photos, " + answerCount + " answers on the device").c_str());
   setText(remoteStatus, !remoteStarted()    ? ""
@@ -948,25 +1003,23 @@ void refreshDynamic() {
   lv_obj_set_style_opa(remoteSlides, remoteConnected() ? LV_OPA_COVER : LV_OPA_40, 0);
   lv_obj_set_style_opa(remoteMediaPanel, remoteConnected() ? LV_OPA_COVER : LV_OPA_40, 0);
   // Control Center: restyle only when a toggle actually changed.
-  const String cc = String(networkEnabled()) + brightnessLevel + cameraOff + useGemini;
+  const String cc = String(networkEnabled()) + online + cameraOff + useGemini;
   if (cc != ccSignature) {
     ccSignature = cc;
+    // On: amber disc, dark glyph. Off: dark disc, light glyph. The label always says which.
     auto toggle = [](lv_obj_t *t, bool on) {
-      lv_obj_set_style_bg_color(t, on ? INK : ICON_BG, 0);
+      lv_obj_set_style_bg_color(t, on ? LENS : ICON_BG, 0);
       lv_obj_t *glyph = lv_obj_get_child(t, 0);
       if (glyph) lv_obj_set_style_text_color(glyph, on ? VOID_ : INK, 0);
-      for (uint32_t i = 0; i < lv_obj_get_child_count(t); ++i) {
-        lv_obj_t *c = lv_obj_get_child(t, i);
-        lv_obj_set_style_border_color(c, on ? VOID_ : INK, 0);
-        lv_obj_set_style_bg_color(c, on ? VOID_ : INK, 0);
-      }
     };
     toggle(ccWifi, networkEnabled());
-    toggle(ccBright, brightnessLevel == 0);
-    toggle(ccCamera, cameraOff);
+    setText(ccWifiLabel, !networkEnabled() ? "Wi-Fi off" : online ? "Wi-Fi on" : "Searching");
+    toggle(ccCamera, !cameraOff);
+    setText(lv_obj_get_child(ccCamera, 0), cameraOff ? LV_SYMBOL_EYE_CLOSE : LV_SYMBOL_EYE_OPEN);
+    setText(ccCameraLabel, cameraOff ? "Camera off" : "Camera on");
     toggle(ccModel, false);
     setText(lv_obj_get_child(ccModel, 0), useGemini ? "G" : "GPT");
-    setText(ccBrightLabel, brightnessLevel == 0 ? "100%" : brightnessLevel == 1 ? "55%" : "20%");
+    setText(ccModelLabel, useGemini ? "Gemini" : "GPT");
   }
 }
 
@@ -1184,6 +1237,14 @@ bool acceptCapture(String &problem) {
     return false;
   }
   if (captureOut.blurry) toast("Blurry. Hold still and try again");
+  // "+ Page" keeps the previous photo as context; any other photo starts a new question.
+  if (appendingPage && latestPhotoId && jpegBytes) {
+    contextIds.push_back(latestPhotoId);
+    while ((int)contextIds.size() > AI_MAX_PAGES - 1) contextIds.erase(contextIds.begin());
+  } else {
+    contextIds.clear();
+  }
+  appendingPage = false;
   free(savedJpeg);
   savedJpeg = captureOut.jpeg;
   jpegBytes = jpegCapacity = captureOut.len;
@@ -1208,7 +1269,17 @@ bool takePhoto(String &problem) {
   }
   return acceptCapture(problem);
 }
-void startAsk(const uint8_t *wav = nullptr, size_t wavLength = 0) {
+AiOptions aiOptions(bool gemini) {
+  AiOptions o;
+  o.gemini = gemini;
+  o.key = settings.getString(gemini ? "gemini-key" : "gpt-key", "");
+  o.model = gemini ? GEMINI_MODELS[constrain(geminiModel, 0, GEMINI_MODEL_COUNT - 1)].id
+                   : GPT_MODELS[constrain(gptModel, 0, GPT_MODEL_COUNT - 1)].id;
+  o.effort = AI_EFFORTS[constrain(gemini ? geminiEffort : gptEffort, 0, AI_EFFORT_COUNT - 1)];
+  return o;
+}
+int pageCount() { return jpegBytes ? (int)contextIds.size() + 1 : 0; }
+void startAsk(const String &question = "", const uint8_t *wav = nullptr, size_t wavLength = 0) {
   if (!jpegBytes) {
     notice("Take a photo first.", Screen::Ask);
     return;
@@ -1236,19 +1307,98 @@ void startAsk(const uint8_t *wav = nullptr, size_t wavLength = 0) {
     notice("The previous request is still finishing. Try again in a moment.", Screen::Ask);
     return;
   }
-  String key = settings.getString(useGemini ? "gemini-key" : "gpt-key", "");
+  // Earlier pages come from flash; the newest is the photo in memory.
+  const uint8_t *jpegs[AI_MAX_PAGES];
+  size_t lengths[AI_MAX_PAGES];
+  uint8_t *loaded[AI_MAX_PAGES] = {nullptr};
+  int pages = 0;
+  for (uint32_t id : contextIds) {
+    uint8_t *j = nullptr;
+    size_t l = 0;
+    if (pages < AI_MAX_PAGES - 1 && loadPhoto(id, j, l)) {
+      loaded[pages] = j;
+      jpegs[pages] = j;
+      lengths[pages] = l;
+      ++pages;
+    }
+  }
+  jpegs[pages] = savedJpeg;
+  lengths[pages] = jpegBytes;
+  ++pages;
+  AiOptions options = aiOptions(useGemini);
   remoteEnd();  // Bluetooth leaves too little memory for HTTPS
-  const bool started = aiStart(useGemini, key, savedJpeg, jpegBytes, wav, wavLength);
-  key = "";
+  const bool started = aiStart(options, jpegs, lengths, pages, question, wav, wavLength);
+  options.key = "";
+  for (uint8_t *l : loaded) free(l);
   if (!started) {
     notice("Could not start the request. Not enough memory.", Screen::Ask);
     return;
   }
+  pending = Pending::Answer;
   pendingGemini = useGemini;
   pendingPhotoId = photoSavePending ? UINT32_MAX : latestPhotoId;
-  lv_label_set_text(busyLabel, wav ? "Asking about what you said" : useGemini ? "Asking Gemini" : "Asking GPT");
+  const String who = useGemini ? "Gemini" : "GPT";
+  lv_label_set_text(busyLabel, (pages > 1                  ? "Asking " + who + " about " + pages + " pages"
+                                : question.length() || wav ? "Asking " + who + " your question"
+                                                           : "Asking " + who)
+                                   .c_str());
   lv_obj_remove_flag(busy, LV_OBJ_FLAG_HIDDEN);
   show(Screen::Ask);
+}
+// Hold-to-talk released: write down what was said, show it, and let the user send it.
+// Offline there is nothing to transcribe with; the recording is kept with the question.
+void startListenBack(const uint8_t *wav, size_t length) {
+  if (!networkConnected()) {
+    startAsk("", wav, length);
+    return;
+  }
+  if (aiBusy()) {
+    notice("The previous request is still finishing. Try again in a moment.", Screen::Ask);
+    return;
+  }
+  AiOptions options = aiOptions(useGemini);
+  remoteEnd();
+  const bool started = aiTranscribe(options, wav, length);
+  options.key = "";
+  if (!started) {
+    notice("Could not start. Not enough memory.", Screen::Ask);
+    return;
+  }
+  pending = Pending::Transcribe;
+  lv_label_set_text(busyLabel, "Writing down what you said");
+  lv_obj_remove_flag(busy, LV_OBJ_FLAG_HIDDEN);
+}
+// Wait for the previous photo to reach flash: its id is what a new page links back to.
+void waitForSave() {
+  const unsigned long start = millis();
+  while (photoSavePending && millis() - start < 10000) {
+    lv_timer_handler();
+    delay(10);
+  }
+}
+void showHeard(const String &words) {
+  heardText = words;
+  setText(heardLabel, words.c_str());
+  lv_obj_remove_flag(heardSheet, LV_OBJ_FLAG_HIDDEN);
+  show(Screen::Ask);
+}
+// "+ Page": open the camera to photograph the next page of the same question.
+void addPage() {
+  if (cameraOff) {
+    toast("Camera is off. Turn it on in Control Center");
+    return;
+  }
+  if (!jpegBytes) {
+    show(Screen::Camera);
+    return;
+  }
+  waitForSave();
+  appendingPage = true;
+  pageCamera = true;
+  const int next = min(pageCount() + 1, AI_MAX_PAGES);
+  setText(pageBanner, pageCount() >= AI_MAX_PAGES ? "Next page (oldest is dropped)"
+                                                  : (String("Page ") + next + " of up to " + AI_MAX_PAGES).c_str());
+  show(Screen::Camera);
 }
 void refreshQueue() {
   queuedCount = queueList(queued, 16);
@@ -1277,12 +1427,37 @@ void setModel(bool gemini) {
   settings.putBool("gemini", useGemini);
   refreshDynamic();
 }
-void setBrightness(uint8_t level) {
-  brightnessLevel = level % 3;
-  settings.putUChar("bright", brightnessLevel);
-  displayBrightness(BRIGHTNESS[brightnessLevel]);
-  lv_slider_set_value(brightSlider, BRIGHTNESS[brightnessLevel], LV_ANIM_OFF);
-  refreshDynamic();
+// Brightness follows the finger; it is saved when the finger lifts (flash wears on writes).
+void setBrightness(int pct, bool save) {
+  brightnessPct = constrain(pct, 5, 100);
+  displayBrightness(brightnessPct * 255 / 100);
+  if (brightSlider && lv_slider_get_value(brightSlider) != brightnessPct)
+    lv_slider_set_value(brightSlider, brightnessPct, LV_ANIM_OFF);
+  if (ccBright && lv_slider_get_value(ccBright) != brightnessPct)
+    lv_slider_set_value(ccBright, brightnessPct, LV_ANIM_OFF);
+  if (save) settings.putUChar("bright-pct", brightnessPct);
+}
+// A wide, thick slider: the whole track is the touch target and fills as you drag.
+lv_obj_t *brightnessSlider(lv_obj_t *parent, int width, int height) {
+  lv_obj_t *sl = lv_slider_create(parent);
+  lv_obj_set_size(sl, width, height);
+  lv_slider_set_range(sl, 5, 100);
+  lv_obj_set_style_radius(sl, height / 2, LV_PART_MAIN);
+  lv_obj_set_style_bg_color(sl, GRAPHITE, LV_PART_MAIN);
+  lv_obj_set_style_bg_opa(sl, LV_OPA_COVER, LV_PART_MAIN);
+  lv_obj_set_style_radius(sl, height / 2, LV_PART_INDICATOR);
+  lv_obj_set_style_bg_color(sl, INK, LV_PART_INDICATOR);
+  lv_obj_set_style_bg_opa(sl, LV_OPA_COVER, LV_PART_INDICATOR);
+  lv_obj_set_style_bg_opa(sl, LV_OPA_TRANSP, LV_PART_KNOB);
+  lv_obj_set_style_pad_all(sl, 0, LV_PART_KNOB);
+  lv_obj_set_ext_click_area(sl, 10);
+  lv_obj_remove_flag(sl, LV_OBJ_FLAG_GESTURE_BUBBLE);
+  lv_obj_remove_flag(sl, LV_OBJ_FLAG_SCROLL_CHAIN);
+  lv_obj_add_event_cb(
+      sl, [](lv_event_t *e) { setBrightness(lv_slider_get_value((lv_obj_t *)lv_event_get_target(e)), false); },
+      LV_EVENT_VALUE_CHANGED, nullptr);
+  lv_obj_add_event_cb(sl, [](lv_event_t *) { setBrightness(brightnessPct, true); }, LV_EVENT_RELEASED, nullptr);
+  return sl;
 }
 void setCameraOff(bool off) {
   cameraOff = off;
@@ -1449,6 +1624,11 @@ void rebuildHistory() {
 void onEnter(Screen s) {
   // Bluetooth only runs inside the apps that use it: it costs ~100 KB of RAM HTTPS needs.
   if (s != Screen::Remote && s != Screen::Gestures) remoteEnd();
+  if (s != Screen::Camera && pageCamera && !captureRequested && !captureReady) {
+    pageCamera = false;
+    appendingPage = false;
+  }
+  if (s == Screen::Model) aiScreenSignature = "";
   if (s == Screen::Photos) {
     hide(photosImage, photoCount == 0);
     hide(photosEmpty, photoCount != 0);
@@ -1527,13 +1707,6 @@ void buildFace() {
         const lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_active());
         if (dir == LV_DIR_TOP) cycleCard(1);
         else if (dir == LV_DIR_BOTTOM) cycleCard(-1);
-      },
-      LV_EVENT_GESTURE, nullptr);
-  // Swipe up anywhere else on the face opens the app grid.
-  lv_obj_add_event_cb(
-      s,
-      [](lv_event_t *) {
-        if (lv_indev_get_gesture_dir(lv_indev_active()) == LV_DIR_TOP && current == Screen::Face) openApps();
       },
       LV_EVENT_GESTURE, nullptr);
 }
@@ -1633,6 +1806,14 @@ void buildCamera() {
   cameraOffLabel = text(s, "Camera is off.\nTurn it on in Control Center.", F_BODY, MIST);
   lv_obj_set_style_text_align(cameraOffLabel, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_align(cameraOffLabel, LV_ALIGN_CENTER, 0, -20);
+  pageBanner = text(s, "", F_SMALL, INK);
+  lv_obj_set_style_bg_color(pageBanner, GRAPHITE, 0);
+  lv_obj_set_style_bg_opa(pageBanner, 220, 0);
+  lv_obj_set_style_radius(pageBanner, 12, 0);
+  lv_obj_set_style_pad_hor(pageBanner, 12, 0);
+  lv_obj_set_style_pad_ver(pageBanner, 5, 0);
+  lv_obj_align(pageBanner, LV_ALIGN_TOP_MID, 0, 30);
+  lv_obj_add_flag(pageBanner, LV_OBJ_FLAG_HIDDEN);
   // Shutter: one ring. Press fills it, so the feedback lands on touch-down.
   shutter = circle(s, 60, INK, 4, INK, LV_OPA_TRANSP);
   lv_obj_align(shutter, LV_ALIGN_BOTTOM_MID, 0, -ABOVE_HOME);
@@ -1683,6 +1864,25 @@ void buildAsk() {
   scrimBottom(hero, 120);
   askOffline = text(hero, "Offline", F_SMALL, INK);
   lv_obj_align(askOffline, LV_ALIGN_TOP_MID, 0, 26);
+  // Pages: "+ Page" photographs another page for the same question; the chip shows how
+  // many pages will be sent and clears back to this one.
+  pageBar = plain(hero);
+  lv_obj_set_size(pageBar, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(pageBar, LV_FLEX_FLOW_ROW);
+  lv_obj_set_style_pad_column(pageBar, 8, 0);
+  lv_obj_align(pageBar, LV_ALIGN_TOP_RIGHT, -12, 30);
+  pageChip = chip(pageBar, "");
+  lv_obj_add_flag(pageChip, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(
+      pageChip,
+      [](lv_event_t *) {
+        contextIds.clear();
+        refreshDynamic();
+        toast("Just this page now");
+      },
+      LV_EVENT_CLICKED, nullptr);
+  addPageBtn = chip(pageBar, "+ Page");
+  onClick(addPageBtn, addPage);
   askHint = text(hero, "Hold the button to ask by voice", F_SMALL, MIST);
   lv_obj_align(askHint, LV_ALIGN_BOTTOM_MID, 0, -ABOVE_HOME - 56);
   historyList = plain(askScroll);
@@ -1729,7 +1929,7 @@ void buildAsk() {
       toast("Hold and speak, then let go");
       return;
     }
-    startAsk(wav, len);
+    startListenBack(wav, len);
   };
   lv_obj_add_event_cb(askPill, release, LV_EVENT_RELEASED, nullptr);
   lv_obj_add_event_cb(askPill, release, LV_EVENT_PRESS_LOST, nullptr);
@@ -1776,8 +1976,40 @@ void buildAsk() {
   lv_obj_align(listenRing, LV_ALIGN_CENTER, 0, -40);
   lv_obj_t *listenLabel = text(listenOverlay, "Listening", F_BODY, INK);
   lv_obj_align(listenLabel, LV_ALIGN_CENTER, 0, 20);
-  listenTime = text(listenOverlay, "Let go to ask", F_SMALL, MIST);
+  listenTime = text(listenOverlay, "Let go when you are done", F_SMALL, MIST);
   lv_obj_align(listenTime, LV_ALIGN_CENTER, 0, 44);
+
+  // What you said: shown before anything is asked, so a mishearing is caught first.
+  heardSheet = plain(s);
+  lv_obj_set_size(heardSheet, W, H);
+  lv_obj_set_style_bg_color(heardSheet, VOID_, 0);
+  lv_obj_set_style_bg_opa(heardSheet, 240, 0);
+  lv_obj_add_flag(heardSheet, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_flag(heardSheet, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_t *said = text(heardSheet, "YOU SAID", F_SMALL, MIST);
+  lv_obj_set_pos(said, 22, 30);
+  lv_obj_t *heardBox = plain(heardSheet);
+  lv_obj_set_size(heardBox, W - 44, H - 52 - ABOVE_HOME - 58);
+  lv_obj_set_pos(heardBox, 22, 52);
+  scrollable(heardBox);
+  heardLabel = text(heardBox, "", F_LARGE, INK);
+  lv_obj_set_width(heardLabel, W - 44);
+  lv_label_set_long_mode(heardLabel, LV_LABEL_LONG_WRAP);
+  lv_obj_set_style_text_line_space(heardLabel, 4, 0);
+  lv_obj_t *again = pill(heardSheet, "Again", 96);
+  lv_obj_align(again, LV_ALIGN_BOTTOM_LEFT, 18, -ABOVE_HOME);
+  onClick(again, [] {
+    lv_obj_add_flag(heardSheet, LV_OBJ_FLAG_HIDDEN);
+    toast("Hold the button and speak");
+  });
+  lv_obj_t *send = pill(heardSheet, "Ask", 110);
+  lv_obj_set_style_bg_color(send, LENS, 0);
+  lv_obj_set_style_text_color(lv_obj_get_child(send, 0), VOID_, 0);
+  lv_obj_align(send, LV_ALIGN_BOTTOM_RIGHT, -18, -ABOVE_HOME);
+  onClick(send, [] {
+    lv_obj_add_flag(heardSheet, LV_OBJ_FLAG_HIDDEN);
+    startAsk(heardText);
+  });
 
   // Thinking state: calm breathing ring, honest label, always cancellable.
   busy = plain(s);
@@ -2303,27 +2535,12 @@ void buildSettings() {
   title(s, "Settings");
   lv_obj_t *wifiRow = row(s, 58, "Wi-Fi", &wifiValue);
   onClick(wifiRow, [] { show(Screen::Wifi); });
-  lv_obj_t *model = row(s, 110, "Model", &modelValue);
+  lv_obj_t *model = row(s, 110, "AI", &modelValue);
   onClick(model, [] { show(Screen::Model); });
   lv_obj_t *bright = row(s, 162, "Brightness", nullptr);
-  brightSlider = lv_slider_create(bright);
-  lv_obj_set_size(brightSlider, 92, 6);
-  lv_obj_align(brightSlider, LV_ALIGN_RIGHT_MID, -22, 0);
-  lv_slider_set_range(brightSlider, 20, 255);
-  lv_obj_set_style_bg_color(brightSlider, LINE, LV_PART_MAIN);
-  lv_obj_set_style_bg_opa(brightSlider, LV_OPA_COVER, LV_PART_MAIN);
-  lv_obj_set_style_radius(brightSlider, 3, LV_PART_MAIN);
-  lv_obj_set_style_bg_color(brightSlider, INK, LV_PART_INDICATOR);
-  lv_obj_set_style_bg_opa(brightSlider, LV_OPA_COVER, LV_PART_INDICATOR);
-  lv_obj_set_style_radius(brightSlider, 3, LV_PART_INDICATOR);
-  lv_obj_set_style_bg_color(brightSlider, INK, LV_PART_KNOB);
-  lv_obj_set_style_bg_opa(brightSlider, LV_OPA_COVER, LV_PART_KNOB);
-  lv_obj_set_style_radius(brightSlider, LV_RADIUS_CIRCLE, LV_PART_KNOB);
-  lv_obj_set_style_pad_all(brightSlider, 6, LV_PART_KNOB);
-  lv_obj_set_ext_click_area(brightSlider, 16);
-  lv_obj_add_event_cb(
-      brightSlider, [](lv_event_t *e) { displayBrightness(lv_slider_get_value((lv_obj_t *)lv_event_get_target(e))); },
-      LV_EVENT_VALUE_CHANGED, nullptr);
+  brightSlider = brightnessSlider(bright, 104, 22);
+  lv_obj_align(brightSlider, LV_ALIGN_RIGHT_MID, -20, 0);
+  lv_obj_remove_flag(bright, LV_OBJ_FLAG_CLICKABLE);  // the row itself does nothing; the slider does
   lv_obj_t *storage = row(s, 214, "Storage", &storageValue, 64);
   lv_obj_align(lv_obj_get_child(storage, 0), LV_ALIGN_TOP_LEFT, 22, 12);
   lv_obj_align(storageValue, LV_ALIGN_TOP_RIGHT, -20, 12);
@@ -2369,26 +2586,144 @@ void buildSettings() {
   lv_obj_set_pos(spacer, 0, 450);
 }
 
+// AI settings: which provider answers, and for each provider its model and effort.
+void saveAi() {
+  settings.putUChar("gm-model", geminiModel);
+  settings.putUChar("gm-effort", geminiEffort);
+  settings.putUChar("gp-model", gptModel);
+  settings.putUChar("gp-effort", gptEffort);
+  aiScreenSignature = "";
+  refreshDynamic();
+}
+lv_obj_t *sectionLabel(lv_obj_t *list, const char *label) {
+  lv_obj_t *l = text(list, label, F_SMALL, MIST);
+  lv_obj_set_style_margin_left(l, 22, 0);
+  lv_obj_set_style_margin_top(l, 16, 0);
+  lv_obj_set_style_margin_bottom(l, 4, 0);
+  return l;
+}
+lv_obj_t *choiceRow(lv_obj_t *list, const char *label, const char *note, lv_obj_t **check, lv_obj_t **noteOut,
+                    lv_event_cb_t cb, intptr_t value) {
+  lv_obj_t *r = pressedFeedback(plain(list));
+  lv_obj_set_size(r, W, 56);
+  lv_obj_set_style_border_side(r, LV_BORDER_SIDE_BOTTOM, 0);
+  lv_obj_set_style_border_width(r, 1, 0);
+  lv_obj_set_style_border_color(r, LINE, 0);
+  lv_obj_t *l = text(r, label, F_BODY, INK);
+  lv_obj_set_pos(l, 22, 8);
+  lv_obj_t *n = text(r, note, F_SMALL, MIST);
+  lv_obj_set_pos(n, 22, 32);
+  if (noteOut) *noteOut = n;
+  *check = text(r, "", F_BODY, LENS);
+  lv_obj_align(*check, LV_ALIGN_RIGHT_MID, -20, 0);
+  lv_obj_add_flag(r, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(r, cb, LV_EVENT_CLICKED, (void *)value);
+  return r;
+}
+void segmented(lv_obj_t *list, lv_obj_t **segs, lv_event_cb_t cb, int provider) {
+  lv_obj_t *bar = plain(list);
+  lv_obj_set_size(bar, W - 40, 40);
+  lv_obj_set_style_margin_left(bar, 20, 0);
+  lv_obj_set_style_radius(bar, 20, 0);
+  lv_obj_set_style_bg_color(bar, GRAPHITE, 0);
+  lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
+  lv_obj_set_style_pad_all(bar, 3, 0);
+  lv_obj_set_flex_flow(bar, LV_FLEX_FLOW_ROW);
+  static const char *names[AI_EFFORT_COUNT] = {"Low", "Medium", "High"};
+  for (int i = 0; i < AI_EFFORT_COUNT; ++i) {
+    lv_obj_t *b = plain(bar);
+    lv_obj_set_height(b, 34);
+    lv_obj_set_flex_grow(b, 1);
+    lv_obj_set_style_radius(b, 17, 0);
+    lv_obj_center(text(b, names[i], F_SMALL, INK));
+    lv_obj_set_ext_click_area(b, 4);
+    lv_obj_add_flag(b, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, (void *)(intptr_t)(provider * 10 + i));
+    segs[i] = b;
+  }
+}
+void refreshAiScreen() {
+  const String sig = String(useGemini) + geminiModel + geminiEffort + gptModel + gptEffort + keyCache;
+  if (sig == aiScreenSignature) return;
+  aiScreenSignature = sig;
+  for (int i = 0; i < 2; ++i) {
+    setText(aiUseCheck[i], (i == 0) == useGemini ? LV_SYMBOL_OK : "");
+    setText(aiUseSub[i], (keyCache >> i) & 1 ? "Key saved" : "No key: add it in PC setup");
+  }
+  for (int i = 0; i < GEMINI_MODEL_COUNT; ++i) setText(gemModelCheck[i], i == geminiModel ? LV_SYMBOL_OK : "");
+  for (int i = 0; i < GPT_MODEL_COUNT; ++i) setText(gptModelCheck[i], i == gptModel ? LV_SYMBOL_OK : "");
+  for (int p = 0; p < 2; ++p)
+    for (int i = 0; i < AI_EFFORT_COUNT; ++i) {
+      const bool on = i == (p == 0 ? geminiEffort : gptEffort);
+      lv_obj_set_style_bg_color(effortSeg[p][i], INK, 0);
+      lv_obj_set_style_bg_opa(effortSeg[p][i], on ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+      lv_obj_set_style_text_color(lv_obj_get_child(effortSeg[p][i], 0), on ? VOID_ : INK, 0);
+    }
+}
 void buildModel() {
   lv_obj_t *s = scr[(int)Screen::Model] = screenBase();
-  title(s, "Model");
-  const char *names[2] = {"Gemini", "GPT"};
-  for (int i = 0; i < 2; ++i) {
-    lv_obj_t *r = row(s, 58 + i * 60, names[i], nullptr, 60);
-    lv_obj_align(lv_obj_get_child(r, 0), LV_ALIGN_TOP_LEFT, 22, 10);
-    modelSub[i] = text(r, "", F_SMALL, MIST);
-    lv_obj_set_pos(modelSub[i], 22, 34);
-    modelCheck[i] = text(r, "", F_BODY, LENS);
-    lv_obj_align(modelCheck[i], LV_ALIGN_RIGHT_MID, -22, 0);
-    lv_obj_add_flag(r, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(
-        r,
+  title(s, "AI");
+  lv_obj_t *list = plain(s);
+  lv_obj_set_size(list, W, H - 52);
+  lv_obj_set_pos(list, 0, 52);
+  scrollable(list);
+  lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_style_pad_bottom(list, 70, 0);
+  sectionLabel(list, "ANSWERS FROM");
+  const char *providers[2] = {"Gemini", "GPT"};
+  for (int i = 0; i < 2; ++i)
+    choiceRow(
+        list, providers[i], "", &aiUseCheck[i], &aiUseSub[i],
         [](lv_event_t *e) {
           setModel(lv_event_get_user_data(e) == nullptr);
-          goBack();
+          aiScreenSignature = "";
+          refreshDynamic();
         },
-        LV_EVENT_CLICKED, i == 0 ? nullptr : (void *)1);
-  }
+        i);
+  sectionLabel(list, "GEMINI MODEL");
+  for (int i = 0; i < GEMINI_MODEL_COUNT; ++i)
+    choiceRow(
+        list, GEMINI_MODELS[i].label, GEMINI_MODELS[i].note, &gemModelCheck[i], nullptr,
+        [](lv_event_t *e) {
+          geminiModel = (intptr_t)lv_event_get_user_data(e);
+          saveAi();
+        },
+        i);
+  sectionLabel(list, "GEMINI THINKING");
+  segmented(
+      list, effortSeg[0],
+      [](lv_event_t *e) {
+        const int v = (intptr_t)lv_event_get_user_data(e);
+        geminiEffort = v % 10;
+        saveAi();
+      },
+      0);
+  sectionLabel(list, "GPT MODEL");
+  for (int i = 0; i < GPT_MODEL_COUNT; ++i)
+    choiceRow(
+        list, GPT_MODELS[i].label, GPT_MODELS[i].note, &gptModelCheck[i], nullptr,
+        [](lv_event_t *e) {
+          gptModel = (intptr_t)lv_event_get_user_data(e);
+          saveAi();
+        },
+        i);
+  sectionLabel(list, "GPT REASONING");
+  segmented(
+      list, effortSeg[1],
+      [](lv_event_t *e) {
+        const int v = (intptr_t)lv_event_get_user_data(e);
+        gptEffort = v % 10;
+        saveAi();
+      },
+      1);
+  lv_obj_t *note = text(list,
+                        "More thinking is slower, and costs more with GPT. When a free Gemini limit runs out, "
+                        "the next Gemini model answers instead.",
+                        F_SMALL, MIST);
+  lv_obj_set_width(note, W - 44);
+  lv_label_set_long_mode(note, LV_LABEL_LONG_WRAP);
+  lv_obj_set_style_margin_left(note, 22, 0);
+  lv_obj_set_style_margin_top(note, 14, 0);
 }
 
 void buildNotice() {
@@ -2404,38 +2739,30 @@ void buildNotice() {
 
 lv_obj_t *ccToggle(lv_obj_t *parent, const char *label, lv_obj_t **labelOut) {
   lv_obj_t *col = plain(parent);
-  lv_obj_set_size(col, 68, 80);
-  lv_obj_t *t = circle(col, 56, INK, 0, ICON_BG, LV_OPA_COVER);
+  lv_obj_set_size(col, 70, 84);
+  lv_obj_t *t = circle(col, 58, INK, 0, ICON_BG, LV_OPA_COVER);
   lv_obj_align(t, LV_ALIGN_TOP_MID, 0, 0);
   lv_obj_set_style_opa(t, LV_OPA_70, LV_STATE_PRESSED);
-  lv_obj_t *l = text(col, label, F_SMALL, MIST);
+  lv_obj_t *l = text(col, label, F_SMALL, INK);
   lv_obj_align(l, LV_ALIGN_BOTTOM_MID, 0, 0);
   if (labelOut) *labelOut = l;
   return t;
 }
 void buildControl() {
   cc = plain(root);
-  lv_obj_add_flag(cc, LV_OBJ_FLAG_CLICKABLE);  // tap outside the toggles closes it
+  lv_obj_add_flag(cc, LV_OBJ_FLAG_CLICKABLE);  // tap outside the controls closes it
   lv_obj_set_size(cc, W, H);
   lv_obj_set_style_bg_color(cc, VOID_, 0);
   lv_obj_set_style_bg_opa(cc, 248, 0);
   lv_obj_add_flag(cc, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_add_flag(cc, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_remove_flag(cc, LV_OBJ_FLAG_GESTURE_BUBBLE);
   lv_obj_set_y(cc, -H);
-  lv_obj_t *grab = plain(cc);
-  lv_obj_set_size(grab, 36, 4);
-  lv_obj_set_style_radius(grab, 2, 0);
-  lv_obj_set_style_bg_color(grab, INK, 0);
-  lv_obj_set_style_bg_opa(grab, 90, 0);
-  lv_obj_align(grab, LV_ALIGN_TOP_MID, 0, 12);
   lv_obj_t *grid = plain(cc);
-  lv_obj_set_size(grid, 170, 180);
+  lv_obj_set_size(grid, 228, 90);
   lv_obj_align(grid, LV_ALIGN_TOP_MID, 0, 34);
-  lv_obj_set_flex_flow(grid, LV_FLEX_FLOW_ROW_WRAP);
+  lv_obj_set_flex_flow(grid, LV_FLEX_FLOW_ROW);
   lv_obj_set_flex_align(grid, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-  lv_obj_set_style_pad_row(grid, 14, 0);
-  ccWifi = ccToggle(grid, "Wi-Fi", nullptr);
+  ccWifi = ccToggle(grid, "Wi-Fi", &ccWifiLabel);
   glyphSymbol(ccWifi, LV_SYMBOL_WIFI, INK);
   onClick(ccWifi, [] {
     networkSetEnabled(!networkEnabled());
@@ -2449,30 +2776,34 @@ void buildControl() {
         show(Screen::Wifi);
       },
       LV_EVENT_LONG_PRESSED, nullptr);
-  ccBright = ccToggle(grid, "100%", &ccBrightLabel);
-  lv_obj_t *sun = circle(ccBright, 14, INK, 2, VOID_, LV_OPA_TRANSP);
-  lv_obj_center(sun);
-  for (int i = 0; i < 8; ++i) {
-    lv_obj_t *ray = circle(ccBright, 3, INK, 0, INK, LV_OPA_COVER);
-    lv_obj_align(ray, LV_ALIGN_CENTER, (int)(12 * cosf(i * PI / 4)), (int)(12 * sinf(i * PI / 4)));
-  }
-  onClick(ccBright, [] { setBrightness(brightnessLevel + 1); });
-  ccModel = ccToggle(grid, "Model", &ccModelLabel);
+  ccCamera = ccToggle(grid, "Camera", &ccCameraLabel);
+  glyphSymbol(ccCamera, LV_SYMBOL_EYE_OPEN, INK);
+  onClick(ccCamera, [] {
+    setCameraOff(!cameraOff);
+    toast(cameraOff ? "Camera off" : "Camera on");
+  });
+  ccModel = ccToggle(grid, "Gemini", &ccModelLabel);
   lv_obj_t *modelGlyph = text(ccModel, "G", F_BODY, INK);
   lv_obj_center(modelGlyph);
-  onClick(ccModel, [] { setModel(!useGemini); });
-  ccCamera = ccToggle(grid, "Camera off", nullptr);
-  glyphSymbol(ccCamera, LV_SYMBOL_EYE_CLOSE, INK);
-  onClick(ccCamera, [] { setCameraOff(!cameraOff); });
-  lv_obj_t *hint = text(cc, "Swipe up to close", F_SMALL, MIST);
-  lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -26);
-  // Swipe up on Control Center, or tap outside the toggles, closes it.
-  lv_obj_add_event_cb(
-      cc,
-      [](lv_event_t *) {
-        if (lv_indev_get_gesture_dir(lv_indev_active()) == LV_DIR_TOP) closeControl();
-      },
-      LV_EVENT_GESTURE, nullptr);
+  onClick(ccModel, [] {
+    setModel(!useGemini);
+    toast(useGemini ? "Answers from Gemini" : "Answers from GPT");
+  });
+  // Brightness: drag along the bar.
+  lv_obj_t *brightTitle = text(cc, "Brightness", F_SMALL, MIST);
+  lv_obj_align(brightTitle, LV_ALIGN_TOP_LEFT, 22, 138);
+  ccBright = brightnessSlider(cc, W - 44, 44);
+  lv_obj_align(ccBright, LV_ALIGN_TOP_MID, 0, 158);
+  // Sun mark: grey reads on both the filled and the empty part of the bar.
+  lv_obj_t *sun = circle(ccBright, 10, MIST, 2, VOID_, LV_OPA_TRANSP);
+  lv_obj_align(sun, LV_ALIGN_LEFT_MID, 22, 0);
+  for (int i = 0; i < 8; ++i) {
+    lv_obj_t *ray = circle(ccBright, 3, MIST, 0, MIST, LV_OPA_COVER);
+    lv_obj_align(ray, LV_ALIGN_LEFT_MID, 22 + 3 + (int)(10 * cosf(i * PI / 4)), (int)(10 * sinf(i * PI / 4)));
+  }
+  lv_obj_t *hint = text(cc, "Swipe up from the bottom to close", F_SMALL, MIST);
+  lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -24);
+  // Tap outside the controls closes it; so does swiping up from the bottom line.
   lv_obj_add_event_cb(
       cc,
       [](lv_event_t *e) {
@@ -2508,6 +2839,18 @@ void readTouch(lv_indev_t *, lv_indev_data_t *data) {
   static unsigned long moveAt = 0;
   static int speed = 0;   // px/s, smoothed; positive = upward
   static int speedX = 0;  // px/s, smoothed; positive = rightward
+  // An edge touch is a candidate until the finger shows its direction. Until then the app
+  // sees nothing; if it turns out to be a scroll or a tap, the app gets it after all.
+  static bool committed = false;
+  static bool passThrough = false;  // candidate rejected: this touch belongs to the app
+  static int tapPending = 0;        // 2 = report a press at (tapX, tapY), 1 = then a release
+  static int tapX = 0, tapY = 0;
+  if (tapPending && !pressed) {
+    data->point.x = tapX;
+    data->point.y = tapY;
+    data->state = tapPending-- == 2 ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
+    return;
+  }
   if (pressed) {
     const unsigned long now = millis();
     if (!fingerDown) {
@@ -2515,9 +2858,8 @@ void readTouch(lv_indev_t *, lv_indev_data_t *data) {
       downX = x;
       downY = y;
       speed = speedX = 0;
-      // Edges belong to the system: bottom drags home, top pulls Control Center,
-      // left drags back one level.
-      edge = injecting                                                   ? Edge::None
+      committed = passThrough = false;
+      edge = (injecting && !injectEdges)                                 ? Edge::None
              : downY >= HOME_ZONE                                        ? Edge::Home
              : (downY < TOP_ZONE && !ccOpen)                             ? Edge::Control
              : (downX < BACK_ZONE && !ccOpen && current != Screen::Face) ? Edge::Back
@@ -2529,33 +2871,49 @@ void readTouch(lv_indev_t *, lv_indev_data_t *data) {
     moveAt = now;
     lastX = x;
     lastY = y;
-    if (edge == Edge::Home && downY - y > 6) {
-      if (ccOpen) closeControl();
-      else dragHome(downY - y);
+    const int dx = x - downX, dy = y - downY;
+    if (edge != Edge::None && !committed) {
+      // Commit when the movement matches the edge; give the touch to the app when it does not.
+      if (edge == Edge::Home && -dy > 8 && -dy > abs(dx)) committed = true;
+      else if (edge == Edge::Control && dy > 8 && dy > abs(dx)) committed = true;
+      else if (edge == Edge::Back && dx > 12 && dx > 2 * abs(dy)) committed = true;
+      else if ((edge == Edge::Back && abs(dy) > 10 && abs(dy) > dx) ||
+               ((edge == Edge::Home || edge == Edge::Control) && abs(dx) > 12 && abs(dx) > abs(dy))) {
+        edge = Edge::None;
+        passThrough = true;
+      }
     }
-    if (edge == Edge::Control && y - downY > 6) dragControl(y - downY);
-    if (edge == Edge::Back && x - downX > 6) dragBack(x - downX);
+    if (committed) {
+      if (edge == Edge::Home) {
+        if (ccOpen) dragControlClosed(-dy);
+        else dragHome(-dy);
+      }
+      if (edge == Edge::Control) dragControl(dy);
+      if (edge == Edge::Back) dragBack(dx);
+    }
   } else if (fingerDown) {
     fingerDown = false;
-    if (edge == Edge::Home) releaseHome(max(0, downY - lastY), speed);
-    if (edge == Edge::Control) releaseControl(max(0, lastY - downY), speed);
-    if (edge == Edge::Back) {
-      // A tap on the left edge falls through to the app (so edge controls still work).
-      if (lastX - downX <= 6 && abs(lastY - downY) <= 6) {
-        edge = Edge::None;
-        data->point.x = lastX;
-        data->point.y = lastY;
-        data->state = LV_INDEV_STATE_RELEASED;
-        return;
+    if (committed) {
+      if (edge == Edge::Home) {
+        if (ccOpen) releaseControlClosed(max(0, downY - lastY), speed);
+        else releaseHome(max(0, downY - lastY), speed);
       }
-      releaseBack(max(0, lastX - downX), speedX);
+      if (edge == Edge::Control) releaseControl(max(0, lastY - downY), speed);
+      if (edge == Edge::Back) releaseBack(max(0, lastX - downX), speedX);
+    } else if (edge != Edge::None) {
+      // A tap that started on an edge: deliver it to the app (back arrow, edge buttons).
+      tapPending = 2;
+      tapX = downX;
+      tapY = downY;
     }
     edge = Edge::None;
+    committed = false;
   }
   if (edge != Edge::None) {
     data->state = LV_INDEV_STATE_RELEASED;
     return;
   }
+  (void)passThrough;
   data->point.x = pressed ? x : lastX;
   data->point.y = pressed ? y : lastY;
   data->state = pressed ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
@@ -2621,6 +2979,24 @@ void injectTap(int x, int y, int holdMs = 80) {
     lv_timer_handler();
     delay(20);
   }
+}
+// A finger drag from (x1,y1) to (x2,y2) over `ms`, then release. Edges apply.
+void injectDrag(int x1, int y1, int x2, int y2, int ms) {
+  injecting = true;
+  injectEdges = true;
+  const int steps = max(4, ms / 20);
+  for (int i = 0; i <= steps; ++i) {
+    injectX = x1 + (x2 - x1) * i / steps;
+    injectY = y1 + (y2 - y1) * i / steps;
+    lv_timer_handler();
+    delay(20);
+  }
+  injecting = false;
+  for (int i = 0; i < 6; ++i) {
+    lv_timer_handler();
+    delay(20);
+  }
+  injectEdges = false;
 }
 void tuneCamera(char profile) {
   previewWanted = false;
@@ -2710,8 +3086,12 @@ void deviceNoteSerial() { lastSerialMs = millis(); }
 void initDeviceUi() {
   settings.begin("tiny-ai", false);
   useGemini = settings.getBool("gemini", true);
+  geminiModel = constrain(settings.getUChar("gm-model", 0), 0, GEMINI_MODEL_COUNT - 1);
+  geminiEffort = constrain(settings.getUChar("gm-effort", 0), 0, AI_EFFORT_COUNT - 1);
+  gptModel = constrain(settings.getUChar("gp-model", 0), 0, GPT_MODEL_COUNT - 1);
+  gptEffort = constrain(settings.getUChar("gp-effort", 0), 0, AI_EFFORT_COUNT - 1);
   cameraOff = settings.getBool("camera-off", false);
-  brightnessLevel = settings.getUChar("bright", 0) % 3;
+  brightnessPct = constrain(settings.getUChar("bright-pct", 100), 5, 100);
   gestureFlip = settings.getBool("gesture-flip", false);
   if (!storageBegin()) Serial.println("STORAGE_ERROR Flash filesystem unavailable");
   framebuffer = (uint16_t *)ps_malloc(W * H * 2);
@@ -2902,16 +3282,23 @@ void initDeviceUi() {
   lv_obj_set_style_bg_color(homeBar, INK, 0);
   lv_obj_set_style_bg_opa(homeBar, 115, 0);
   lv_obj_align(homeBar, LV_ALIGN_BOTTOM_MID, 0, -6);
-  lv_obj_add_flag(homeBar, LV_OBJ_FLAG_HIDDEN);
   lv_obj_remove_flag(homeBar, LV_OBJ_FLAG_CLICKABLE);
-  lv_slider_set_value(brightSlider, BRIGHTNESS[brightnessLevel], LV_ANIM_OFF);
+  // The matching mark at the top: pull down from here for Control Center.
+  topBar = plain(lv_layer_top());
+  lv_obj_set_size(topBar, 28, 4);
+  lv_obj_set_style_radius(topBar, 2, 0);
+  lv_obj_set_style_bg_color(topBar, INK, 0);
+  lv_obj_set_style_bg_opa(topBar, 80, 0);
+  lv_obj_align(topBar, LV_ALIGN_TOP_MID, 0, 6);
+  lv_obj_remove_flag(topBar, LV_OBJ_FLAG_CLICKABLE);
+  setBrightness(brightnessPct, false);
 
   lv_obj_remove_flag(layer(Screen::Face), LV_OBJ_FLAG_HIDDEN);
   enter(Screen::Face);
   const uint32_t start = micros();
   lv_refr_now(display);
   Serial.printf("DISPLAY first frame %lu us\n", (unsigned long)(micros() - start));
-  if (lcd) displayBrightness(BRIGHTNESS[brightnessLevel]);
+  if (lcd) displayBrightness(brightnessPct * 255 / 100);
 }
 
 void handleDeviceButton(char command) {
@@ -2929,6 +3316,20 @@ void handleDeviceButton(char command) {
     const int y = xy.substring(comma + 1, comma2 > 0 ? comma2 : xy.length()).toInt();
     const int hold = comma2 > 0 ? constrain((int)xy.substring(comma2 + 1).toInt(), 0, 20000) : 80;
     if (x >= 0 && x < W && y >= TOP_ZONE && y < HOME_ZONE) injectTap(x, y, hold);
+    sendFrame();
+    return;
+  }
+  if (command == '!') {
+    // Developer: "x1,y1,x2,y2,ms" drag, edges included (for gesture checks), then a frame.
+    int v[5] = {0, 0, 0, 0, 300};
+    String arg = Serial.readStringUntil('\n');
+    for (int i = 0; i < 5 && arg.length(); ++i) {
+      const int c = arg.indexOf(',');
+      v[i] = arg.substring(0, c < 0 ? arg.length() : c).toInt();
+      arg = c < 0 ? "" : arg.substring(c + 1);
+    }
+    injectDrag(constrain(v[0], 0, W - 1), constrain(v[1], 0, H - 1), constrain(v[2], 0, W - 1),
+               constrain(v[3], 0, H - 1), constrain(v[4], 40, 3000));
     sendFrame();
     return;
   }
@@ -2983,6 +3384,17 @@ void handleDeviceButton(char command) {
     sensor_t *sensor = esp_camera_sensor_get();
     if (sensor) Serial.printf("SETREG %04X=%02X -> %d\n", reg, val, sensor->set_reg(sensor, reg, 0xFF, val));
     xSemaphoreGive(camLock);
+    return;
+  }
+  if (command == '%') {
+    // Developer: build a request without sending it. "%g2" Gemini 2 pages, "%o1" GPT,
+    // "%ot" / "%gt" speech-to-text. Uses the saved model and effort; never the key.
+    const String arg = Serial.readStringUntil('\n');
+    AiOptions o = aiOptions(arg.length() == 0 || arg[0] != 'o');
+    o.key = "";
+    const bool transcribe = arg.indexOf('t') >= 0;
+    aiDryRun(o, transcribe ? 0 : max(1, (int)arg.substring(1).toInt()),
+             transcribe ? "" : "What is the answer to question 2?", transcribe);
     return;
   }
   if (command == 'l') {
@@ -3272,7 +3684,14 @@ void deviceTick() {
   // Collect finished requests even if the user has moved to another app.
   String result;
   const AiState ai = aiPoll(result);
-  if (ai == AiState::Done && queueInFlight) {
+  if ((ai == AiState::Done || ai == AiState::Failed) && pending == Pending::Transcribe) {
+    pending = Pending::None;
+    lv_obj_add_flag(busy, LV_OBJ_FLAG_HIDDEN);
+    if (ai == AiState::Failed) notice(result, Screen::Ask);
+    else showHeard(result);
+  } else if (ai == AiState::Cancelled && pending == Pending::Transcribe) {
+    pending = Pending::None;
+  } else if (ai == AiState::Done && queueInFlight) {
     // A queued question came back.
     static uint16_t *qth = (uint16_t *)ps_malloc(THUMB * THUMB * 2);
     uint32_t photoId = 0;
@@ -3298,6 +3717,7 @@ void deviceTick() {
     refreshQueue();
     if (current == Screen::Ask) rebuildHistory();
   } else if (ai == AiState::Done) {
+    pending = Pending::None;
     if (pendingPhotoId == UINT32_MAX) pendingPhotoId = latestPhotoId;
     static uint16_t *th = (uint16_t *)ps_malloc(THUMB * THUMB * 2);  // PSRAM: internal RAM is for Wi-Fi/TLS
     const bool haveThumb = pendingPhotoId && th && loadPhotoThumb(pendingPhotoId, th);
@@ -3310,13 +3730,20 @@ void deviceTick() {
     refreshDynamic();
     if (waiting && current == Screen::Ask && id) showAnswer(id);
   } else if (ai == AiState::Failed) {
+    pending = Pending::None;
     const bool waiting = !lv_obj_has_flag(busy, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(busy, LV_OBJ_FLAG_HIDDEN);
     if (waiting && current == Screen::Ask) notice(result, Screen::Ask);
   }
   if (captureReady && !captureRequested) {
     String problem;
+    const bool forPage = pageCamera;
     if (!acceptCapture(problem)) notice(problem, current == Screen::Camera ? Screen::Camera : Screen::Face);
+    else if (forPage) {
+      pageCamera = false;
+      show(Screen::Ask);
+      toast((String("Page ") + pageCount() + " added. Tap Ask").c_str());
+    }
   }
   if (savedPhotoId && savedPhotoId != latestPhotoId) {
     latestPhotoId = savedPhotoId;
@@ -3340,12 +3767,15 @@ void deviceTick() {
         refreshQueue();
         break;
       }
-      const String key = settings.getString(queued[i].gemini ? "gemini-key" : "gpt-key", "");
       uint8_t *wav = nullptr;
       size_t wavLen = 0;
       queueLoadAudio(queued[i].id, wav, wavLen);
       remoteEnd();  // Bluetooth leaves too little memory for HTTPS
-      const bool started = aiStart(queued[i].gemini, key, jpeg, len, wav, wavLen);
+      AiOptions options = aiOptions(queued[i].gemini);
+      const uint8_t *pages[1] = {jpeg};
+      const size_t lengths[1] = {len};
+      const bool started = aiStart(options, pages, lengths, 1, "", wav, wavLen);
+      options.key = "";
       free(wav);
       if (started) {
         queueInFlight = queued[i].id;
@@ -3361,13 +3791,13 @@ void deviceTick() {
     const int size = 56 + micLevel() * 50 / 100;
     if (lv_obj_get_width(listenRing) != size) lv_obj_set_size(listenRing, size, size);
     const int left = MIC_MAX_SECONDS - (int)micSeconds();
-    setText(listenTime, left <= 5 ? (String(left) + " s left").c_str() : "Let go to ask");
+    setText(listenTime, left <= 5 ? (String(left) + " s left").c_str() : "Let go when you are done");
     if (left <= 0) {
       micStop();
       lv_obj_add_flag(listenOverlay, LV_OBJ_FLAG_HIDDEN);
       size_t len = 0;
       const uint8_t *wav = micWav(len);
-      startAsk(wav, len);
+      startListenBack(wav, len);
     }
   }
   if (recordingDot) hide(recordingDot, !(aiBusy() || micRecording()));

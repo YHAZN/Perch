@@ -26,7 +26,7 @@ async function request(path, payload = null) {
 }
 function controls() {
   document.querySelectorAll('button').forEach((button) => (button.disabled = busy));
-  $('removeKey').disabled = busy || !frame?.keys?.[frame?.provider];
+  $('removeKey').disabled = busy || !frame?.keys?.[keyTarget()];
   $('prev').disabled = busy || !frame || frame.view !== 'answer' || frame.page <= 1;
   $('next').disabled = busy || !frame || frame.view !== 'answer' || frame.page >= frame.pages;
 }
@@ -76,12 +76,8 @@ async function display(result) {
     ['providerGpt', 'gpt'],
   ])
     $(id).setAttribute('aria-pressed', String(result.provider === value));
-  const selected = result.provider === 'gpt' ? 'GPT' : 'Gemini';
-  $('keyLabel').textContent = selected + ' API key';
-  $('keyStatus').textContent = result.keys?.[result.provider]
-    ? 'Key saved on device / available in AI app'
-    : 'No key saved for ' + selected;
-  $('removeKey').disabled = !result.keys?.[result.provider];
+  if (!keyTargetChosen && result.provider) $('keyProvider').value = result.provider;
+  keyStatus();
   $('providerInfo').textContent = result.provider
     ? (result.provider === 'gemini' ? 'Gemini' : 'GPT') + ' / requests run on ESP32'
     : 'Update firmware to select an AI provider.';
@@ -252,9 +248,27 @@ $('screen').addEventListener('pointerup', (event) => {
 $('providerGemini').onclick = () => button('provider/gemini');
 $('providerGpt').onclick = () => button('provider/gpt');
 
+// Which key the form saves: chosen independently of the device's active provider, so
+// adding a paid key never switches the device to it.
+let keyTargetChosen = false;
+function keyTarget() {
+  return $('keyProvider').value;
+}
+function keyStatus() {
+  const selected = keyTarget() === 'gpt' ? 'GPT' : 'Gemini';
+  $('keyLabel').textContent = selected + ' API key';
+  $('keyStatus').textContent = frame?.keys?.[keyTarget()]
+    ? selected + ' key saved on device'
+    : 'No key saved for ' + selected;
+  $('removeKey').disabled = busy || !frame?.keys?.[keyTarget()];
+}
+$('keyProvider').onchange = () => {
+  keyTargetChosen = true;
+  keyStatus();
+};
 $('keyForm').onsubmit = (event) => {
   event.preventDefault();
-  const provider = frame?.provider,
+  const provider = keyTarget(),
     key = $('apiKey').value.trim();
   if (!provider || !key) {
     $('error').hidden = false;
@@ -267,7 +281,7 @@ $('keyForm').onsubmit = (event) => {
   });
 };
 $('removeKey').onclick = () => {
-  const provider = frame?.provider;
+  const provider = keyTarget();
   if (provider)
     operation(async () => {
       await display(await request('/api/ai/key', { provider, key: '' }));

@@ -53,6 +53,12 @@
               >Get a Gemini API key</a
             >
             <form id="keyForm">
+              <label for="keyProvider">Key for</label
+              ><select id="keyProvider">
+                <option value="gemini">Gemini</option>
+                <option value="gpt">GPT (OpenAI)</option>
+              </select>
+              <p class="detail">Saving a key does not switch the device to that provider.</p>
               <label id="keyLabel" for="apiKey">Gemini API key</label
               ><input
                 id="apiKey"

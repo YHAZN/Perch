@@ -7,8 +7,24 @@
 #include <mbedtls/platform.h>
 #include <time.h>
 #include <memory>
+#include <vector>
 #include "wifi_secrets.h"
 #include "ai_root_certs.h"
+
+const AiModel GEMINI_MODELS[] = {
+    {"gemini-3.8-flash", "Gemini 3.8 Flash", "Newest. Small free daily limit"},
+    {"gemini-3.7-flash", "Gemini 3.7 Flash", "Strong. Separate free limit"},
+    {"gemini-3.5-flash", "Gemini 3.5 Flash", "Older, still good"},
+    {"gemini-3.5-flash-lite", "Gemini 3.5 Flash-Lite", "Fastest, simplest problems"},
+};
+const int GEMINI_MODEL_COUNT = sizeof(GEMINI_MODELS) / sizeof(GEMINI_MODELS[0]);
+const AiModel GPT_MODELS[] = {
+    {"gpt-6.1-sol", "GPT-6.1 Sol", "Accurate. About 1-2 cents a photo"},
+    {"gpt-6-luna", "GPT-6 Luna", "Cheapest. Simple problems"},
+    {"gpt-6-astra", "GPT-6 Astra", "Most capable. Costs the most"},
+};
+const int GPT_MODEL_COUNT = sizeof(GPT_MODELS) / sizeof(GPT_MODELS[0]);
+const char *const AI_EFFORTS[] = {"low", "medium", "high"};
 
 namespace {
 constexpr size_t RESPONSE_LIMIT = 32768;
@@ -41,19 +57,33 @@ class BoundedResponse : public Stream {
   int peek() override { return -1; }
   void flush() override {}
 };
-// With a spoken question the photo is context for what the user asks out loud.
-const char *VOICE_PROMPT =
-    "The attached audio is the user's spoken question about the attached photo. Answer that question using the photo. "
-    "If the audio is unclear, say what you could not hear and answer what you can about the photo; never invent "
-    "missing content. Give the answer first, then concise reasoning. Use plain text suitable for a small display, "
-    "ASCII math, and no Markdown tables.";
-const char *PROMPT =
-    "Read the photographed problem carefully and solve it. If symbols or text are unclear, say exactly what cannot be "
-    "read and ask for a closer photo; never invent missing content. Give the answer first, then concise reasoning. Use "
-    "plain text suitable for a small display, ASCII math, and no Markdown tables.";
+
+// The reply format is what the device renders (see the answer screen): a one-line answer,
+// then numbered steps, formulas on their own lines. Plain ASCII: the fonts have nothing else.
+const char *FORMAT =
+    "Reply in this exact format for a small screen:\n"
+    "Answer: <the final answer, one short line>\n"
+    "\n"
+    "Steps:\n"
+    "1. <one short step>\n"
+    "2. <next step>\n"
+    "Put each formula or equation on its own line. Use ASCII math (x^2, sqrt(x), *, /, <=). "
+    "No tables, no LaTeX, no headings other than 'Steps:'. Use **bold** only for key terms. "
+    "If text is unclear, say exactly what cannot be read and ask for a closer photo; never invent content.";
+const char *TASK_ONE = "Read the photographed problem carefully and solve it.";
+const char *TASK_PAGES =
+    "The photos are pages in order. Earlier pages give context for the last page. "
+    "Read all of them, then solve the problem on the last page.";
+const char *TASK_VOICE =
+    "The attached audio is the user's spoken question about the photos. Answer that question. "
+    "If the audio is unclear, say what you could not hear.";
+const char *TRANSCRIBE_PROMPT =
+    "Transcribe this audio exactly as spoken. Reply with only the words, no commentary. "
+    "If nothing intelligible was said, reply with an empty line.";
 
 // The display fonts only cover printable ASCII. Models still send Unicode math and
 // typography, which would silently vanish and can change the meaning of an answer.
+// Markdown markers (** and list syntax) are kept: the answer screen formats them.
 String toDisplayText(const String &input) {
   static const struct {
     uint32_t code;
@@ -79,11 +109,6 @@ String toDisplayText(const String &input) {
   for (size_t i = 0; i < input.length();) {
     uint8_t c = s[i];
     if (c < 0x80) {
-      // Drop Markdown emphasis markers; keep everything else printable.
-      if (c == '*' && i + 1 < input.length() && s[i + 1] == '*') {
-        i += 2;
-        continue;
-      }
       if (c == '\n' || c == '\t' || c >= 0x20) out += (char)(c == '\t' ? ' ' : c);
       ++i;
       continue;
@@ -108,15 +133,201 @@ String toDisplayText(const String &input) {
   return out;
 }
 
-bool request(bool gemini, const String &key, const uint8_t *jpeg, size_t length, const uint8_t *wav, size_t wavLength,
-             String &answer) {
+String jsonEscape(const String &in) {
+  String out;
+  out.reserve(in.length() + 8);
+  for (size_t i = 0; i < in.length(); ++i) {
+    const char c = in[i];
+    if (c == '"' || c == '\\') {
+      out += '\\';
+      out += c;
+    } else if (c == '\n') out += "\\n";
+    else if (c == '\r') out += "\\r";
+    else if (c == '\t') out += "\\t";
+    else if ((uint8_t)c < 0x20) {
+      char buf[8];
+      snprintf(buf, sizeof buf, "\\u%04x", c);
+      out += buf;
+    } else out += c;
+  }
+  return out;
+}
+
+// A request body is text pieces with base64 blobs in between, assembled once in PSRAM.
+struct Piece {
+  String text;
+  const uint8_t *data = nullptr;
+  size_t length = 0;
+};
+struct Body {
+  std::vector<Piece> pieces;
+  void add(const String &t) {
+    Piece p;
+    p.text = t;
+    pieces.push_back(p);
+  }
+  void blob(const uint8_t *d, size_t n) {
+    Piece p;
+    p.data = d;
+    p.length = n;
+    pieces.push_back(p);
+  }
+  // Returns a NUL-terminated PSRAM buffer the caller frees, or nullptr.
+  uint8_t *build(size_t &total) const {
+    total = 0;
+    for (const auto &p : pieces) total += p.data ? 4 * ((p.length + 2) / 3) : p.text.length();
+    uint8_t *buf = (uint8_t *)ps_malloc(total + 1);
+    if (!buf) return nullptr;
+    uint8_t *at = buf;
+    for (const auto &p : pieces) {
+      if (p.data) {
+        size_t written = 0;
+        const size_t encoded = 4 * ((p.length + 2) / 3);
+        if (mbedtls_base64_encode(at, encoded + 1, &written, p.data, p.length) || written != encoded) {
+          free(buf);
+          return nullptr;
+        }
+        at += encoded;
+      } else {
+        memcpy(at, p.text.c_str(), p.text.length());
+        at += p.text.length();
+      }
+    }
+    buf[total] = 0;
+    return buf;
+  }
+};
+
+// Multipart body for OpenAI's transcription endpoint (raw bytes, not base64).
+uint8_t *multipartWav(const uint8_t *wav, size_t length, const char *model, const char *boundary, size_t &total) {
+  const String head = String("--") + boundary + "\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\n" + model +
+                      "\r\n"
+                      "--" +
+                      boundary +
+                      "\r\nContent-Disposition: form-data; name=\"response_format\"\r\n\r\njson\r\n"
+                      "--" +
+                      boundary +
+                      "\r\nContent-Disposition: form-data; name=\"file\"; filename=\"question.wav\"\r\n"
+                      "Content-Type: audio/wav\r\n\r\n";
+  const String tail = String("\r\n--") + boundary + "--\r\n";
+  total = head.length() + length + tail.length();
+  uint8_t *buf = (uint8_t *)ps_malloc(total);
+  if (!buf) return nullptr;
+  memcpy(buf, head.c_str(), head.length());
+  memcpy(buf + head.length(), wav, length);
+  memcpy(buf + head.length() + length, tail.c_str(), tail.length());
+  return buf;
+}
+
+enum class Kind { Answer, Transcribe };
+struct Job {
+  Kind kind = Kind::Answer;
+  AiOptions options;
+  uint8_t *jpegs[AI_MAX_PAGES] = {nullptr};
+  size_t lengths[AI_MAX_PAGES] = {0};
+  int pages = 0;
+  String question;
+  uint8_t *wav = nullptr;
+  size_t wavLength = 0;
+  String result;
+  bool ok = false;
+  void release() {
+    for (int i = 0; i < AI_MAX_PAGES; ++i) {
+      free(jpegs[i]);
+      jpegs[i] = nullptr;
+      lengths[i] = 0;
+    }
+    pages = 0;
+    free(wav);
+    wav = nullptr;
+    wavLength = 0;
+    options.key = "";
+    question = "";
+  }
+};
+
+// The request bodies. Shared by real requests and the dry run.
+void buildAnswerBody(const Job &j, Body &body) {
+  const bool voice = j.options.gemini && j.wav && j.wavLength;
+  String task = voice ? TASK_VOICE : (j.pages > 1 ? TASK_PAGES : TASK_ONE);
+  if (j.question.length()) task += String(" The user's question: \"") + j.question + "\". Answer that question.";
+  const String prompt = jsonEscape(task + "\n" + FORMAT);
+  if (j.options.gemini) {
+    body.add(String("{\"contents\":[{\"parts\":[{\"text\":\"") + prompt + "\"}");
+    for (int i = 0; i < j.pages; ++i) {
+      body.add(",{\"inline_data\":{\"mime_type\":\"image/jpeg\",\"data\":\"");
+      body.blob(j.jpegs[i], j.lengths[i]);
+      body.add("\"}}");
+    }
+    if (voice) {
+      body.add(",{\"inline_data\":{\"mime_type\":\"audio/wav\",\"data\":\"");
+      body.blob(j.wav, j.wavLength);
+      body.add("\"}}");
+    }
+    // Thinking tokens count toward the output budget; leave room for both.
+    body.add(String("]}],\"generationConfig\":{\"maxOutputTokens\":8192,\"thinkingConfig\":{\"thinkingLevel\":\"") +
+             j.options.effort + "\"}}}");
+  } else {
+    // Chat Completions: reasoning_effort and max_completion_tokens (max_tokens is deprecated).
+    body.add(String("{\"model\":\"") + j.options.model + "\",\"reasoning_effort\":\"" + j.options.effort +
+             "\",\"max_completion_tokens\":8000,\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\","
+             "\"text\":\"" +
+             prompt + "\"}");
+    for (int i = 0; i < j.pages; ++i) {
+      body.add(",{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/jpeg;base64,");
+      body.blob(j.jpegs[i], j.lengths[i]);
+      body.add("\",\"detail\":\"high\"}}");
+    }
+    body.add("]}]}");
+  }
+}
+void buildGeminiTranscribeBody(const Job &j, Body &body) {
+  body.add(String("{\"contents\":[{\"parts\":[{\"text\":\"") + jsonEscape(TRANSCRIBE_PROMPT) +
+           "\"},{\"inline_data\":{\"mime_type\":\"audio/wav\",\"data\":\"");
+  body.blob(j.wav, j.wavLength);
+  body.add(
+      "\"}}]}],\"generationConfig\":{\"maxOutputTokens\":1024,\"thinkingConfig\":{\"thinkingLevel\":\"minimal\"}}}");
+}
+
+// Extract the text of a successful response.
+String responseText(Kind kind, bool gemini, JsonDocument &doc, String &finish) {
+  String text;
+  if (kind == Kind::Transcribe && !gemini) {
+    const char *t = doc["text"];
+    return t ? String(t) : String();
+  }
+  if (gemini) {
+    for (JsonObject part : doc["candidates"][0]["content"]["parts"].as<JsonArray>()) {
+      if (part["thought"] == true) continue;
+      const char *t = part["text"];
+      if (t) {
+        if (text.length()) text += '\n';
+        text += t;
+      }
+    }
+    finish = doc["candidates"][0]["finishReason"] | "";
+  } else {
+    const char *t = doc["choices"][0]["message"]["content"];
+    if (t) text = t;
+    finish = doc["choices"][0]["finish_reason"] | "";
+  }
+  return text;
+}
+
+bool request(Job &j) {
+  String &answer = j.result;
   auto fail = [&](const char *message) {
     answer = message;
     return false;
   };
-  if (key.isEmpty()) return fail("Save an API key for the selected provider in PC setup.");
-  if (!jpeg || length < 4 || jpeg[0] != 0xff || jpeg[1] != 0xd8 || jpeg[length - 2] != 0xff || jpeg[length - 1] != 0xd9)
-    return fail("Incomplete photo. Capture again.");
+  const bool gemini = j.options.gemini;
+  if (j.options.key.isEmpty()) return fail("Save an API key for the selected provider in PC setup.");
+  for (int i = 0; i < j.pages; ++i) {
+    const uint8_t *p = j.jpegs[i];
+    const size_t n = j.lengths[i];
+    if (!p || n < 4 || p[0] != 0xff || p[1] != 0xd8 || p[n - 2] != 0xff || p[n - 1] != 0xd9)
+      return fail("Incomplete photo. Capture again.");
+  }
   unsigned long start = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - start < WIFI_WAIT_MS && !cancelled) delay(100);
   if (cancelled) return fail("Cancelled. Nothing was sent.");
@@ -128,44 +339,21 @@ bool request(bool gemini, const String &key, const uint8_t *jpeg, size_t length,
     if (time(nullptr) < 1700000000)
       return fail("Internet clock unavailable. Wi-Fi may need a login page. Nothing was sent.");
   }
-  // Voice goes to Gemini only; GPT's chat endpoint used here takes images, not audio.
-  const bool voice = gemini && wav && wavLength;
-  String prefix = gemini ? String("{\"contents\":[{\"parts\":[{\"text\":\"") + (voice ? VOICE_PROMPT : PROMPT) +
-                               "\"},{\"inline_data\":{\"mime_type\":\"image/jpeg\",\"data\":\""
-                         : String(
-                               "{\"model\":\"gpt-4.1\",\"max_completion_tokens\":1600,\"messages\":[{\"role\":\"user\","
-                               "\"content\":[{\"type\":\"text\",\"text\":\"") +
-                               PROMPT + "\"},{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/jpeg;base64,";
-  String suffix =
-      gemini ? "\"}}]}],\"generationConfig\":{\"maxOutputTokens\":4096,\"thinkingConfig\":{\"thinkingLevel\":\"low\"}}}"
-             : "\",\"detail\":\"high\"}}]}]}";
-  const String middle = "\"}},{\"inline_data\":{\"mime_type\":\"audio/wav\",\"data\":\"";
-  size_t encoded = 4 * ((length + 2) / 3), audioEncoded = voice ? 4 * ((wavLength + 2) / 3) : 0;
-  size_t total = prefix.length() + encoded + (voice ? middle.length() + audioEncoded : 0) + suffix.length(),
-         written = 0;
-  uint8_t *payload = (uint8_t *)ps_malloc(total + 1);
-  if (!payload) return fail("Not enough memory for the photo request.");
-  uint8_t *at = payload;
-  memcpy(at, prefix.c_str(), prefix.length());
-  at += prefix.length();
-  int result = mbedtls_base64_encode(at, encoded + 1, &written, jpeg, length);
-  if (result || written != encoded) {
-    free(payload);
-    return fail("Photo encoding failed.");
+  // Build the body once; retries resend the same bytes.
+  size_t total = 0;
+  uint8_t *payload = nullptr;
+  String contentType = "application/json";
+  const char *boundary = "----perch7f3a9c";
+  if (j.kind == Kind::Transcribe && !gemini) {
+    payload = multipartWav(j.wav, j.wavLength, "gpt-transcribe", boundary, total);
+    contentType = String("multipart/form-data; boundary=") + boundary;
+  } else {
+    Body body;
+    if (j.kind == Kind::Transcribe) buildGeminiTranscribeBody(j, body);
+    else buildAnswerBody(j, body);
+    payload = body.build(total);
   }
-  at += encoded;
-  if (voice) {
-    memcpy(at, middle.c_str(), middle.length());
-    at += middle.length();
-    result = mbedtls_base64_encode(at, audioEncoded + 1, &written, wav, wavLength);
-    if (result || written != audioEncoded) {
-      free(payload);
-      return fail("Voice encoding failed.");
-    }
-    at += audioEncoded;
-  }
-  memcpy(at, suffix.c_str(), suffix.length());
-  payload[total] = 0;
+  if (!payload) return fail("Not enough memory for the request.");
   if (cancelled) {
     free(payload);
     return fail("Cancelled. Nothing was sent.");
@@ -175,20 +363,33 @@ bool request(bool gemini, const String &key, const uint8_t *jpeg, size_t length,
     while (flashBusy() && millis() - waitStart < 10000 && !cancelled) delay(50);
     Serial.printf("AI_WAIT photo save %lu ms\n", (unsigned long)(millis() - waitStart));
   }
-  // Gemini attempts. Only requests Google cannot have processed are retried:
-  //  - 500/503 overloaded: try the sibling model, then the first again, with a pause;
-  //  - 429 per-minute limit: wait as long as Google asks (if short), same model;
-  //  - 429 per-day limit: daily quotas are per model, so move to the next model;
+  // Which models to try, in order. Gemini starts with the chosen model, then the others
+  // (daily free limits are per model). GPT uses only the chosen model: it is paid.
+  std::vector<String> models;
+  if (gemini) {
+    if (j.kind == Kind::Transcribe) {
+      models.push_back("gemini-3.5-flash-lite");
+      models.push_back("gemini-3.5-flash");
+    } else {
+      models.push_back(j.options.model.length() ? j.options.model : String(GEMINI_MODELS[0].id));
+      for (int i = 0; i < GEMINI_MODEL_COUNT; ++i)
+        if (models[0] != GEMINI_MODELS[i].id && i < 3) models.push_back(GEMINI_MODELS[i].id);
+    }
+  } else models.push_back(j.kind == Kind::Transcribe ? String("gpt-transcribe") : j.options.model);
+  // Only requests the provider cannot have processed are retried:
+  //  - 500/503 overloaded (Gemini): the next model after a pause;
+  //  - 429 per-minute limit: wait as long as asked (if short), same model;
+  //  - 429 per-day limit (Gemini): the next model;
   //  - -1 never connected / -3 body cut off mid-send: same model once more.
-  // Model names: ai.google.dev/gemini-api/docs/generate-content/thinking (all support "low").
-  static const char *MODELS[] = {"gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.5-flash"};
-  constexpr int MODEL_COUNT = 3, MAX_TRIES = 4;
+  constexpr int MAX_TRIES = 4;
   std::unique_ptr<WiFiClientSecure> client;
   HTTPClient http;
-  int status = -1, model = 0, tries = 0;
+  int status = -1, tries = 0;
+  size_t model = 0;
   uint32_t waitMs = 0;
   bool dailyLimit = false;
   int retryAfterS = 0;
+  bool resent = false;
   String errorBody;
   while (tries < MAX_TRIES && !cancelled) {
     if (tries) {
@@ -203,30 +404,32 @@ bool request(bool gemini, const String &key, const uint8_t *jpeg, size_t length,
     client->setCACert(AI_ROOT_CERTS);
     client->setHandshakeTimeout(12);
     http.setConnectTimeout(12000);
-    http.setTimeout(65000);  // uint16_t ms: 65 s is the maximum (90000 wrapped to 24.5 s)
-    const String url =
-        gemini ? String("https://generativelanguage.googleapis.com/v1beta/models/") + MODELS[model] + ":generateContent"
-               : String("https://api.openai.com/v1/chat/completions");
+    http.setTimeout(65000);  // uint16_t ms: 65 s is the maximum
+    String url;
+    if (gemini)
+      url = String("https://generativelanguage.googleapis.com/v1beta/models/") + models[model] + ":generateContent";
+    else
+      url = j.kind == Kind::Transcribe ? "https://api.openai.com/v1/audio/transcriptions"
+                                       : "https://api.openai.com/v1/chat/completions";
     if (!http.begin(*client, url)) {
       status = -1;
       break;
     }
-    http.addHeader("Content-Type", "application/json");
-    http.addHeader(gemini ? "x-goog-api-key" : "Authorization", gemini ? key : "Bearer " + key);
-    Serial.printf("AI_SEND try %d %s %u bytes, internal heap %u free, largest %u\n", tries,
-                  gemini ? MODELS[model] : "gpt-4.1", (unsigned)total, heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-                  heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+    http.addHeader("Content-Type", contentType);
+    http.addHeader(gemini ? "x-goog-api-key" : "Authorization", gemini ? j.options.key : "Bearer " + j.options.key);
+    Serial.printf("AI_SEND try %d %s %s %u bytes, internal heap %u free, largest %u\n", tries, models[model].c_str(),
+                  j.kind == Kind::Transcribe ? "transcribe" : j.options.effort.c_str(), (unsigned)total,
+                  heap_caps_get_free_size(MALLOC_CAP_INTERNAL), heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
     const uint32_t sendStart = millis();
     status = http.POST(payload, total);
     Serial.printf("AI_STATUS %d after %lu ms\n", status, (unsigned long)(millis() - sendStart));
     if (status == 200) break;
-    // Google sends error bodies chunked (size unknown); they are small JSON. Never the key.
+    // Error bodies are small JSON and never contain the key.
     errorBody = status > 0 ? http.getString().substring(0, 2000) : String("");
     String flat = errorBody.substring(0, 600);
     flat.replace("\n", " ");
     flat.replace("  ", " ");
     Serial.printf("AI_HTTP %d %s\n", status, flat.c_str());
-    if (!gemini) break;
     if (status == 429) {
       dailyLimit = errorBody.indexOf("PerDay") >= 0;
       const int at = errorBody.indexOf("\"retryDelay\"");
@@ -235,19 +438,20 @@ bool request(bool gemini, const String &key, const uint8_t *jpeg, size_t length,
         waitMs = retryAfterS * 1000UL + 500;
         continue;
       }
-      if (model + 1 < MODEL_COUNT) {
+      if (gemini && model + 1 < models.size()) {
         ++model;
         waitMs = 0;
         continue;
       }
       break;
     }
-    if (status == 503 || status == 500) {
-      model = model == 0 ? 1 : 0;
+    if (gemini && (status == 503 || status == 500)) {
+      model = (model + 1) % models.size();
       waitMs = tries == 1 ? 1000 : 4000;
       continue;
     }
-    if (status == HTTPC_ERROR_CONNECTION_REFUSED || status == HTTPC_ERROR_SEND_PAYLOAD_FAILED) {
+    if ((status == HTTPC_ERROR_CONNECTION_REFUSED || status == HTTPC_ERROR_SEND_PAYLOAD_FAILED) && !resent) {
+      resent = true;
       waitMs = 1000;
       continue;
     }
@@ -257,10 +461,12 @@ bool request(bool gemini, const String &key, const uint8_t *jpeg, size_t length,
   if (status != 200) {
     http.end();
     const String &body = errorBody;
-    if (body.indexOf("API_KEY_INVALID") >= 0 || body.indexOf("API key not valid") >= 0 || status == 401)
+    if (body.indexOf("API_KEY_INVALID") >= 0 || body.indexOf("API key not valid") >= 0 ||
+        body.indexOf("invalid_api_key") >= 0 || status == 401)
       return fail("API key rejected. Check the key in PC setup.");
     if (status == 403) return fail("Access denied for this API key.");
     if (status == 429) {
+      if (body.indexOf("insufficient_quota") >= 0) return fail("The OpenAI account has no credit left.");
       if (dailyLimit)
         return fail(
             "Today's free Gemini limit is used up on every model. It resets at midnight Pacific time; a paid key "
@@ -269,7 +475,12 @@ bool request(bool gemini, const String &key, const uint8_t *jpeg, size_t length,
                (retryAfterS > 0 ? String(retryAfterS) + " s." : String("a minute."));
       return false;
     }
-    if (status == 404) return fail("Configured AI model unavailable for this account.");
+    if (status == 404 || status == 400) {
+      if (body.indexOf("model") >= 0)
+        return fail("This model is not available for this key. Pick another in Settings.");
+      answer = String("The provider rejected the request (") + status + ").";
+      return false;
+    }
     if (status == 503 || status == 500) {
       answer = String("The AI service is busy (") + status + "). Try again in a minute.";
       return false;
@@ -279,7 +490,6 @@ bool request(bool gemini, const String &key, const uint8_t *jpeg, size_t length,
       if (client) client->lastError(tlsError, sizeof tlsError);
       Serial.printf("AI_TLS %s\n", tlsError);
       answer = String("Connection lost (") + HTTPClient::errorToString(status) +
-               (tlsError[0] ? String(": ") + tlsError : String("")) +
                "). The photo may or may not have reached the provider; it was not resent.";
       return false;
     }
@@ -303,28 +513,19 @@ bool request(bool gemini, const String &key, const uint8_t *jpeg, size_t length,
   auto error = deserializeJson(doc, response, output.used);
   free(response);
   if (error) return fail("Could not read the AI response.");
-  answer = "";
   String finish;
-  if (gemini) {
-    for (JsonObject part : doc["candidates"][0]["content"]["parts"].as<JsonArray>()) {
-      if (part["thought"] == true) continue;
-      const char *text = part["text"];
-      if (text) {
-        if (answer.length()) answer += '\n';
-        answer += text;
-      }
-    }
-    finish = doc["candidates"][0]["finishReason"] | "";
-    if (answer.isEmpty() && doc["promptFeedback"]["blockReason"].is<const char *>())
-      return fail("The provider blocked this photo. Nothing to show.");
-  } else {
-    const char *text = doc["choices"][0]["message"]["content"];
-    if (text) answer = text;
-    finish = doc["choices"][0]["finish_reason"] | "";
+  answer = responseText(j.kind, gemini, doc, finish);
+  if (j.kind == Kind::Transcribe) {
+    answer = toDisplayText(answer);
+    answer.trim();
+    if (answer.isEmpty()) return fail("Could not hear any words. Hold the button and speak again.");
+    return true;
   }
+  if (answer.isEmpty() && gemini && doc["promptFeedback"]["blockReason"].is<const char *>())
+    return fail("The provider blocked this photo. Nothing to show.");
   const bool cutOff = finish == "MAX_TOKENS" || finish == "length";
   if (answer.isEmpty()) {
-    if (cutOff) return fail("The model ran out of space before answering. Try again.");
+    if (cutOff) return fail("The model ran out of space before answering. Try a lower effort.");
     if (finish == "SAFETY" || finish == "content_filter") return fail("The provider blocked this answer.");
     return fail("No text answer returned. The image may have been unreadable.");
   }
@@ -338,25 +539,11 @@ bool request(bool gemini, const String &key, const uint8_t *jpeg, size_t length,
 portMUX_TYPE slotLock = portMUX_INITIALIZER_UNLOCKED;
 volatile AiState state = AiState::Idle;
 TaskHandle_t worker = nullptr;
-struct Job {
-  bool gemini;
-  String key;
-  uint8_t *jpeg;
-  size_t length;
-  uint8_t *wav;
-  size_t wavLength;
-  String result;
-  bool ok;
-};
 Job *job = nullptr;
 
 void workerTask(void *) {
-  job->ok = request(job->gemini, job->key, job->jpeg, job->length, job->wav, job->wavLength, job->result);
-  job->key = "";
-  free(job->jpeg);
-  job->jpeg = nullptr;
-  free(job->wav);
-  job->wav = nullptr;
+  job->ok = request(*job);
+  job->release();
   portENTER_CRITICAL(&slotLock);
   state = cancelled ? AiState::Cancelled : (job->ok ? AiState::Done : AiState::Failed);
   worker = nullptr;
@@ -364,46 +551,71 @@ void workerTask(void *) {
   vTaskDelete(nullptr);
 }
 
-}  // namespace
+uint8_t *copyOf(const uint8_t *data, size_t length) {
+  uint8_t *p = (uint8_t *)ps_malloc(length);
+  if (p) memcpy(p, data, length);
+  return p;
+}
 
-bool aiBusy() { return state != AiState::Idle; }
-
-bool aiStart(bool gemini, const String &key, const uint8_t *jpeg, size_t length, const uint8_t *wav, size_t wavLength) {
-  if (state != AiState::Idle) return false;
-  if (!job) job = new Job();
-  // The worker owns its own copies, so a new capture or recording can never change an upload.
-  job->jpeg = (uint8_t *)ps_malloc(length);
-  if (!job->jpeg) return false;
-  memcpy(job->jpeg, jpeg, length);
-  job->wav = nullptr;
-  job->wavLength = 0;
-  if (wav && wavLength) {
-    job->wav = (uint8_t *)ps_malloc(wavLength);
-    if (!job->wav) {
-      free(job->jpeg);
-      job->jpeg = nullptr;
-      return false;
-    }
-    memcpy(job->wav, wav, wavLength);
-    job->wavLength = wavLength;
-  }
-  job->length = length;
-  job->gemini = gemini;
-  job->key = key;
-  job->result = "";
-  job->ok = false;
+bool launch() {
   cancelled = false;
   state = AiState::Working;
   // TLS needs a deep stack; run beside the Wi-Fi stack on core 0, away from the UI loop.
   if (xTaskCreatePinnedToCore(workerTask, "ai-request", 16384, nullptr, 1, &worker, 0) != pdPASS) {
-    free(job->jpeg);
-    job->jpeg = nullptr;
-    free(job->wav);
-    job->wav = nullptr;
+    job->release();
     state = AiState::Idle;
     return false;
   }
   return true;
+}
+
+}  // namespace
+
+bool aiBusy() { return state != AiState::Idle; }
+
+bool aiStart(const AiOptions &options, const uint8_t *const *jpegs, const size_t *lengths, int pages,
+             const String &question, const uint8_t *wav, size_t wavLength) {
+  if (state != AiState::Idle || pages < 1 || pages > AI_MAX_PAGES) return false;
+  if (!job) job = new Job();
+  job->release();
+  job->kind = Kind::Answer;
+  job->options = options;
+  job->question = question;
+  job->result = "";
+  job->ok = false;
+  // The worker owns its own copies, so a new capture or recording can never change an upload.
+  for (int i = 0; i < pages; ++i) {
+    job->jpegs[i] = copyOf(jpegs[i], lengths[i]);
+    if (!job->jpegs[i]) {
+      job->release();
+      return false;
+    }
+    job->lengths[i] = lengths[i];
+  }
+  job->pages = pages;
+  if (wav && wavLength) {
+    job->wav = copyOf(wav, wavLength);
+    if (!job->wav) {
+      job->release();
+      return false;
+    }
+    job->wavLength = wavLength;
+  }
+  return launch();
+}
+
+bool aiTranscribe(const AiOptions &options, const uint8_t *wav, size_t wavLength) {
+  if (state != AiState::Idle || !wav || !wavLength) return false;
+  if (!job) job = new Job();
+  job->release();
+  job->kind = Kind::Transcribe;
+  job->options = options;
+  job->result = "";
+  job->ok = false;
+  job->wav = copyOf(wav, wavLength);
+  if (!job->wav) return false;
+  job->wavLength = wavLength;
+  return launch();
 }
 
 void aiCancel() {
@@ -423,6 +635,62 @@ AiState aiPoll(String &text) {
   return current;
 }
 
+void aiDryRun(const AiOptions &options, int pages, const String &question, bool transcribe) {
+  // A minimal valid JPEG/WAV stand-in: the shape of the body is what is checked.
+  static const uint8_t fakeJpeg[] = {0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0xFF, 0xD9};
+  static const uint8_t fakeWav[] = {'R', 'I', 'F', 'F', 0, 0, 0, 0, 'W', 'A', 'V', 'E'};
+  Job j;
+  j.kind = transcribe ? Kind::Transcribe : Kind::Answer;
+  j.options = options;
+  j.question = question;
+  j.pages = transcribe ? 0 : constrain(pages, 1, AI_MAX_PAGES);
+  for (int i = 0; i < j.pages; ++i) {
+    j.jpegs[i] = (uint8_t *)fakeJpeg;
+    j.lengths[i] = sizeof fakeJpeg;
+  }
+  if (transcribe) {
+    j.wav = (uint8_t *)fakeWav;
+    j.wavLength = sizeof fakeWav;
+  }
+  if (transcribe && !options.gemini) {
+    size_t total = 0;
+    uint8_t *body = multipartWav(fakeWav, sizeof fakeWav, "gpt-transcribe", "----perch7f3a9c", total);
+    Serial.printf("DRYRUN POST https://api.openai.com/v1/audio/transcriptions multipart %u bytes\n", (unsigned)total);
+    if (body) {
+      for (size_t i = 0; i < total; ++i) {
+        const char c = body[i];
+        Serial.print(c >= 32 && c < 127 ? c : (c == '\n' ? '|' : '.'));
+      }
+      Serial.println();
+    }
+    free(body);
+    j.wav = nullptr;
+    return;
+  }
+  Body body;
+  if (transcribe) buildGeminiTranscribeBody(j, body);
+  else buildAnswerBody(j, body);
+  size_t total = 0;
+  uint8_t *buf = body.build(total);
+  if (!buf) {
+    Serial.println("DRYRUN build failed");
+    return;
+  }
+  JsonDocument doc;
+  const DeserializationError err = deserializeJson(doc, (const char *)buf, total);
+  String shape;
+  serializeJson(doc, shape);
+  free(buf);
+  const String url = options.gemini
+                         ? String("https://generativelanguage.googleapis.com/v1beta/models/") +
+                               (transcribe ? "gemini-3.5-flash-lite" : options.model.c_str()) + ":generateContent"
+                         : String("https://api.openai.com/v1/chat/completions");
+  Serial.printf("DRYRUN POST %s json %s, %u bytes\n", url.c_str(), err ? err.c_str() : "valid", (unsigned)total);
+  Serial.printf("DRYRUN %s\n", shape.substring(0, 1500).c_str());
+  for (int i = 0; i < AI_MAX_PAGES; ++i) j.jpegs[i] = nullptr;
+  j.wav = nullptr;
+}
+
 // Developer: the photo upload path without an API key. Google rejects it unauthenticated,
 // so no model runs and nothing is billed; it shows whether TLS and a large upload succeed.
 size_t uploadTestBytes = 0;
@@ -434,6 +702,7 @@ void uploadTestTask(void *) {
   uint8_t *payload = (uint8_t *)ps_malloc(total);
   if (!payload) {
     Serial.println("UPLOAD_TEST no memory");
+    vTaskDelete(nullptr);
     return;
   }
   memcpy(payload, head, strlen(head));
@@ -445,12 +714,6 @@ void uploadTestTask(void *) {
   HTTPClient http;
   http.setConnectTimeout(12000);
   http.setTimeout(45000);
-  Serial.printf("UPLOAD_TEST %u bytes, internal heap %u, largest %u\n", (unsigned)total,
-                heap_caps_get_free_size(MALLOC_CAP_INTERNAL), heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
-  IPAddress resolved;
-  const int dns = WiFi.hostByName("generativelanguage.googleapis.com", resolved);
-  Serial.printf("UPLOAD_TEST dns=%d ip=%s stack_free=%u\n", dns, resolved.toString().c_str(),
-                (unsigned)uxTaskGetStackHighWaterMark(nullptr));
   const uint32_t t = millis();
   int status = -100;
   if (http.begin(client, "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent")) {
@@ -459,9 +722,6 @@ void uploadTestTask(void *) {
     http.end();
   }
   free(payload);
-  char tlsError[100] = "";
-  client.lastError(tlsError, sizeof tlsError);
-  Serial.printf("UPLOAD_TEST tls: %s\n", tlsError);
   Serial.printf("UPLOAD_TEST status %d (%s) in %lu ms\n", status,
                 status < 0 ? HTTPClient::errorToString(status).c_str() : "http", (unsigned long)(millis() - t));
   vTaskDelete(nullptr);
@@ -485,8 +745,8 @@ static void *tlsCalloc(size_t count, size_t size) {
 }
 void aiBegin() { mbedtls_platform_set_calloc_free(tlsCalloc, free); }
 
-// Developer: is the saved key valid, and can it see the model? A GET of the model's details
-// is free (no content is generated). Prints the HTTP status and the start of the reply.
+// Developer: is the saved Gemini key valid, and can it see the model? A GET of the model's
+// details is free (no content is generated).
 void aiKeyCheck(const String &key) {
   WiFiClientSecure client;
   client.setCACert(AI_ROOT_CERTS);
@@ -500,9 +760,11 @@ void aiKeyCheck(const String &key) {
   }
   http.addHeader("x-goog-api-key", key);
   const int status = http.GET();
-  const String body = status > 0 ? http.getString() : String(HTTPClient::errorToString(status));
+  String body = status > 0 ? http.getString() : String(HTTPClient::errorToString(status));
   http.end();
-  Serial.printf("KEYCHECK %d %s\n", status, body.substring(0, 400).c_str());
+  body = body.substring(0, 400);
+  body.replace("\n", " ");
+  Serial.printf("KEYCHECK %d %s\n", status, body.c_str());
 }
 
 void aiSetFlashBusy(bool (*busy)()) { flashBusy = busy; }
