@@ -1,12 +1,7 @@
 #pragma once
 #include <Arduino.h>
 
-// Wi-Fi runs in the background from boot and reconnects by itself.
-void networkBegin();
-void networkTick();
-bool networkConnected();
-void networkSetEnabled(bool on);
-bool networkEnabled();
+#include "network.h"
 
 // One AI request at a time, on its own FreeRTOS task, so the UI never freezes.
 enum class AiState { Idle, Working, Done, Failed, Cancelled };

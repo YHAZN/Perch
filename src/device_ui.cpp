@@ -41,7 +41,22 @@ const lv_font_t *F_BODY = &lv_font_montserrat_16;
 const lv_font_t *F_LARGE = &lv_font_montserrat_24;
 const lv_font_t *F_CLOCK = &lv_font_montserrat_48;
 
-enum class Screen { Face, Apps, Camera, Ask, Answer, Photos, History, Settings, Model, Notice, Remote, Count };
+enum class Screen {
+  Face,
+  Apps,
+  Camera,
+  Ask,
+  Answer,
+  Photos,
+  History,
+  Settings,
+  Model,
+  Notice,
+  Remote,
+  Wifi,
+  Password,
+  Count
+};
 Screen current = Screen::Face;
 Screen noticeReturn = Screen::Ask;
 
@@ -99,6 +114,10 @@ lv_obj_t *photosImage, *photosEmpty, *photoCounter;
 lv_obj_t *historyList, *historyEmpty, *askScroll, *askHero;
 lv_obj_t *remoteStatus, *remoteSlides, *remoteMediaPanel, *remoteModeLabel[2];
 bool remoteMediaMode = false;
+lv_obj_t *wifiList, *wifiStatus, *passwordTitle, *passwordField, *keyboard;
+String joiningSsid;
+bool scanShown = false;
+unsigned long scanStartedAt = 0;
 lv_obj_t *modelValue, *wifiValue, *brightSlider, *storageValue, *storageSub;
 lv_obj_t *modelCheck[2], *modelSub[2];
 lv_obj_t *noticeText;
@@ -429,6 +448,8 @@ bool sendAcknowledged(const uint8_t *bytes, size_t length) {
 
 // ---------- navigation ----------
 void refreshDynamic();
+void startScan();
+void renderScan();
 lv_obj_t *layer(Screen s) { return scr[(int)s]; }
 void setY(void *o, int32_t v) { lv_obj_set_y((lv_obj_t *)o, v); }
 // Motion: ease-out when something arrives, ease-in when it leaves (design/index.html --ease).
@@ -459,6 +480,8 @@ void onEnter(Screen s);
 std::vector<Screen> backStack;
 lv_obj_t *backButton = nullptr;
 void enter(Screen next) {
+  // Automatic Wi-Fi retries would cancel scans; pause them while choosing a network.
+  networkPauseRetries(next == Screen::Wifi || next == Screen::Password);
   if (next != Screen::Camera) stopPreview();
   current = next;
   onEnter(next);
@@ -760,7 +783,17 @@ void refreshDynamic() {
   hide(cameraOffLabel, !cameraOff);
   // Settings and Model
   setText(modelValue, useGemini ? "Gemini" : "GPT");
-  setText(wifiValue, !networkEnabled() ? "Off" : online ? WiFi.SSID().c_str() : "Not connected");
+  setText(wifiValue, !networkEnabled() ? "Off" : online ? networkName().c_str() : "Not connected");
+  // Wi-Fi list: show results when a scan finishes; rescan every 20 s while it is open.
+  if (current == Screen::Wifi) {
+    renderScan();
+    if (scanShown && millis() - scanStartedAt > 20000) startScan();
+  }
+  if (joiningSsid.length() && networkName() == joiningSsid) {
+    toast(("Connected to " + joiningSsid).c_str());
+    joiningSsid = "";
+    if (current == Screen::Wifi) startScan();
+  }
   if (keyCache < 0) keyCache = (settings.isKey("gemini-key") ? 1 : 0) | (settings.isKey("gpt-key") ? 2 : 0);
   for (int i = 0; i < 2; ++i) {
     setText(modelCheck[i], (i == 0) == useGemini ? LV_SYMBOL_OK : "");
@@ -1165,6 +1198,8 @@ void onEnter(Screen s) {
     rebuildHistory();
   } else if (s == Screen::Remote) {
     remoteBegin();
+  } else if (s == Screen::Wifi) {
+    startScan();
   } else if (s == Screen::Apps) {
     lv_obj_scroll_to_y(layer(Screen::Apps), 0, LV_ANIM_OFF);
   }
@@ -1546,6 +1581,247 @@ void buildHistory() {
   scr[(int)Screen::History] = screenBase();
 }
 
+// ---------- Wi-Fi: choose a network and type its password on the device ----------
+void startScan() {
+  networkScanStart();
+  scanShown = false;
+  scanStartedAt = millis();
+  setText(wifiStatus, networkConnected() ? ("Connected to " + networkName()).c_str() : "Searching...");
+}
+void joinNetwork(const String &ssid, const String &password) {
+  networkSave(ssid, password);
+  joiningSsid = ssid;
+  toast(("Joining " + ssid).c_str());
+}
+void renderScan() {
+  static ScanResult results[12];
+  const int n = networkScanResults(results, 12);
+  if (n < 0 || scanShown) return;
+  scanShown = true;
+  lv_obj_clean(wifiList);
+  const String current = networkName();
+  setText(wifiStatus, current.length() ? ("Connected to " + current).c_str()
+                      : n              ? "Choose a network"
+                                       : "No networks found");
+  for (int i = 0; i < n; ++i) {
+    lv_obj_t *r = pressedFeedback(plain(wifiList));
+    lv_obj_set_size(r, W, 50);
+    lv_obj_set_style_border_side(r, LV_BORDER_SIDE_TOP, 0);
+    lv_obj_set_style_border_width(r, 1, 0);
+    lv_obj_set_style_border_color(r, LINE, 0);
+    lv_obj_t *name = text(r, results[i].ssid.c_str(), F_BODY, INK);
+    lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
+    lv_obj_set_size(name, 160, 20);
+    lv_obj_set_pos(name, 22, 7);
+    const bool connected = results[i].ssid == current, saved = networkIsSaved(results[i].ssid);
+    const char *note = connected ? "Connected" : saved ? "Saved" : results[i].secured ? "" : "Open";
+    lv_obj_t *sub = text(r, note, F_SMALL, connected ? LENS : MIST);
+    lv_obj_set_pos(sub, 22, 29);
+    // Signal: the Wi-Fi glyph, brighter when stronger.
+    lv_obj_t *bars = text(r, LV_SYMBOL_WIFI, F_BODY, INK);
+    lv_obj_set_style_text_opa(bars,
+                              results[i].rssi > -60   ? LV_OPA_COVER
+                              : results[i].rssi > -75 ? LV_OPA_70
+                                                      : LV_OPA_40,
+                              0);
+    lv_obj_align(bars, LV_ALIGN_RIGHT_MID, -22, 0);
+    lv_obj_add_flag(r, LV_OBJ_FLAG_CLICKABLE);
+    // The row keeps its SSID and security in a small heap record for the callbacks.
+    struct Row {
+      String ssid;
+      bool secured;
+    };
+    Row *row = new Row{results[i].ssid, results[i].secured};
+    lv_obj_add_event_cb(
+        r,
+        [](lv_event_t *e) {
+          Row *row = (Row *)lv_event_get_user_data(e);
+          if (!row->secured || networkIsSaved(row->ssid)) {
+            joinNetwork(row->ssid, "");
+            return;
+          }
+          joiningSsid = row->ssid;
+          setText(passwordTitle, row->ssid.c_str());
+          lv_textarea_set_text(passwordField, "");
+          show(Screen::Password);
+        },
+        LV_EVENT_CLICKED, row);
+    lv_obj_add_event_cb(
+        r,
+        [](lv_event_t *e) {
+          Row *row = (Row *)lv_event_get_user_data(e);
+          if (!networkIsSaved(row->ssid)) return;
+          networkForget(row->ssid);
+          toast(("Forgot " + row->ssid).c_str());
+          startScan();
+        },
+        LV_EVENT_LONG_PRESSED, row);
+    lv_obj_add_event_cb(r, [](lv_event_t *e) { delete (Row *)lv_event_get_user_data(e); }, LV_EVENT_DELETE, row);
+  }
+}
+void buildWifi() {
+  lv_obj_t *s = scr[(int)Screen::Wifi] = screenBase();
+  lv_obj_set_x(title(s, "Wi-Fi"), 58);
+  wifiStatus = text(s, "", F_SMALL, MIST);
+  lv_obj_set_pos(wifiStatus, 22, 58);
+  wifiList = plain(s);
+  lv_obj_set_size(wifiList, W, H - 80);
+  lv_obj_set_pos(wifiList, 0, 80);
+  lv_obj_add_flag(wifiList, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_scroll_dir(wifiList, LV_DIR_VER);
+  lv_obj_set_scrollbar_mode(wifiList, LV_SCROLLBAR_MODE_OFF);
+  lv_obj_set_flex_flow(wifiList, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_style_pad_bottom(wifiList, 56, 0);
+}
+// Keyboard: three layouts, keys as large as 240 px allows, kept above the home strip.
+const char *KB_LOWER[] = {"q",  "w",   "e", "r",          "t", "y", "u", "i", "o", "p",
+                          "\n", "a",   "s", "d",          "f", "g", "h", "j", "k", "l",
+                          "\n", "ABC", "z", "x",          "c", "v", "b", "n", "m", LV_SYMBOL_BACKSPACE,
+                          "\n", "1#",  " ", LV_SYMBOL_OK, ""};
+const char *KB_UPPER[] = {"Q",  "W",   "E", "R",          "T", "Y", "U", "I", "O", "P",
+                          "\n", "A",   "S", "D",          "F", "G", "H", "J", "K", "L",
+                          "\n", "abc", "Z", "X",          "C", "V", "B", "N", "M", LV_SYMBOL_BACKSPACE,
+                          "\n", "1#",  " ", LV_SYMBOL_OK, ""};
+const char *KB_SPECIAL[] = {
+    "1",  "2",   "3", "4",          "5",  "6",  "7", "8", "9", "0", "\n", "-", "_", "/", ":", ";",
+    "(",  ")",   "@", "&",          "\"", "\n", "#", "%", "*", "+", "=",  ".", ",", "?", "!", LV_SYMBOL_BACKSPACE,
+    "\n", "abc", " ", LV_SYMBOL_OK, ""};
+const lv_buttonmatrix_ctrl_t KB_CTRL_LETTERS[] = {(lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
+                                                  (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
+                                                  (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
+                                                  (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
+                                                  (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
+                                                  (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
+                                                  (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
+                                                  (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
+                                                  (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
+                                                  (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
+                                                  (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
+                                                  (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
+                                                  (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
+                                                  (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
+                                                  (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
+                                                  (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
+                                                  (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
+                                                  (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
+                                                  (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
+                                                  (lv_buttonmatrix_ctrl_t)(4),
+                                                  (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
+                                                  (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
+                                                  (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
+                                                  (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
+                                                  (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
+                                                  (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
+                                                  (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
+                                                  (lv_buttonmatrix_ctrl_t)(4),
+                                                  (lv_buttonmatrix_ctrl_t)(3),
+                                                  (lv_buttonmatrix_ctrl_t)(9),
+                                                  (lv_buttonmatrix_ctrl_t)(3)};
+const lv_buttonmatrix_ctrl_t KB_CTRL_SPECIAL[] = {(lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
+                                                  (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
+                                                  (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
+                                                  (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
+                                                  (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
+                                                  (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
+                                                  (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
+                                                  (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
+                                                  (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
+                                                  (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
+                                                  (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
+                                                  (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
+                                                  (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
+                                                  (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
+                                                  (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
+                                                  (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
+                                                  (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
+                                                  (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
+                                                  (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
+                                                  (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
+                                                  (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
+                                                  (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
+                                                  (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
+                                                  (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
+                                                  (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
+                                                  (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
+                                                  (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
+                                                  (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
+                                                  (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
+                                                  (lv_buttonmatrix_ctrl_t)(3),
+                                                  (lv_buttonmatrix_ctrl_t)(3),
+                                                  (lv_buttonmatrix_ctrl_t)(9),
+                                                  (lv_buttonmatrix_ctrl_t)(3)};
+void buildPassword() {
+  lv_obj_t *s = scr[(int)Screen::Password] = screenBase();
+  passwordTitle = text(s, "", F_BODY, INK);
+  lv_label_set_long_mode(passwordTitle, LV_LABEL_LONG_DOT);
+  lv_obj_set_size(passwordTitle, W - 80, 20);
+  lv_obj_set_pos(passwordTitle, 58, 22);
+  passwordField = lv_textarea_create(s);
+  lv_textarea_set_one_line(passwordField, true);
+  lv_textarea_set_password_mode(passwordField, true);
+  lv_textarea_set_placeholder_text(passwordField, "Password");
+  lv_obj_set_size(passwordField, 166, 36);
+  lv_obj_set_pos(passwordField, 14, 54);
+  lv_obj_set_style_bg_color(passwordField, GRAPHITE, 0);
+  lv_obj_set_style_bg_opa(passwordField, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_width(passwordField, 0, 0);
+  lv_obj_set_style_radius(passwordField, 12, 0);
+  lv_obj_set_style_text_color(passwordField, INK, 0);
+  lv_obj_set_style_text_font(passwordField, F_BODY, 0);
+  lv_obj_set_style_pad_all(passwordField, 8, 0);
+  lv_obj_set_style_bg_color(passwordField, LENS, LV_PART_CURSOR);
+  lv_obj_set_style_bg_opa(passwordField, LV_OPA_COVER, LV_PART_CURSOR);
+  lv_obj_set_style_text_color(passwordField, MIST, LV_PART_TEXTAREA_PLACEHOLDER);
+  // Show or hide what was typed.
+  lv_obj_t *eye = circle(s, 36, ICON_BG, 0, ICON_BG, LV_OPA_COVER);
+  lv_obj_set_pos(eye, 188, 54);
+  lv_obj_set_style_opa(eye, LV_OPA_60, LV_STATE_PRESSED);
+  static lv_obj_t *eyeGlyph = nullptr;
+  eyeGlyph = text(eye, LV_SYMBOL_EYE_OPEN, F_BODY, INK);
+  lv_obj_center(eyeGlyph);
+  onClick(eye, [] {
+    const bool hidden = lv_textarea_get_password_mode(passwordField);
+    lv_textarea_set_password_mode(passwordField, !hidden);
+    lv_label_set_text(eyeGlyph, hidden ? LV_SYMBOL_EYE_CLOSE : LV_SYMBOL_EYE_OPEN);
+  });
+  keyboard = lv_keyboard_create(s);
+  lv_keyboard_set_textarea(keyboard, passwordField);
+  lv_keyboard_set_map(keyboard, LV_KEYBOARD_MODE_TEXT_LOWER, KB_LOWER, KB_CTRL_LETTERS);
+  lv_keyboard_set_map(keyboard, LV_KEYBOARD_MODE_TEXT_UPPER, KB_UPPER, KB_CTRL_LETTERS);
+  lv_keyboard_set_map(keyboard, LV_KEYBOARD_MODE_SPECIAL, KB_SPECIAL, KB_CTRL_SPECIAL);
+  lv_keyboard_set_mode(keyboard, LV_KEYBOARD_MODE_TEXT_LOWER);
+  lv_obj_set_size(keyboard, W - 8, HOME_ZONE - 98);
+  // Keyboards are bottom-anchored by default; place it under the field, above the home strip.
+  lv_obj_align(keyboard, LV_ALIGN_TOP_LEFT, 4, 96);
+  lv_obj_set_style_bg_opa(keyboard, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_pad_all(keyboard, 0, 0);
+  lv_obj_set_style_pad_gap(keyboard, 3, 0);
+  lv_obj_set_style_border_width(keyboard, 0, 0);
+  lv_obj_set_style_bg_color(keyboard, ICON_BG, LV_PART_ITEMS);
+  lv_obj_set_style_bg_opa(keyboard, LV_OPA_COVER, LV_PART_ITEMS);
+  lv_obj_set_style_border_width(keyboard, 0, LV_PART_ITEMS);
+  lv_obj_set_style_shadow_width(keyboard, 0, LV_PART_ITEMS);
+  lv_obj_set_style_radius(keyboard, 7, LV_PART_ITEMS);
+  lv_obj_set_style_text_color(keyboard, INK, LV_PART_ITEMS);
+  lv_obj_set_style_text_font(keyboard, F_BODY, LV_PART_ITEMS);
+  lv_obj_set_style_bg_color(keyboard, INK, LV_PART_ITEMS | LV_STATE_PRESSED);
+  lv_obj_set_style_text_color(keyboard, VOID_, LV_PART_ITEMS | LV_STATE_PRESSED);
+  lv_obj_set_style_bg_color(keyboard, GRAPHITE, LV_PART_ITEMS | LV_STATE_CHECKED);
+  lv_obj_add_event_cb(
+      keyboard,
+      [](lv_event_t *) {
+        const String password = lv_textarea_get_text(passwordField);
+        if (password.length() < 8) {
+          toast("Wi-Fi passwords have at least 8 characters");
+          return;
+        }
+        joinNetwork(joiningSsid, password);
+        lv_textarea_set_text(passwordField, "");
+        goBack();
+      },
+      LV_EVENT_READY, nullptr);
+}
+
 // ---------- Remote: Bluetooth keyboard for slides and media ----------
 lv_obj_t *remoteZone(lv_obj_t *parent, int x, int w, const char *symbol, void (*fn)()) {
   lv_obj_t *z = plain(parent);
@@ -1624,7 +1900,8 @@ void buildSettings() {
   lv_obj_set_scroll_dir(s, LV_DIR_VER);
   lv_obj_set_scrollbar_mode(s, LV_SCROLLBAR_MODE_OFF);
   title(s, "Settings");
-  row(s, 58, "Wi-Fi", &wifiValue);
+  lv_obj_t *wifiRow = row(s, 58, "Wi-Fi", &wifiValue);
+  onClick(wifiRow, [] { show(Screen::Wifi); });
   lv_obj_t *model = row(s, 110, "Model", &modelValue);
   onClick(model, [] { show(Screen::Model); });
   lv_obj_t *bright = row(s, 162, "Brightness", nullptr);
@@ -1727,6 +2004,14 @@ void buildControl() {
     networkSetEnabled(!networkEnabled());
     refreshDynamic();
   });
+  // Hold Wi-Fi for the network list.
+  lv_obj_add_event_cb(
+      ccWifi,
+      [](lv_event_t *) {
+        closeControl();
+        show(Screen::Wifi);
+      },
+      LV_EVENT_LONG_PRESSED, nullptr);
   ccBright = ccToggle(grid, "100%", &ccBrightLabel);
   lv_obj_t *sun = circle(ccBright, 14, INK, 2, VOID_, LV_OPA_TRANSP);
   lv_obj_center(sun);
@@ -1851,6 +2136,8 @@ const char *screenName() {
     case Screen::Photos: return "photo";
     case Screen::History: return "history";
     case Screen::Remote: return "remote";
+    case Screen::Wifi: return "wifi";
+    case Screen::Password: return "password";
     case Screen::Settings: return "status";
     case Screen::Model: return "model";
     default: return "error";
@@ -2061,6 +2348,8 @@ void initDeviceUi() {
   buildModel();
   buildNotice();
   buildRemote();
+  buildWifi();
+  buildPassword();
   buildControl();
   // Back arrow for screens two levels deep (Answer from History, Model from Settings...).
   backButton = plain(lv_layer_top());
@@ -2299,6 +2588,12 @@ void handleDeviceButton(char command) {
       if (answerCount) lv_obj_scroll_to_y(askScroll, H - ASK_PEEK - 30, LV_ANIM_OFF);
       break;
     case 'R': show(Screen::Remote); break;
+    case 'W': show(Screen::Wifi); break;
+    case 'V':  // developer: password screen layout check without a real network
+      joiningSsid = "Layout check";
+      setText(passwordTitle, joiningSsid.c_str());
+      show(Screen::Password);
+      break;
     case 'i': show(Screen::Settings); break;
     case 'b':
       if (answerCount) showAnswer(answerIds[0]);

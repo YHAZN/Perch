@@ -12,7 +12,6 @@ namespace {
 constexpr size_t RESPONSE_LIMIT = 32768;
 constexpr size_t ANSWER_LIMIT = 10000;
 constexpr unsigned long WIFI_WAIT_MS = 15000;
-const char *GUEST_SSID = "guest";
 // Set by the UI; checked before anything leaves the device.
 volatile bool cancelled = false;
 
@@ -244,49 +243,7 @@ void workerTask(void *) {
   vTaskDelete(nullptr);
 }
 
-unsigned long lastAttempt = 0;
-bool tryGuest = false;
-void join() {
-  // Alternate between the configured network and the open campus guest network.
-  if (tryGuest) WiFi.begin(GUEST_SSID);
-  else WiFi.begin(WIFI_TEST_SSID, WIFI_TEST_PASSWORD);
-  tryGuest = !tryGuest;
-  lastAttempt = millis();
-}
 }  // namespace
-
-void networkBegin() {
-  // Wi-Fi time replaces any build or USB time once it arrives. SNTP retries until online.
-  configTzTime("EST5EDT,M3.2.0,M11.1.0", "time.google.com", "pool.ntp.org");
-  WiFi.persistent(false);
-  WiFi.mode(WIFI_STA);
-  WiFi.setAutoReconnect(true);
-  join();
-}
-
-bool radioOn = true;
-void networkTick() {
-  if (radioOn && WiFi.status() != WL_CONNECTED && millis() - lastAttempt > 20000) {
-    WiFi.disconnect();
-    join();
-  }
-}
-
-void networkSetEnabled(bool on) {
-  // Control Center Wi-Fi toggle: off turns the radio off entirely (saves power).
-  radioOn = on;
-  if (on) {
-    WiFi.mode(WIFI_STA);
-    join();
-  } else {
-    WiFi.disconnect(true);
-    WiFi.mode(WIFI_OFF);
-  }
-}
-
-bool networkEnabled() { return radioOn; }
-
-bool networkConnected() { return WiFi.status() == WL_CONNECTED; }
 
 bool aiBusy() { return state != AiState::Idle; }
 
