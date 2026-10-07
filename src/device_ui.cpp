@@ -1009,12 +1009,18 @@ void setCameraOff(bool off) {
   if (off) stopPreview();
   refreshDynamic();
 }
+void setX(void *o, int32_t v);
+void animX(lv_obj_t *o, int from, int to, uint32_t ms, lv_anim_path_cb_t path, lv_anim_completed_cb_t done);
 void showPhoto(int index) {
   if (!photoCount) return;
-  photoIndex = constrain(index, 0, photoCount - 1);
+  const int next = constrain(index, 0, photoCount - 1);
+  const int direction = next > photoIndex ? 1 : next < photoIndex ? -1 : 0;
+  photoIndex = next;
   if (loadPhotoInto(photoIds[photoIndex], galleryPixels)) {
     lv_image_cache_drop(&galleryDsc);
     lv_obj_invalidate(photosImage);
+    // The new photo slides in from the side you swiped toward.
+    if (direction) animX(photosImage, direction * 70, 0, 220, lv_anim_path_ease_out, nullptr);
   }
   // Position appears briefly, then fades: it is only needed while moving through photos.
   lv_label_set_text(photoCounter, (String(photoIndex + 1) + " of " + photoCount).c_str());
@@ -2062,7 +2068,20 @@ void handleDeviceButton(char command) {
     run("open_settings", [] { show(Screen::Settings); });
     run("back", [] { goBack(); });
     run("home", [] { leaveTo(Screen::Face, 0); });
+    run("open_photos", [] { show(Screen::Photos); });
     uint32_t t = micros();
+    showPhoto(photoIndex + 1);
+    Serial.printf("PHOTO_SWIPE %lums (of %d photos)\n", (unsigned long)((micros() - t) / 1000), photoCount);
+    goBack();
+    historyDirty = true;
+    run("open_history", [] { show(Screen::History); });
+    if (answerCount) {
+      t = micros();
+      showAnswer(answerIds[0]);
+      Serial.printf("OPEN_ANSWER %lums (of %d answers)\n", (unsigned long)((micros() - t) / 1000), answerCount);
+    }
+    leaveTo(Screen::Face, 0);
+    t = micros();
     refreshDynamic();
     Serial.printf("REFRESH_DYNAMIC %lums\n", (unsigned long)((micros() - t) / 1000));
     t = micros();
