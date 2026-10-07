@@ -16,3 +16,6 @@ void aiCancel();
 // the state returns to Idle. Cancelled results are consumed silently.
 AiState aiPoll(String &text);
 bool aiBusy();
+
+// Developer: unauthenticated upload of `bytes` to the Gemini endpoint (nothing billed).
+void aiUploadTest(size_t bytes);

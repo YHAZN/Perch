@@ -131,7 +131,9 @@ bool request(bool gemini, const String &key, const uint8_t *jpeg, size_t length,
                                "{\"model\":\"gpt-4.1\",\"max_completion_tokens\":1600,\"messages\":[{\"role\":\"user\","
                                "\"content\":[{\"type\":\"text\",\"text\":\"") +
                                PROMPT + "\"},{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/jpeg;base64,";
-  String suffix = gemini ? "\"}}]}],\"generationConfig\":{\"maxOutputTokens\":4096}}" : "\",\"detail\":\"high\"}}]}]}";
+  String suffix =
+      gemini ? "\"}}]}],\"generationConfig\":{\"maxOutputTokens\":4096,\"thinkingConfig\":{\"thinkingLevel\":\"low\"}}}"
+             : "\",\"detail\":\"high\"}}]}]}";
   const String middle = "\"}},{\"inline_data\":{\"mime_type\":\"audio/wav\",\"data\":\"";
   size_t encoded = 4 * ((length + 2) / 3), audioEncoded = voice ? 4 * ((wavLength + 2) / 3) : 0;
   size_t total = prefix.length() + encoded + (voice ? middle.length() + audioEncoded : 0) + suffix.length(),
@@ -168,7 +170,7 @@ bool request(bool gemini, const String &key, const uint8_t *jpeg, size_t length,
   client.setHandshakeTimeout(12);
   HTTPClient http;
   http.setConnectTimeout(12000);
-  http.setTimeout(45000);
+  http.setTimeout(90000);  // the model thinks before the first byte; 45 s cut answers off
   const char *url = gemini ? "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent"
                            : "https://api.openai.com/v1/chat/completions";
   if (!http.begin(client, url)) {
@@ -177,8 +179,12 @@ bool request(bool gemini, const String &key, const uint8_t *jpeg, size_t length,
   }
   http.addHeader("Content-Type", "application/json");
   http.addHeader(gemini ? "x-goog-api-key" : "Authorization", gemini ? key : "Bearer " + key);
+  Serial.printf("AI_SEND %u bytes, internal heap %u free, largest %u\n", (unsigned)total,
+                heap_caps_get_free_size(MALLOC_CAP_INTERNAL), heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+  const uint32_t sendStart = millis();
   int status = http.POST(payload, total);
   free(payload);
+  Serial.printf("AI_STATUS %d after %lu ms\n", status, (unsigned long)(millis() - sendStart));
   if (status != 200) {
     // Error bodies are small JSON; read a bounded amount to tell the user what went wrong.
     String body = (status > 0 && http.getSize() > 0 && http.getSize() < 4096) ? http.getString() : "";
@@ -194,8 +200,11 @@ bool request(bool gemini, const String &key, const uint8_t *jpeg, size_t length,
       answer = String("The AI service is busy (") + status + "). Try again in a minute.";
       return false;
     }
-    if (status < 0)
-      return fail("Connection lost. The photo may or may not have reached the provider; it was not resent.");
+    if (status < 0) {
+      answer = String("Connection lost (") + HTTPClient::errorToString(status) +
+               "). The photo may or may not have reached the provider; it was not resent.";
+      return false;
+    }
     answer = "AI service returned HTTP " + String(status) + ".";
     return false;
   }
@@ -334,4 +343,38 @@ AiState aiPoll(String &text) {
     state = AiState::Idle;
   }
   return current;
+}
+
+// Developer: the photo upload path without an API key. Google rejects it unauthenticated,
+// so no model runs and nothing is billed; it shows whether TLS and a large upload succeed.
+void aiUploadTest(size_t bytes) {
+  const char *head = "{\"contents\":[{\"parts\":[{\"inline_data\":{\"mime_type\":\"image/jpeg\",\"data\":\"";
+  const char *tail = "\"}}]}]}";
+  const size_t total = strlen(head) + bytes + strlen(tail);
+  uint8_t *payload = (uint8_t *)ps_malloc(total);
+  if (!payload) {
+    Serial.println("UPLOAD_TEST no memory");
+    return;
+  }
+  memcpy(payload, head, strlen(head));
+  memset(payload + strlen(head), 'A', bytes);
+  memcpy(payload + strlen(head) + bytes, tail, strlen(tail));
+  WiFiClientSecure client;
+  client.setCACert(AI_ROOT_CERTS);
+  client.setHandshakeTimeout(12);
+  HTTPClient http;
+  http.setConnectTimeout(12000);
+  http.setTimeout(45000);
+  Serial.printf("UPLOAD_TEST %u bytes, internal heap %u, largest %u\n", (unsigned)total,
+                heap_caps_get_free_size(MALLOC_CAP_INTERNAL), heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+  const uint32_t t = millis();
+  int status = -100;
+  if (http.begin(client, "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent")) {
+    http.addHeader("Content-Type", "application/json");
+    status = http.POST(payload, total);
+    http.end();
+  }
+  free(payload);
+  Serial.printf("UPLOAD_TEST status %d (%s) in %lu ms\n", status,
+                status < 0 ? HTTPClient::errorToString(status).c_str() : "http", (unsigned long)(millis() - t));
 }

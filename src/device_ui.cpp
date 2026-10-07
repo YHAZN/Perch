@@ -2974,6 +2974,12 @@ void handleDeviceButton(char command) {
     xSemaphoreGive(camLock);
     return;
   }
+  if (command == 'l') {
+    // Developer: "l<KB>" uploads that much to Gemini without a key (rejected, never billed).
+    const int kb = Serial.readStringUntil('\n').toInt();
+    if (kb > 0 && kb <= 2048) aiUploadTest((size_t)kb * 1024);
+    return;
+  }
   if (command == 'Z') {
     // PC clock over USB (sent by the bridge when it connects). No screen reply.
     const uint32_t epoch = strtoul(Serial.readStringUntil('\n').c_str(), nullptr, 10);
