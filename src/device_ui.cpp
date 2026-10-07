@@ -114,6 +114,14 @@ lv_obj_t *photosImage, *photosEmpty, *photoCounter;
 lv_obj_t *historyList, *historyEmpty, *askScroll, *askHero;
 lv_obj_t *remoteStatus, *remoteSlides, *remoteMediaPanel, *remoteModeLabel[2];
 bool remoteMediaMode = false;
+// Offline queue state (see storage.h). queueInFlight is the item being asked right now.
+QueuedAsk queued[16];
+int queuedCount = 0;
+uint32_t queueInFlight = 0;
+bool queueWhenSaved = false;
+unsigned long queueRetryAt = 0;
+void refreshQueue();
+void rebuildHistory();
 lv_obj_t *wifiList, *wifiStatus, *passwordTitle, *passwordField, *keyboard;
 String joiningSsid;
 bool scanShown = false;
@@ -686,7 +694,7 @@ void showAnswer(uint32_t id) {
 }
 
 // Smart Stack: glanceable cards; swipe the card to cycle, tap to open.
-enum class Card { Answer, Photo, Offline };
+enum class Card { Answer, Photo, Offline, Queue };
 std::vector<Card> cards;
 int cardIndex = 0;
 String cardSignature;
@@ -694,10 +702,11 @@ void renderCard() {
   const bool online = networkConnected();
   // Rebuild only when something the card shows has changed.
   const String signature = String(online) + networkEnabled() + "|" + lastInfo.id + "|" + latestPhotoId + "|" +
-                           jpegBytes + "|" + cardIndex + "|" + ago(lastInfo.when);
+                           jpegBytes + "|" + cardIndex + "|" + ago(lastInfo.when) + "|" + queuedCount;
   if (signature == cardSignature) return;
   cardSignature = signature;
   cards.clear();
+  if (queuedCount) cards.push_back(Card::Queue);
   if (!online) cards.push_back(Card::Offline);
   if (!lastAnswer.isEmpty()) cards.push_back(Card::Answer);
   if (jpegBytes) cards.push_back(Card::Photo);
@@ -709,7 +718,12 @@ void renderCard() {
   hide(cardScrim, !photo);
   hide(cardValue, photo);
   hide(cardRing, c != Card::Answer);
-  if (c == Card::Offline) {
+  if (c == Card::Queue) {
+    setText(cardKey, online ? "Asking" : "Waiting for Wi-Fi");
+    setText(cardValue, (String(queuedCount) + (queuedCount == 1 ? " question" : " questions") +
+                        (online ? " being answered." : " will be asked when Wi-Fi is back."))
+                           .c_str());
+  } else if (c == Card::Offline) {
     setText(cardKey, "Wi-Fi");
     setText(cardValue, networkEnabled() ? "Not connected. Camera and Photos work offline."
                                         : "Wi-Fi is off. Turn it on in Control Center.");
@@ -1057,7 +1071,16 @@ void startAsk() {
     return;
   }
   if (!networkConnected()) {
-    notice("Not connected to Wi-Fi. Nothing was sent; the photo is kept.", Screen::Ask);
+    // Badge mode: keep the question and answer it when Wi-Fi returns.
+    if (photoSavePending) {
+      queueWhenSaved = true;
+    } else if (latestPhotoId) {
+      queueAdd(latestPhotoId, useGemini, clockKnown() ? (uint32_t)time(nullptr) : 0);
+      refreshQueue();
+    }
+    toast("Saved. It will ask when Wi-Fi is back");
+    historyDirty = true;
+    rebuildHistory();
     return;
   }
   if (aiBusy()) {
@@ -1076,6 +1099,10 @@ void startAsk() {
   lv_label_set_text(busyLabel, useGemini ? "Asking Gemini" : "Asking GPT");
   lv_obj_remove_flag(busy, LV_OBJ_FLAG_HIDDEN);
   show(Screen::Ask);
+}
+void refreshQueue() {
+  queuedCount = queueList(queued, 16);
+  historyDirty = true;
 }
 void captureAndAsk() {
   String problem;
@@ -1142,9 +1169,72 @@ void showPhoto(int index) {
 void rebuildHistory() {
   if (!historyDirty) return;
   historyDirty = false;
+  // Rows are rebuilt below; the queue list must be current.
+  queuedCount = queueList(queued, 16);
   lv_obj_clean(historyList);
   // With earlier answers, the question screen ends a little short so the list peeks in.
-  lv_obj_set_height(askHero, answerCount ? H - ASK_PEEK : H);
+  lv_obj_set_height(askHero, answerCount || queuedCount ? H - ASK_PEEK : H);
+  // Questions waiting for Wi-Fi come first: tap a failed one to try again.
+  for (int i = queuedCount - 1; i >= 0; --i) {
+    lv_obj_t *r = pressedFeedback(plain(historyList));
+    lv_obj_set_size(r, W, 56);
+    static uint16_t *qthumbs = (uint16_t *)ps_malloc(4 * THUMB * THUMB * 2);  // PSRAM, not internal RAM
+    static lv_image_dsc_t qdsc[4];
+    int textX = 18;
+    uint16_t *qthumb = qthumbs ? qthumbs + i * THUMB * THUMB : nullptr;
+    if (i < 4 && qthumb && loadPhotoThumb(queued[i].photoId, qthumb)) {
+      lv_image_cache_drop(&qdsc[i]);
+      setupImage(qdsc[i], qthumb, THUMB, THUMB);
+      lv_obj_t *img = lv_image_create(r);
+      lv_image_set_src(img, &qdsc[i]);
+      lv_obj_set_size(img, 40, 40);
+      lv_image_set_scale(img, 256 * 40 / THUMB);
+      lv_image_set_inner_align(img, LV_IMAGE_ALIGN_CENTER);
+      lv_obj_set_style_radius(img, 8, 0);
+      lv_obj_set_style_clip_corner(img, true, 0);
+      lv_obj_set_style_image_opa(img, LV_OPA_60, 0);
+      lv_obj_align(img, LV_ALIGN_LEFT_MID, 18, 0);
+      textX = 70;
+    }
+    const bool inFlight = queued[i].id == queueInFlight;
+    lv_obj_t *one = text(r,
+                         queued[i].failed ? "Could not ask"
+                         : inFlight       ? "Asking now"
+                                          : "Waiting for Wi-Fi",
+                         F_BODY, queued[i].failed ? INK : MIST);
+    lv_obj_set_pos(one, textX, 9);
+    lv_obj_t *two = text(r,
+                         queued[i].failed   ? "Tap to try again"
+                         : queued[i].gemini ? "Gemini"
+                                            : "GPT",
+                         F_SMALL, queued[i].failed ? LENS : MIST);
+    lv_obj_set_pos(two, textX, 33);
+    // Hold a waiting question to remove it (nothing is sent).
+    lv_obj_add_flag(r, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(
+        r,
+        [](lv_event_t *e) {
+          const uint32_t id = (uint32_t)(uintptr_t)lv_event_get_user_data(e);
+          if (id == queueInFlight) return;
+          queueRemove(id);
+          refreshQueue();
+          rebuildHistory();
+          toast("Removed");
+        },
+        LV_EVENT_LONG_PRESSED, (void *)(uintptr_t)queued[i].id);
+    if (queued[i].failed) {
+      lv_obj_add_event_cb(
+          r,
+          [](lv_event_t *e) {
+            queueSetFailed((uint32_t)(uintptr_t)lv_event_get_user_data(e), false);
+            queueRetryAt = 0;
+            refreshQueue();
+            rebuildHistory();
+            toast(networkConnected() ? "Trying again" : "Will try when Wi-Fi is back");
+          },
+          LV_EVENT_CLICKED, (void *)(uintptr_t)queued[i].id);
+    }
+  }
   lv_obj_t *t = text(historyList, answerCount ? "Earlier" : "", F_SMALL, MIST);
   lv_obj_set_style_margin_left(t, 22, 0);
   lv_obj_set_style_margin_top(t, 6, 0);
@@ -1253,7 +1343,8 @@ void buildFace() {
   lv_obj_set_style_pad_row(cardDots, 4, 0);
   onClick(card, [] {
     const Card c = cards.empty() ? Card::Answer : cards[cardIndex];
-    if (c == Card::Offline) openControl();
+    if (c == Card::Queue) show(Screen::Ask);
+    else if (c == Card::Offline) openControl();
     else if (c == Card::Photo) show(Screen::Photos);
     else if (!lastAnswer.isEmpty()) showAnswer(answerIds[0]);
     else show(Screen::Ask);
@@ -2309,6 +2400,7 @@ void initDeviceUi() {
   }
   loadLatestAnswer();
   restoreLatestPhoto();
+  queuedCount = queueList(queued, 16);
 
   VOID_ = lv_color_hex(0x000000);
   GRAPHITE = lv_color_hex(0x1a1b1e);
@@ -2589,6 +2681,12 @@ void handleDeviceButton(char command) {
       break;
     case 'R': show(Screen::Remote); break;
     case 'W': show(Screen::Wifi); break;
+    case 'U':  // developer: clear the offline queue (so test questions are never sent)
+      for (int i = 0; i < queuedCount; ++i) queueRemove(queued[i].id);
+      refreshQueue();
+      rebuildHistory();
+      Serial.println("QUEUE_CLEARED");
+      break;
     case 'V':  // developer: password screen layout check without a real network
       joiningSsid = "Layout check";
       setText(passwordTitle, joiningSsid.c_str());
@@ -2641,10 +2739,35 @@ void deviceTick() {
   // Collect finished requests even if the user has moved to another app.
   String result;
   const AiState ai = aiPoll(result);
-  if (ai == AiState::Done) {
+  if (ai == AiState::Done && queueInFlight) {
+    // A queued question came back.
+    static uint16_t *qth = (uint16_t *)ps_malloc(THUMB * THUMB * 2);
+    uint32_t photoId = 0;
+    bool gemini = true;
+    for (int i = 0; i < queuedCount; ++i)
+      if (queued[i].id == queueInFlight) {
+        photoId = queued[i].photoId;
+        gemini = queued[i].gemini;
+      }
+    const bool haveThumb = photoId && qth && loadPhotoThumb(photoId, qth);
+    saveAnswer(result, gemini, photoId, clockKnown() ? (uint32_t)time(nullptr) : 0, haveThumb ? qth : nullptr);
+    queueRemove(queueInFlight);
+    queueInFlight = 0;
+    refreshQueue();
+    loadLatestAnswer();
+    if (current == Screen::Ask) rebuildHistory();
+    toast("Answer ready");
+    refreshDynamic();
+  } else if (ai == AiState::Failed && queueInFlight) {
+    queueSetFailed(queueInFlight, true);
+    queueInFlight = 0;
+    queueRetryAt = millis() + 60000;
+    refreshQueue();
+    if (current == Screen::Ask) rebuildHistory();
+  } else if (ai == AiState::Done) {
     if (pendingPhotoId == UINT32_MAX) pendingPhotoId = latestPhotoId;
-    static uint16_t th[THUMB * THUMB];  // 8 KB: too big for the loop task stack
-    const bool haveThumb = pendingPhotoId && loadPhotoThumb(pendingPhotoId, th);
+    static uint16_t *th = (uint16_t *)ps_malloc(THUMB * THUMB * 2);  // PSRAM: internal RAM is for Wi-Fi/TLS
+    const bool haveThumb = pendingPhotoId && th && loadPhotoThumb(pendingPhotoId, th);
     const uint32_t when = clockKnown() ? (uint32_t)time(nullptr) : 0;
     const uint32_t id = saveAnswer(result, pendingGemini, pendingPhotoId, when, haveThumb ? th : nullptr);
     if (!id) Serial.println("STORAGE_ERROR Answer not saved");
@@ -2665,7 +2788,34 @@ void deviceTick() {
   if (savedPhotoId && savedPhotoId != latestPhotoId) {
     latestPhotoId = savedPhotoId;
     refreshPhotos();
+    if (queueWhenSaved) {
+      queueWhenSaved = false;
+      queueAdd(latestPhotoId, useGemini, clockKnown() ? (uint32_t)time(nullptr) : 0);
+      refreshQueue();
+      if (current == Screen::Ask) rebuildHistory();
+    }
     refreshDynamic();
+  }
+  // Ask waiting questions once Wi-Fi is back, one at a time, never while you are asking.
+  if (queuedCount && !queueInFlight && networkConnected() && !aiBusy() && millis() > queueRetryAt) {
+    for (int i = 0; i < queuedCount; ++i) {
+      if (queued[i].failed) continue;
+      uint8_t *jpeg;
+      size_t len;
+      if (!loadPhoto(queued[i].photoId, jpeg, len)) {
+        queueSetFailed(queued[i].id, true);
+        refreshQueue();
+        break;
+      }
+      const String key = settings.getString(queued[i].gemini ? "gemini-key" : "gpt-key", "");
+      if (aiStart(queued[i].gemini, key, jpeg, len)) {
+        queueInFlight = queued[i].id;
+        historyDirty = true;
+        if (current == Screen::Ask) rebuildHistory();
+      }
+      free(jpeg);
+      break;
+    }
   }
   static unsigned long lastRefresh = 0;
   if (now - lastRefresh > 1000 && !dragging && !fingerDown) {

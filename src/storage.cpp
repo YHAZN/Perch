@@ -68,6 +68,7 @@ bool storageBegin() {
   if (mounted) {
     LittleFS.mkdir("/photos");
     LittleFS.mkdir("/answers");
+    LittleFS.mkdir("/queue");
     // Move the single answer kept by the previous firmware into the history.
     File old = LittleFS.open("/answer.txt", "r");
     if (old) {
@@ -84,11 +85,19 @@ size_t storageFreeBytes() { return mounted ? LittleFS.totalBytes() - LittleFS.us
 
 uint32_t savePhoto(const uint8_t *jpeg, size_t length, const uint16_t *thumb) {
   if (!mounted) return 0;
-  // Make room by removing the oldest photos first.
+  // Make room by removing the oldest photos first, except ones still waiting in the queue.
   std::vector<uint32_t> existing = ids("/photos", ".jpg");
+  QueuedAsk queued[16];
+  const int queuedCount = queueList(queued, 16);
+  auto isQueued = [&](uint32_t id) {
+    for (int i = 0; i < queuedCount; ++i)
+      if (queued[i].photoId == id) return true;
+    return false;
+  };
   while (storageFreeBytes() < length + THUMB_BYTES + PHOTO_RESERVE && !existing.empty()) {
     const uint32_t oldest = existing.back();
     existing.pop_back();
+    if (isQueued(oldest)) continue;
     LittleFS.remove(path("/photos", oldest, ".jpg"));
     LittleFS.remove(path("/photos", oldest, ".thm"));
     LittleFS.remove(path("/photos", oldest, ".scr"));
@@ -194,3 +203,48 @@ bool loadAnswer(uint32_t id, String &text, AnswerInfo &info) {
 }
 
 bool loadAnswerThumb(uint32_t id, uint16_t *thumb) { return mounted && readThumb(path("/answers", id, ".thm"), thumb); }
+
+// Queue file: "gemini|gpt <photoId> <when> <failed>".
+uint32_t queueAdd(uint32_t photoId, bool gemini, uint32_t when) {
+  if (!mounted) return 0;
+  const uint32_t id = nextId();
+  const String body = String(gemini ? "gemini " : "gpt ") + photoId + " " + when + " 0";
+  return writeFile(path("/queue", id, ".q"), reinterpret_cast<const uint8_t *>(body.c_str()), body.length()) ? id : 0;
+}
+
+int queueList(QueuedAsk *out, int max) {
+  if (!mounted) return 0;
+  std::vector<uint32_t> all = ids("/queue", ".q");
+  std::reverse(all.begin(), all.end());  // oldest first
+  int n = 0;
+  for (uint32_t id : all) {
+    if (n >= max) break;
+    File f = LittleFS.open(path("/queue", id, ".q"), "r");
+    if (!f) continue;
+    const String line = f.readString();
+    f.close();
+    QueuedAsk q;
+    q.id = id;
+    q.gemini = !line.startsWith("gpt");
+    int a = line.indexOf(' '), b = line.indexOf(' ', a + 1), c = line.indexOf(' ', b + 1);
+    q.photoId = line.substring(a + 1, b).toInt();
+    q.when = strtoul(line.substring(b + 1, c).c_str(), nullptr, 10);
+    q.failed = c > 0 && line.substring(c + 1).toInt() != 0;
+    out[n++] = q;
+  }
+  return n;
+}
+
+bool queueRemove(uint32_t id) { return mounted && LittleFS.remove(path("/queue", id, ".q")); }
+
+bool queueSetFailed(uint32_t id, bool failed) {
+  QueuedAsk all[16];
+  const int n = queueList(all, 16);
+  for (int i = 0; i < n; ++i) {
+    if (all[i].id != id) continue;
+    const String body =
+        String(all[i].gemini ? "gemini " : "gpt ") + all[i].photoId + " " + all[i].when + (failed ? " 1" : " 0");
+    return writeFile(path("/queue", id, ".q"), reinterpret_cast<const uint8_t *>(body.c_str()), body.length());
+  }
+  return false;
+}

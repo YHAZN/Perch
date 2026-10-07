@@ -19,9 +19,15 @@ parser.add_argument('--grep', nargs='*', default=None)
 parser.add_argument('commands', nargs='*')
 args = parser.parse_args()
 
-port = serial.Serial(args.port, 115200, timeout=0.1)
+# Set the control lines before opening: opening with RTS asserted resets the ESP32-S3.
+port = serial.Serial()
+port.port = args.port
+port.baudrate = 115200
+port.timeout = 0.1
 port.dtr = True
-time.sleep(0.4)
+port.rts = False
+port.open()
+time.sleep(0.2)
 port.reset_input_buffer()
 out = b''
 for command in args.commands:

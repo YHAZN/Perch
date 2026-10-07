@@ -32,4 +32,18 @@ int listAnswers(uint32_t *ids, int max);
 bool loadAnswer(uint32_t id, String &text, AnswerInfo &info);
 bool loadAnswerThumb(uint32_t id, uint16_t *thumb);
 
+// Offline queue: questions asked without Wi-Fi, answered when it returns. Their photos are
+// protected from the space clean-up until the answer arrives.
+struct QueuedAsk {
+  uint32_t id = 0;
+  uint32_t photoId = 0;
+  uint32_t when = 0;
+  bool gemini = true;
+  bool failed = false;  // gave up after an error; retried only when the user asks
+};
+uint32_t queueAdd(uint32_t photoId, bool gemini, uint32_t when);
+int queueList(QueuedAsk *out, int max);  // oldest first
+bool queueRemove(uint32_t id);
+bool queueSetFailed(uint32_t id, bool failed);
+
 size_t storageFreeBytes();
