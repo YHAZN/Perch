@@ -273,10 +273,13 @@ class Handler(BaseHTTPRequestHandler):
                     return self.reply(400, {'error': 'Invalid touch.'})
                 payload = json.loads(self.rfile.read(length))
                 x, y = payload.get('x'), payload.get('y')
+                hold = payload.get('hold', 0)
                 if type(x) is not int or type(y) is not int or not (0 <= x < 240 and 0 <= y < 284):
                     return self.reply(400, {'error': 'Invalid touch.'})
+                if type(hold) is not int or not 0 <= hold <= 20000:
+                    return self.reply(400, {'error': 'Invalid touch.'})
                 try:
-                    result = exchange(f'T{x},{y}\n', screen=True)
+                    result = exchange(f'T{x},{y},{hold}\n' if hold else f'T{x},{y}\n', screen=True)
                 except RuntimeError as error:
                     if not any(
                         reason in str(error)
@@ -338,6 +341,8 @@ class Handler(BaseHTTPRequestHandler):
             '/api/button/remote': 'R',
             '/api/button/wifi': 'W',
             '/api/button/gestures': 'E',
+            '/api/button/clear-queue': 'U',
+            '/api/button/sample-answer': 'S',
             '/api/button/password-check': 'V',
             '/api/button/provider/gemini': 'G',
             '/api/button/provider/gpt': 'O',

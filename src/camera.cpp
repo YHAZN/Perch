@@ -67,6 +67,7 @@ bool cameraSetMode(CameraMode next) {
     return false;
   }
   sensor_t *sensor = esp_camera_sensor_get();
+  Serial.printf("CAMERA mode %d sensor PID 0x%04x\n", (int)next, sensor->id.PID);
   // Correct the mirrored worksheet in the sensor, so photos and preview match the scene.
   sensor->set_hmirror(sensor, !sensor->status.hmirror);
   if (next == CameraMode::Preview) {

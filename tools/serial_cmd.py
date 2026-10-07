@@ -13,7 +13,7 @@ import time
 import serial
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--port', default='COM5')
+parser.add_argument('--port', default=None)
 parser.add_argument('--wait', type=float, default=6)
 parser.add_argument('--grep', nargs='*', default=None)
 parser.add_argument('commands', nargs='*')
@@ -21,6 +21,13 @@ args = parser.parse_args()
 
 # Set the control lines before opening: opening with RTS asserted resets the ESP32-S3.
 port = serial.Serial()
+if not args.port:  # the first Espressif USB device (VID 0x303A), whichever COM number it got
+    from serial.tools import list_ports
+
+    found = [p.device for p in list_ports.comports() if p.vid == 0x303A]
+    if not found:
+        raise SystemExit('No XIAO found over USB.')
+    args.port = found[0]
 port.port = args.port
 port.baudrate = 115200
 port.timeout = 0.1

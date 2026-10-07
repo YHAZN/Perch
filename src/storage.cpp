@@ -290,3 +290,20 @@ int storageForgetSince(time_t since) {
   }
   return removed;
 }
+
+bool deletePhoto(uint32_t id) {
+  if (!mounted) return false;
+  QueuedAsk queued[16];
+  const int n = queueList(queued, 16);
+  for (int i = 0; i < n; ++i)
+    if (queued[i].photoId == id) return false;
+  LittleFS.remove(path("/photos", id, ".thm"));
+  LittleFS.remove(path("/photos", id, ".scr"));
+  return LittleFS.remove(path("/photos", id, ".jpg"));
+}
+
+bool deleteAnswer(uint32_t id) {
+  if (!mounted) return false;
+  LittleFS.remove(path("/answers", id, ".thm"));
+  return LittleFS.remove(path("/answers", id, ".txt"));
+}

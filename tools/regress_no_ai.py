@@ -1,107 +1,101 @@
 """Hardware regression through the USB bridge. Never sends an AI request.
 
 Run with the bridge up: python tools/regress_no_ai.py
+Safe offline: an Ask without Wi-Fi only queues (and the queue is cleared at the end).
+With Wi-Fi it would send, so the Ask step is skipped when the board reports a connection.
 """
 
-import base64, json, time, urllib.request
-from pathlib import Path
+import base64
+import json
+import time
+import urllib.request
 
 ROOT = 'http://127.0.0.1:8765'
-OUT = Path(__file__).resolve().parents[1] / 'captures'
 
 
 def post(path, data=None):
     # Only send a body when the route reads one; unread bytes make Windows reset the socket.
-    req = urllib.request.Request(
+    request = urllib.request.Request(
         ROOT + path,
         data=json.dumps(data).encode() if data else b'',
         headers={'Content-Type': 'application/json'},
         method='POST',
     )
-    with urllib.request.urlopen(req, timeout=60) as r:
-        return json.load(r)
+    with urllib.request.urlopen(request, timeout=60) as response:
+        return json.load(response)
+
+
+results = []
 
 
 def check(name, ok, detail=''):
     print(('PASS ' if ok else 'FAIL ') + name + (' | ' + detail if detail else ''))
-    return ok
+    results.append(ok)
 
 
-def save(result, name):
-    OUT.mkdir(exist_ok=True)
-    (OUT / name).write_bytes(base64.b64decode(result['image'].split(',')[-1]))
-
-
-results = []
-r = post('/api/button/home')
-results.append(check('launcher', r['view'] == 'desk'))
-for (x, y), view in [
-    ((64, 48), 'home'),
-    ((176, 48), 'ai'),
-    ((64, 132), 'photo'),
-    ((176, 132), 'history'),
-    ((120, 216), 'status'),
+# Every app opens from the mirror and the face is home.
+for route, view in [
+    ('/api/button/home', 'face'),
+    ('/api/button/apps', 'apps'),
+    ('/api/button/see', 'home'),
+    ('/api/button/ai', 'ai'),
+    ('/api/button/photo', 'photo'),
+    ('/api/button/status', 'status'),
+    ('/api/button/remote', 'remote'),
+    ('/api/button/gestures', 'gestures'),
+    ('/api/button/wifi', 'wifi'),
 ]:
-    post('/api/button/home')
-    r = post('/api/touch', {'x': x, 'y': y})
-    results.append(check('open ' + view, r['view'] == view))
-    save(r, 'regress-' + view + '.bmp')
-    r = post('/api/touch', {'x': 120, 'y': 279})
-    results.append(check('home from ' + view, r['view'] == 'desk'))
-
-# Provider toggle must stay in Settings now (it used to jump to Camera).
+    check('open ' + view, post(route)['view'] == view)
 post('/api/button/home')
-post('/api/touch', {'x': 120, 'y': 216})
+check('control center', post('/api/button/control')['view'] == 'control')
+post('/api/button/control')
+
+# Grid taps open apps (grid positions from buildApps).
+for (x, y), view in [
+    ((50, 62), 'home'),
+    ((120, 62), 'ai'),
+    ((190, 62), 'photo'),
+    ((85, 128), 'remote'),
+    ((155, 128), 'status'),
+    ((120, 194), 'gestures'),
+]:
+    post('/api/button/apps')
+    check('grid opens ' + view, post('/api/touch', {'x': x, 'y': y})['view'] == view)
+
+# Nested screen and back: Settings > Model > back arrow.
+post('/api/button/status')
+check('Settings row opens Model', post('/api/touch', {'x': 120, 'y': 136})['view'] == 'model')
+check('back arrow returns to Settings', post('/api/touch', {'x': 31, 'y': 31})['view'] == 'status')
+
+# Model picker round trip.
 before = post('/api/screen')['provider']
-r = post('/api/touch', {'x': 120, 'y': 70})
-results.append(
-    check(
-        'provider toggle stays in Settings',
-        r['view'] == 'status' and r['provider'] != before,
-        f"{before} -> {r['provider']}",
-    )
+post('/api/touch', {'x': 120, 'y': 136})
+post('/api/touch', {'x': 120, 'y': 148})  # GPT row
+after = post('/api/screen')['provider']
+post('/api/touch', {'x': 120, 'y': 136})
+post('/api/touch', {'x': 120, 'y': 88})  # Gemini row
+check(
+    'model picker switches and restores',
+    after != before and post('/api/screen')['provider'] == before,
+    f'{before} -> {after} -> back',
 )
-r = post('/api/touch', {'x': 120, 'y': 70})
-results.append(check('provider restored', r['provider'] == before))
 
-# Camera-only capture, no network.
-post('/api/button/home')
-post('/api/touch', {'x': 64, 'y': 48})
+# Camera-only capture, original JPEG intact.
 start = time.monotonic()
-r = post('/api/touch', {'x': 120, 'y': 246})
-results.append(check('shutter opens Photos', r['view'] == 'photo', f'{time.monotonic() - start:.2f}s'))
+r = post('/api/button/capture')
+check('capture opens Photos', r['view'] == 'photo', f'{time.monotonic() - start:.2f}s')
 original = base64.b64decode(post('/api/original')['image'].split(',')[-1])
-results.append(
-    check('original JPEG valid', original[:2] == b'\xff\xd8' and original[-2:] == b'\xff\xd9', f'{len(original)} bytes')
-)
-# Background AI request, failure path only. GPT must have NO key saved, so the request
-# fails on the device before any network access: this can never become a paid call.
-status = post('/api/screen')
-if status['keys'].get('gpt'):
-    print('SKIP background request test: a GPT key is saved, refusing to risk a paid call')
+check('original JPEG valid', original[:2] == b'\xff\xd8' and original[-2:] == b'\xff\xd9', f'{len(original)} bytes')
+
+# Offline Ask queues instead of sending (skipped if the board is online).
+status = post('/api/status').get('log', '')
+if 'IP: 0.0.0.0' not in status:
+    print('SKIP offline-queue check: board may be online and an Ask would send')
 else:
-    original_provider = status['provider']
-    post('/api/button/provider/gpt')
     post('/api/button/ai')
-    start = time.monotonic()
-    r = post('/api/button/retry')
-    results.append(
-        check(
-            'Ask returns immediately (busy or result)',
-            r['view'] in ('busy', 'error'),
-            f"{r['view']} in {time.monotonic() - start:.2f}s",
-        )
-    )
-    deadline = time.monotonic() + 20
-    while r['view'] == 'busy' and time.monotonic() < deadline:
-        time.sleep(0.5)
-        r = post('/api/screen')
-    results.append(check('background request reports its failure', r['view'] == 'error'))
-    save(r, 'regress-ai-no-key.bmp')
-    r = post('/api/touch', {'x': 18, 'y': 17})
-    results.append(check('notice back returns to Ask', r['view'] == 'ai'))
-    post('/api/button/provider/' + original_provider)
-    results.append(check('provider restored', post('/api/screen')['provider'] == original_provider))
+    r = post('/api/touch', {'x': 120, 'y': 198})
+    check('offline Ask stays in Ask (queued)', r['view'] == 'ai')
+    post('/api/button/clear-queue')
 
 post('/api/button/home')
-print(f"{sum(results)}/{len(results)} passed")
+print(f'{sum(results)}/{len(results)} passed')

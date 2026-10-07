@@ -52,5 +52,9 @@ bool queueLoadAudio(uint32_t id, uint8_t *&wav, size_t &length);
 // Privacy: delete answers, photos and waiting questions written at or after `since`
 // (file times; needs the clock to have been known when they were written).
 int storageForgetSince(time_t since);
+// Delete one photo (and its thumbnail and screen copy) or one answer. A photo still waiting
+// in the offline queue is kept (returns false).
+bool deletePhoto(uint32_t id);
+bool deleteAnswer(uint32_t id);
 
 size_t storageFreeBytes();

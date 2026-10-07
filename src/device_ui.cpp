@@ -6,7 +6,9 @@
 #include <lvgl.h>
 #include <esp_camera.h>
 #include <img_converters.h>
+#include <HTTPClient.h>
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 #include <Preferences.h>
 #include <time.h>
 #include <vector>
@@ -14,6 +16,7 @@
 #include "audio.h"
 #include "camera.h"
 #include "clock.h"
+#include "board_pins.h"
 #include "display.h"
 #include "remote.h"
 #include "storage.h"
@@ -148,11 +151,21 @@ enum class Edge { None, Home, Control, Back } edge = Edge::None;
 int downX = 0, downY = 0, lastX = 0, lastY = 0;
 
 // ---------- widget helpers ----------
+// Plain objects are decoration by default: not clickable, so a tap on an icon's glyph or a
+// row's label reaches the button underneath. Anything that reacts to touch opts in.
 lv_obj_t *plain(lv_obj_t *parent) {
   lv_obj_t *o = lv_obj_create(parent);
   lv_obj_remove_style_all(o);
   lv_obj_remove_flag(o, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_remove_flag(o, LV_OBJ_FLAG_CLICKABLE);
   return o;
+}
+// Scrolling lists must receive presses on their empty space to scroll.
+void scrollable(lv_obj_t *o) {
+  lv_obj_add_flag(o, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_flag(o, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_set_scroll_dir(o, LV_DIR_VER);
+  lv_obj_set_scrollbar_mode(o, LV_SCROLLBAR_MODE_OFF);
 }
 lv_obj_t *text(lv_obj_t *parent, const char *value, const lv_font_t *font, lv_color_t color) {
   lv_obj_t *l = lv_label_create(parent);
@@ -177,6 +190,7 @@ lv_obj_t *screenBase() {
   lv_obj_set_style_bg_color(s, VOID_, 0);
   lv_obj_set_style_bg_opa(s, LV_OPA_COVER, 0);
   lv_obj_add_flag(s, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_add_flag(s, LV_OBJ_FLAG_CLICKABLE);
   return s;
 }
 lv_obj_t *scrimBottom(lv_obj_t *parent, int height) {
@@ -241,6 +255,20 @@ void toast(const char *message) {
   lv_anim_set_exec_cb(&a, [](void *o, int32_t v) { lv_obj_set_style_opa((lv_obj_t *)o, v, 0); });
   lv_anim_set_completed_cb(&a, [](lv_anim_t *x) { lv_obj_add_flag((lv_obj_t *)x->var, LV_OBJ_FLAG_HIDDEN); });
   lv_anim_start(&a);
+}
+// Confirmation sheet for destructive actions: reached by holding something, confirmed by a
+// tap on the red action. Tapping outside cancels.
+lv_obj_t *confirmLayer = nullptr, *confirmTitle = nullptr, *confirmAction = nullptr;
+void (*confirmFn)(uint32_t) = nullptr;
+uint32_t confirmArg = 0;
+void confirm(const char *title, const char *action, void (*fn)(uint32_t), uint32_t arg) {
+  if (!confirmLayer) return;
+  lv_label_set_text(confirmTitle, title);
+  lv_label_set_text(confirmAction, action);
+  confirmFn = fn;
+  confirmArg = arg;
+  lv_obj_remove_flag(confirmLayer, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_move_foreground(confirmLayer);
 }
 void onClick(lv_obj_t *o, void (*fn)()) {
   lv_obj_add_flag(o, LV_OBJ_FLAG_CLICKABLE);
@@ -461,6 +489,8 @@ void previewTask(void *) {
     }
     xSemaphoreGive(camLock);
     if (!got) {
+      static uint32_t misses = 0;
+      if (++misses % 100 == 1) Serial.printf("PREVIEW no frame (%lu)\n", (unsigned long)misses);
       vTaskDelay(pdMS_TO_TICKS(10));
       continue;
     }
@@ -569,6 +599,7 @@ void settleLayers(lv_anim_t * = nullptr) {
 void onEnter(Screen s);
 // Where "back" goes: each screen opened from somewhere remembers it. Home clears it.
 std::vector<Screen> backStack;
+extern std::vector<std::pair<lv_obj_t *, lv_obj_t *>> screenTitles;
 lv_obj_t *backButton = nullptr;
 void enter(Screen next) {
   // Automatic Wi-Fi retries would cancel scans; pause them while choosing a network.
@@ -582,6 +613,8 @@ void enter(Screen next) {
   const bool showBack = !backStack.empty() && backStack.back() != Screen::Face && backStack.back() != Screen::Apps &&
                         next != Screen::Notice;
   if (backButton) hide(backButton, !showBack);
+  for (auto &pair : screenTitles)
+    if (pair.first == layer(next)) lv_obj_set_x(pair.second, showBack ? 58 : 22);
   if (next == Screen::Face) backStack.clear();
 }
 // Opening something: it rises a short distance into place over what was there.
@@ -671,6 +704,15 @@ void releaseBack(int dx, int speedX) {
   backDragging = false;
   if (dx > COMMIT_DRAG || (dx > 24 && speedX > 600)) goBack(dx);
   else animX(layer(current), dx, 0, 280, lv_anim_path_ease_out, resetX);
+}
+// Open an app the way the grid does: its back history starts at the grid.
+void launch(Screen app) {
+  backStack.clear();
+  if (current != Screen::Apps && current != Screen::Face) {
+    lv_obj_add_flag(layer(current), LV_OBJ_FLAG_HIDDEN);
+    current = Screen::Apps;
+  }
+  show(app);
 }
 void goHome() {
   // Same gesture everywhere: from an app to the face, from the face to the app grid.
@@ -846,6 +888,7 @@ void cycleCard(int step) {
 // measured on the save task (the query walks the whole filesystem, ~175 ms).
 int keyCache = -1;  // bit 0 = Gemini key, bit 1 = GPT key; -1 = unknown
 volatile uint32_t freeKbCache = 0;
+volatile bool freeKbStale = false;
 String ccSignature;
 void refreshDynamic() {
   const bool online = networkConnected();
@@ -1002,7 +1045,13 @@ void saveTask(void *) {
   freeKbCache = storageFreeBytes() / 1024;
   for (;;) {
     SaveJob *job = nullptr;
-    if (xQueueReceive(saveQueue, &job, portMAX_DELAY) != pdTRUE || !job) continue;
+    if (xQueueReceive(saveQueue, &job, pdMS_TO_TICKS(1000)) != pdTRUE || !job) {
+      if (freeKbStale) {
+        freeKbStale = false;
+        freeKbCache = storageFreeBytes() / 1024;
+      }
+      continue;
+    }
     const uint32_t t = millis();
     const uint32_t id = savePhoto(job->jpeg, job->len, job->thumb);
     if (id && job->small) savePhotoScreen(id, job->small, job->smallLen);
@@ -1364,8 +1413,25 @@ void rebuildHistory() {
     lv_obj_set_pos(two, textX, 33);
     lv_obj_add_flag(r, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(
-        r, [](lv_event_t *e) { showAnswer((uint32_t)(uintptr_t)lv_event_get_user_data(e)); }, LV_EVENT_CLICKED,
+        r, [](lv_event_t *e) { showAnswer((uint32_t)(uintptr_t)lv_event_get_user_data(e)); }, LV_EVENT_SHORT_CLICKED,
         (void *)(uintptr_t)answerIds[i]);
+    lv_obj_add_event_cb(
+        r,
+        [](lv_event_t *e) {
+          confirm(
+              "Delete this answer?", "Delete answer",
+              [](uint32_t id) {
+                deleteAnswer(id);
+                freeKbStale = true;
+                loadLatestAnswer();
+                cardSignature = "";
+                refreshDynamic();
+                rebuildHistory();
+                toast("Deleted");
+              },
+              (uint32_t)(uintptr_t)lv_event_get_user_data(e));
+        },
+        LV_EVENT_LONG_PRESSED, (void *)(uintptr_t)answerIds[i]);
   }
 }
 void onEnter(Screen s) {
@@ -1589,9 +1655,7 @@ void buildAsk() {
   lv_obj_t *s = scr[(int)Screen::Ask] = screenBase();
   askScroll = plain(s);
   lv_obj_set_size(askScroll, W, H);
-  lv_obj_add_flag(askScroll, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_set_scroll_dir(askScroll, LV_DIR_VER);
-  lv_obj_set_scrollbar_mode(askScroll, LV_SCROLLBAR_MODE_OFF);
+  scrollable(askScroll);
   lv_obj_set_flex_flow(askScroll, LV_FLEX_FLOW_COLUMN);
   lv_obj_set_style_pad_bottom(askScroll, 56, 0);
   askHero = plain(askScroll);
@@ -1733,9 +1797,7 @@ void buildAnswer() {
   lv_obj_t *s = scr[(int)Screen::Answer] = screenBase();
   answerScroll = plain(s);
   lv_obj_set_size(answerScroll, W, H);
-  lv_obj_add_flag(answerScroll, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_set_scroll_dir(answerScroll, LV_DIR_VER);
-  lv_obj_set_scrollbar_mode(answerScroll, LV_SCROLLBAR_MODE_OFF);
+  scrollable(answerScroll);
   lv_obj_set_flex_flow(answerScroll, LV_FLEX_FLOW_COLUMN);
   lv_obj_set_style_pad_bottom(answerScroll, 56, 0);
   lv_obj_set_style_pad_row(answerScroll, 10, 0);
@@ -1772,7 +1834,38 @@ void buildPhotos() {
         else if (dir == LV_DIR_RIGHT) showPhoto(photoIndex - 1);
       },
       LV_EVENT_GESTURE, nullptr);
-  lv_obj_add_event_cb(photosImage, [](lv_event_t *) { showPhoto(photoIndex); }, LV_EVENT_CLICKED, nullptr);
+  lv_obj_add_event_cb(photosImage, [](lv_event_t *) { showPhoto(photoIndex); }, LV_EVENT_SHORT_CLICKED, nullptr);
+  lv_obj_add_event_cb(
+      photosImage,
+      [](lv_event_t *) {
+        if (!photoCount) return;
+        confirm(
+            "Delete this photo?", "Delete photo",
+            [](uint32_t id) {
+              if (!deletePhoto(id)) {
+                toast("Waiting to be asked: kept");
+                return;
+              }
+              const bool wasLatest = id == latestPhotoId;
+              refreshPhotos();
+              if (wasLatest) {
+                free(savedJpeg);
+                savedJpeg = nullptr;
+                jpegBytes = jpegCapacity = 0;
+                latestPhotoId = 0;
+                restoreLatestPhoto();
+              }
+              cardSignature = "";
+              freeKbStale = true;
+              refreshDynamic();
+              hide(photosImage, photoCount == 0);
+              hide(photosEmpty, photoCount != 0);
+              if (photoCount) showPhoto(min(photoIndex, photoCount - 1));
+              toast("Deleted");
+            },
+            photoIds[photoIndex]);
+      },
+      LV_EVENT_LONG_PRESSED, nullptr);
   photoCounter = text(s, "", F_SMALL, INK);
   lv_obj_align(photoCounter, LV_ALIGN_TOP_MID, 0, 14);
   photosEmpty = plain(s);
@@ -1783,9 +1876,11 @@ void buildPhotos() {
   onClick(open, [] { show(Screen::Camera); });
 }
 
+std::vector<std::pair<lv_obj_t *, lv_obj_t *>> screenTitles;  // (screen layer, title)
 lv_obj_t *title(lv_obj_t *s, const char *value) {
   lv_obj_t *t = text(s, value, F_LARGE, INK);
   lv_obj_set_pos(t, 22, 18);
+  screenTitles.push_back({s, t});
   return t;
 }
 lv_obj_t *row(lv_obj_t *s, int y, const char *label, lv_obj_t **value, int height = 52) {
@@ -1889,15 +1984,13 @@ void renderScan() {
 }
 void buildWifi() {
   lv_obj_t *s = scr[(int)Screen::Wifi] = screenBase();
-  lv_obj_set_x(title(s, "Wi-Fi"), 58);
+  title(s, "Wi-Fi");
   wifiStatus = text(s, "", F_SMALL, MIST);
   lv_obj_set_pos(wifiStatus, 22, 58);
   wifiList = plain(s);
   lv_obj_set_size(wifiList, W, H - 80);
   lv_obj_set_pos(wifiList, 0, 80);
-  lv_obj_add_flag(wifiList, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_set_scroll_dir(wifiList, LV_DIR_VER);
-  lv_obj_set_scrollbar_mode(wifiList, LV_SCROLLBAR_MODE_OFF);
+  scrollable(wifiList);
   lv_obj_set_flex_flow(wifiList, LV_FLEX_FLOW_COLUMN);
   lv_obj_set_style_pad_bottom(wifiList, 56, 0);
 }
@@ -2161,11 +2254,11 @@ void buildRemote() {
   // Media: play/pause in the middle, tracks either side, volume below.
   remoteMediaPanel = plain(s);
   lv_obj_set_size(remoteMediaPanel, W, 220);
-  remoteButton(remoteMediaPanel, 120, 112, 72, LV_SYMBOL_PLAY, [] { remoteMedia(RemoteMedia::PlayPause); });
-  remoteButton(remoteMediaPanel, 46, 112, 52, LV_SYMBOL_PREV, [] { remoteMedia(RemoteMedia::Previous); });
-  remoteButton(remoteMediaPanel, 194, 112, 52, LV_SYMBOL_NEXT, [] { remoteMedia(RemoteMedia::Next); });
-  remoteButton(remoteMediaPanel, 86, 180, 44, LV_SYMBOL_MINUS, [] { remoteMedia(RemoteMedia::VolumeDown); });
-  remoteButton(remoteMediaPanel, 154, 180, 44, LV_SYMBOL_PLUS, [] { remoteMedia(RemoteMedia::VolumeUp); });
+  remoteButton(remoteMediaPanel, 120, 104, 72, LV_SYMBOL_PLAY, [] { remoteMedia(RemoteMedia::PlayPause); });
+  remoteButton(remoteMediaPanel, 46, 104, 52, LV_SYMBOL_PREV, [] { remoteMedia(RemoteMedia::Previous); });
+  remoteButton(remoteMediaPanel, 194, 104, 52, LV_SYMBOL_NEXT, [] { remoteMedia(RemoteMedia::Next); });
+  remoteButton(remoteMediaPanel, 92, 164, 40, LV_SYMBOL_MINUS, [] { remoteMedia(RemoteMedia::VolumeDown); });
+  remoteButton(remoteMediaPanel, 148, 164, 40, LV_SYMBOL_PLUS, [] { remoteMedia(RemoteMedia::VolumeUp); });
   // Mode switch: one quiet segmented pill.
   lv_obj_t *mode = plain(s);
   lv_obj_set_size(mode, 170, 36);
@@ -2237,6 +2330,7 @@ void buildSettings() {
           return;
         }
         const int removed = storageForgetSince(time(nullptr) - 3600);
+        freeKbStale = true;
         loadLatestAnswer();
         refreshPhotos();
         refreshQueue();
@@ -2245,7 +2339,7 @@ void buildSettings() {
           free(savedJpeg);
           savedJpeg = nullptr;
           jpegBytes = jpegCapacity = 0;
-          latestPhotoId = photoCount ? 0 : 0;
+          latestPhotoId = 0;
           restoreLatestPhoto();
         }
         cardSignature = "";
@@ -2253,14 +2347,17 @@ void buildSettings() {
         toast(removed ? "Forgot the last hour" : "Nothing from the last hour");
       },
       LV_EVENT_LONG_PRESSED, nullptr);
+  lv_obj_t *about = row(s, 342, "About", nullptr, 52);
+  lv_obj_t *version = text(about, "Version 0.4, built " __DATE__, F_SMALL, MIST);
+  lv_obj_align(version, LV_ALIGN_RIGHT_MID, -20, 0);
   lv_obj_t *spacer = plain(s);
   lv_obj_set_size(spacer, 1, 1);
-  lv_obj_set_pos(spacer, 0, 400);
+  lv_obj_set_pos(spacer, 0, 450);
 }
 
 void buildModel() {
   lv_obj_t *s = scr[(int)Screen::Model] = screenBase();
-  lv_obj_set_x(title(s, "Model"), 58);
+  title(s, "Model");
   const char *names[2] = {"Gemini", "GPT"};
   for (int i = 0; i < 2; ++i) {
     lv_obj_t *r = row(s, 58 + i * 60, names[i], nullptr, 60);
@@ -2304,6 +2401,7 @@ lv_obj_t *ccToggle(lv_obj_t *parent, const char *label, lv_obj_t **labelOut) {
 }
 void buildControl() {
   cc = plain(root);
+  lv_obj_add_flag(cc, LV_OBJ_FLAG_CLICKABLE);  // tap outside the toggles closes it
   lv_obj_set_size(cc, W, H);
   lv_obj_set_style_bg_color(cc, VOID_, 0);
   lv_obj_set_style_bg_opa(cc, 248, 0);
@@ -2495,14 +2593,15 @@ void sendFrame() {
   }
   Serial.println("\nSCREEN_END");
 }
-void injectTap(int x, int y) {
+void injectTap(int x, int y, int holdMs = 80) {
   injectX = x;
   injectY = y;
   injecting = true;
-  for (int i = 0; i < 4; ++i) {
+  const unsigned long start = millis();
+  do {
     lv_timer_handler();
     delay(20);
-  }
+  } while (millis() - start < (unsigned long)holdMs);
   injecting = false;
   for (int i = 0; i < 4; ++i) {
     lv_timer_handler();
@@ -2714,6 +2813,7 @@ void initDeviceUi() {
       (void)a;
     }
     lv_obj_t *ok = pill(guide, "Got it", 130);
+    lv_obj_add_flag(ok, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_align(ok, LV_ALIGN_BOTTOM_MID, 0, -ABOVE_HOME);
     lv_obj_add_event_cb(
         ok,
@@ -2728,6 +2828,47 @@ void initDeviceUi() {
   lv_obj_align(recordingDot, LV_ALIGN_TOP_MID, 0, 8);
   lv_obj_add_flag(recordingDot, LV_OBJ_FLAG_HIDDEN);
   lv_obj_remove_flag(recordingDot, LV_OBJ_FLAG_CLICKABLE);
+  confirmLayer = plain(lv_layer_top());
+  lv_obj_set_size(confirmLayer, W, H);
+  lv_obj_set_style_bg_color(confirmLayer, VOID_, 0);
+  lv_obj_set_style_bg_opa(confirmLayer, 170, 0);
+  lv_obj_add_flag(confirmLayer, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_flag(confirmLayer, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_add_event_cb(
+      confirmLayer,
+      [](lv_event_t *e) {
+        if (lv_event_get_target(e) == confirmLayer) lv_obj_add_flag(confirmLayer, LV_OBJ_FLAG_HIDDEN);
+      },
+      LV_EVENT_CLICKED, nullptr);
+  lv_obj_t *sheet = plain(confirmLayer);
+  lv_obj_set_size(sheet, 212, 140);
+  lv_obj_align(sheet, LV_ALIGN_BOTTOM_MID, 0, -ABOVE_HOME + 18);
+  lv_obj_set_style_radius(sheet, 24, 0);
+  lv_obj_set_style_bg_color(sheet, GRAPHITE, 0);
+  lv_obj_set_style_bg_opa(sheet, LV_OPA_COVER, 0);
+  confirmTitle = text(sheet, "", F_SMALL, MIST);
+  lv_obj_align(confirmTitle, LV_ALIGN_TOP_MID, 0, 14);
+  lv_obj_t *act = pressedFeedback(plain(sheet));
+  lv_obj_set_size(act, 212, 46);
+  lv_obj_set_pos(act, 0, 40);
+  lv_obj_set_style_border_side(act, LV_BORDER_SIDE_TOP, 0);
+  lv_obj_set_style_border_width(act, 1, 0);
+  lv_obj_set_style_border_color(act, LINE, 0);
+  confirmAction = text(act, "", F_BODY, lv_color_hex(0xff6b5e));
+  lv_obj_center(confirmAction);
+  onClick(act, [] {
+    lv_obj_add_flag(confirmLayer, LV_OBJ_FLAG_HIDDEN);
+    if (confirmFn) confirmFn(confirmArg);
+  });
+  lv_obj_t *cancel = pressedFeedback(plain(sheet));
+  lv_obj_set_size(cancel, 212, 46);
+  lv_obj_set_pos(cancel, 0, 88);
+  lv_obj_set_style_border_side(cancel, LV_BORDER_SIDE_TOP, 0);
+  lv_obj_set_style_border_width(cancel, 1, 0);
+  lv_obj_set_style_border_color(cancel, LINE, 0);
+  lv_obj_center(text(cancel, "Cancel", F_BODY, INK));
+  onClick(cancel, [] { lv_obj_add_flag(confirmLayer, LV_OBJ_FLAG_HIDDEN); });
+
   toastBox = plain(lv_layer_top());
   lv_obj_set_size(toastBox, LV_SIZE_CONTENT, 30);
   lv_obj_set_style_pad_hor(toastBox, 14, 0);
@@ -2761,13 +2902,17 @@ void handleDeviceButton(char command) {
   if (!framebuffer) return;
   if (command == 'T') {
     String xy = Serial.readStringUntil('\n');
+    // "x,y" taps; "x,y,ms" holds for ms (long-press actions).
     const int comma = xy.indexOf(',');
     if (comma < 1) {
       Serial.println("SCREEN_ERROR Invalid touch");
       return;
     }
-    const int x = xy.substring(0, comma).toInt(), y = xy.substring(comma + 1).toInt();
-    if (x >= 0 && x < W && y >= TOP_ZONE && y < HOME_ZONE) injectTap(x, y);
+    const int comma2 = xy.indexOf(',', comma + 1);
+    const int x = xy.substring(0, comma).toInt();
+    const int y = xy.substring(comma + 1, comma2 > 0 ? comma2 : xy.length()).toInt();
+    const int hold = comma2 > 0 ? constrain((int)xy.substring(comma2 + 1).toInt(), 0, 20000) : 80;
+    if (x >= 0 && x < W && y >= TOP_ZONE && y < HOME_ZONE) injectTap(x, y, hold);
     sendFrame();
     return;
   }
@@ -2914,16 +3059,55 @@ void handleDeviceButton(char command) {
     case 'M':
       if (current != Screen::Apps) openApps();
       break;
-    case 'C': show(Screen::Camera); break;
-    case 'A': show(Screen::Ask); break;
-    case 'p': show(Screen::Photos); break;
+    case 'C': launch(Screen::Camera); break;
+    case 'A': launch(Screen::Ask); break;
+    case 'p': launch(Screen::Photos); break;
     case 'H':
-      show(Screen::Ask);
+      launch(Screen::Ask);
       if (answerCount) lv_obj_scroll_to_y(askScroll, H - ASK_PEEK - 30, LV_ANIM_OFF);
       break;
-    case 'R': show(Screen::Remote); break;
-    case 'W': show(Screen::Wifi); break;
-    case 'E': show(Screen::Gestures); break;
+    case 'R': launch(Screen::Remote); break;
+    case 'W': launch(Screen::Wifi); break;
+    case 'N': {  // developer: internet check (no AI). 204 = real internet; anything else = sign-in page
+      WiFiClientSecure tls;
+      tls.setInsecure();  // only a reachability probe; nothing secret is sent
+      HTTPClient http;
+      const uint32_t t = millis();
+      int code = -1;
+      if (http.begin(tls, "https://www.google.com/generate_204")) {
+        code = http.GET();
+        http.end();
+      }
+      Serial.printf("NET generate_204 -> %d in %lu ms\n", code, (unsigned long)(millis() - t));
+      break;
+    }
+    case 'J': {  // developer: raw touch samples, to check the touch wiring
+      int pressedCount = 0;
+      for (int i = 0; i < 30; ++i) {
+        int x = -1, y = -1;
+        const bool down = touchRead(x, y);
+        pressedCount += down;
+        Serial.printf("TOUCH %d %d %d int=%d\n", down, x, y, digitalRead(PIN_TP_INT));
+        delay(50);
+      }
+      Serial.printf("TOUCH pressed %d/30\n", pressedCount);
+      break;
+    }
+    case 'S': {  // developer: a clearly labelled sample answer, for layout checks (delete it after)
+      static uint16_t *th = (uint16_t *)ps_malloc(THUMB * THUMB * 2);
+      const bool haveThumb = latestPhotoId && th && loadPhotoThumb(latestPhotoId, th);
+      saveAnswer(
+          "Sample answer for a layout check. This text was written on the device, not by a model.\n\n"
+          "The first sentence is set large; everything after it is body text that scrolls. "
+          "Math like x^2 + 3x - 4 = 0 stays readable: x = 1 or x = -4.",
+          true, latestPhotoId, clockKnown() ? (uint32_t)time(nullptr) : 0, haveThumb ? th : nullptr);
+      loadLatestAnswer();
+      cardSignature = "";
+      refreshDynamic();
+      launch(Screen::Ask);
+      break;
+    }
+    case 'E': launch(Screen::Gestures); break;
     case 'L': {
       if (!micStart()) {
         Serial.println("MIC_ERROR start failed");
@@ -2963,7 +3147,7 @@ void handleDeviceButton(char command) {
       setText(passwordTitle, joiningSsid.c_str());
       show(Screen::Password);
       break;
-    case 'i': show(Screen::Settings); break;
+    case 'i': launch(Screen::Settings); break;
     case 'b':
       if (answerCount) showAnswer(answerIds[0]);
       break;
