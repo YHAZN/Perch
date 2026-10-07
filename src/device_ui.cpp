@@ -2990,6 +2990,14 @@ void handleDeviceButton(char command) {
     if (kb > 0 && kb <= 2048) aiUploadTest((size_t)kb * 1024);
     return;
   }
+  if (command == '7') {
+    // Developer: "7dn=4" style photo tuning (see cameraTune).
+    const String arg = Serial.readStringUntil('\n');
+    const int eq = arg.indexOf('=');
+    const bool ok = eq > 0 && cameraTune(arg.substring(0, eq).c_str(), arg.substring(eq + 1).toInt());
+    Serial.printf("TUNE %s %s\n", arg.c_str(), ok ? "ok" : "unknown");
+    return;
+  }
   if (command == '6') {
     // Developer: "6<ae>,<frames>" photo brightness target and longest exposure, e.g. "61,2".
     const String arg = Serial.readStringUntil('\n');

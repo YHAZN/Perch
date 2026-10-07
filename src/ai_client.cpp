@@ -193,7 +193,7 @@ bool request(bool gemini, const String &key, const uint8_t *jpeg, size_t length,
     client->setCACert(AI_ROOT_CERTS);
     client->setHandshakeTimeout(12);
     http.setConnectTimeout(12000);
-    http.setTimeout(90000);  // thinking delays the first byte
+    http.setTimeout(65000);  // uint16_t ms: 65 s is the maximum (90000 wrapped to 24.5 s)
     const char *url = gemini ? GEMINI_URLS[attempt] : "https://api.openai.com/v1/chat/completions";
     if (!http.begin(*client, url)) {
       status = -1;

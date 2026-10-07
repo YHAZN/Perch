@@ -11,6 +11,8 @@ OV5640 autofocus;
 int stillGainCeiling = GAINCEILING_8X;
 int stillAeLevel = 1;         // photos aim a little brighter than the sensor default
 int stillExposureFrames = 2;  // night mode may stretch exposure to this many frame times
+// Photo tuning (developer '7' command). -100 = leave the driver default.
+int stillDenoise = -100, stillSharpness = -100, stillHts = 0, stillSettle = 0, stillSaturation = -100;
 
 // OV5640 autofocus: Omnivision's focus firmware runs on the sensor's own MCU and is lost on
 // power-up, so it is loaded once (~4 KB over SCCB) and reloaded if the sensor reports it
@@ -76,6 +78,21 @@ CameraMode cameraMode() { return mode; }
 
 bool cameraSetMode(CameraMode next) {
   if (next == mode) return true;
+  if (next == CameraMode::Still && mode == CameraMode::Off && (sensorPid == 0 || sensorPid == OV5640_PID)) {
+    // Focus needs fast frames: a full-size focus search never finished within seconds.
+    // Focus briefly in preview mode, then switch to full size with the lens held.
+    if (cameraSetMode(CameraMode::Preview) && afLoaded) {
+      sensor_t *s = esp_camera_sensor_get();
+      const uint32_t t = millis();
+      uint8_t status = 0;
+      while (millis() - t < 2500) {
+        status = s->get_reg(s, 0x3029, 0xFF);
+        if (status == 0x10 || status == 0x20) break;
+        delay(30);
+      }
+      Serial.printf("CAMERA prefocus %02X in %lums\n", status, (unsigned long)(millis() - t));
+    }
+  }
   lensHeld = false;
   if (mode == CameraMode::Preview && next == CameraMode::Still && afLoaded) {
     // Continuous focus has been tracking the scene at ~27 FPS; freeze the lens where it is.
@@ -139,6 +156,21 @@ bool cameraSetMode(CameraMode next) {
     sensor->set_reg(sensor, 0x3A00, 0x04, stillExposureFrames > 1 ? 0x04 : 0x00);  // night mode
     sensor->set_gainceiling(sensor, (gainceiling_t)stillGainCeiling);
     sensor->set_ae_level(sensor, stillAeLevel);
+    sensor->set_whitebal(sensor, 1);
+    sensor->set_awb_gain(sensor, 1);
+    if (stillDenoise != -100 && sensor->set_denoise) sensor->set_denoise(sensor, stillDenoise);
+    if (stillSharpness != -100 && sensor->set_sharpness) sensor->set_sharpness(sensor, stillSharpness);
+    if (stillSaturation != -100) sensor->set_saturation(sensor, stillSaturation);
+    if (stillHts > 0) {
+      // Longer lines let exposure grow without analog gain (esp32-camera issue #229).
+      sensor->set_reg(sensor, 0x380C, 0xFF, stillHts >> 8);
+      sensor->set_reg(sensor, 0x380D, 0xFF, stillHts & 0xFF);
+    }
+    // Let exposure and white balance settle on the new settings before anyone keeps a frame.
+    for (int i = 0; i < stillSettle; ++i) {
+      camera_fb_t *f = esp_camera_fb_get();
+      if (f) esp_camera_fb_return(f);
+    }
   }
   if (next == CameraMode::Preview && sensor->id.PID == OV5640_PID) sensor->set_ae_level(sensor, 0);
   if (next == CameraMode::Preview) {
@@ -168,19 +200,9 @@ bool cameraSetMode(CameraMode next) {
   return true;
 }
 
-bool cameraFocus(uint32_t timeoutMs) {
-  sensor_t *sensor = esp_camera_sensor_get();
-  if (!sensor || sensor->id.PID != OV5640_PID || !afLoaded) return false;
-  if (lensHeld) return true;  // already focused in the live view
-  const uint32_t t = millis();
-  const bool acked = afCommand(sensor, 0x03, timeoutMs);  // single focus
-  const uint8_t status = sensor->get_reg(sensor, 0x3029, 0xFF);
-  Serial.printf("CAMERA focus %s in %lums (status %02X)\n",
-                status == 0x10 ? "locked"
-                : acked        ? "done, not locked"
-                               : "timed out",
-                (unsigned long)(millis() - t), status);
-  return status == 0x10;
+bool cameraFocus(uint32_t) {
+  // Focus happens in preview mode before every photo (see cameraSetMode); report the result.
+  return lensHeld;
 }
 
 void cameraSetStillGain(int ceiling) { stillGainCeiling = ceiling; }
@@ -200,4 +222,15 @@ void cameraReport() {
 void cameraSetStillExposure(int aeLevel, int maxFrames) {
   stillAeLevel = aeLevel;
   stillExposureFrames = maxFrames < 1 ? 1 : maxFrames > 4 ? 4 : maxFrames;
+}
+
+bool cameraTune(const char *key, int value) {
+  const String k(key);
+  if (k == "dn") stillDenoise = value;
+  else if (k == "sh") stillSharpness = value;
+  else if (k == "hts") stillHts = value;
+  else if (k == "set") stillSettle = value;
+  else if (k == "sat") stillSaturation = value;
+  else return false;
+  return true;
 }

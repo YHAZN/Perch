@@ -22,3 +22,5 @@ void cameraReport();
 void cameraSetStillGain(int ceiling);
 // Developer: photo brightness target (-2..2) and longest exposure in frame times (1..4).
 void cameraSetStillExposure(int aeLevel, int maxFrames);
+// Developer: photo tuning, keys dn (denoise), sh (sharpness), hts (line length), set (settle frames), sat.
+bool cameraTune(const char *key, int value);
