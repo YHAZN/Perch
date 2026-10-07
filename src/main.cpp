@@ -65,6 +65,7 @@ void capture(bool sendImage = false) {
                   static_cast<unsigned>(frame->height), static_cast<unsigned>(frame->len), jpeg ? "PASS" : "FAIL");
   }
   esp_camera_fb_return(frame);
+  cameraSetMode(CameraMode::Off);  // do not leave the sensor streaming (heat)
 }
 
 void printStatus() {
@@ -90,6 +91,7 @@ void setup() {
   const unsigned long start = millis();
   // Brief wait so early lines reach a connected PC; standalone boots must not stall here.
   while (!Serial && millis() - start < 800) { delay(10); }
+  aiBegin();  // before any HTTPS (SNTP is plain UDP)
   clockBegin();
   printStatus();
   initDeviceUi();

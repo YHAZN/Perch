@@ -4,6 +4,8 @@
 // Bluetooth LE keyboard + media keys. Any computer or phone pairs with "Perch" from its
 // own Bluetooth settings; no app is needed. Started on first use (it costs ~40 KB RAM).
 bool remoteBegin();
+// Stop Bluetooth and free its memory (needed before HTTPS requests).
+void remoteEnd();
 bool remoteStarted();
 bool remoteConnected();
 // Press and release one key (USB HID usage id), e.g. 0x4F right arrow.

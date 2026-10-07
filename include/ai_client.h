@@ -16,6 +16,10 @@ void aiCancel();
 // the state returns to Idle. Cancelled results are consumed silently.
 AiState aiPoll(String &text);
 bool aiBusy();
+// Call once at boot, before any HTTPS: lets TLS use PSRAM.
+void aiBegin();
 
 // Developer: unauthenticated upload of `bytes` to the Gemini endpoint (nothing billed).
 void aiUploadTest(size_t bytes);
+// Developer: free check that the key is valid and can see the model.
+void aiKeyCheck(const String &key);

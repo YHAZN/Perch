@@ -508,7 +508,8 @@ bool cameraSwitch(CameraMode mode) {
 }
 void stopPreview() {
   previewWanted = false;
-  if (cameraMode() == CameraMode::Preview) cameraSwitch(CameraMode::Off);
+  // A capture in progress switches the camera off itself when done; never block the UI on it.
+  if (!captureRequested && cameraMode() != CameraMode::Off) cameraSwitch(CameraMode::Off);
 }
 bool ensurePreviewMode() {
   if (!cameraSwitch(CameraMode::Preview)) return false;
@@ -1000,6 +1001,7 @@ struct CaptureResult {
 // best frame is soft, and the user is told to hold still.
 constexpr int BURST = 3;
 constexpr uint32_t BLUR_FLOOR = 35;
+int lastLuma = 0;  // mean brightness of the last frame scored, 0..187
 uint32_t sharpness(const uint8_t *jpeg, size_t len, int width, int height) {
   const int w = width / 8, h = height / 8;
   if ((size_t)(w * h * 2) > taskScratchCapacity) {
@@ -1012,16 +1014,18 @@ uint32_t sharpness(const uint8_t *jpeg, size_t len, int width, int height) {
     const uint16_t v = taskScratch[(y * w + x) * 2] | (taskScratch[(y * w + x) * 2 + 1] << 8);
     return (int)(((v >> 11) << 1) + (((v >> 5) & 63)) + ((v & 31) << 1));  // ~luma, 0..187
   };
-  int64_t sum = 0, sumSq = 0;
+  int64_t sum = 0, sumSq = 0, lumaSum = 0;
   int n = 0;
   for (int y = h / 4; y < h * 3 / 4; ++y)
     for (int x = w / 4; x < w * 3 / 4; ++x) {
+      lumaSum += gray(x, y);
       const int lap = 4 * gray(x, y) - gray(x - 1, y) - gray(x + 1, y) - gray(x, y - 1) - gray(x, y + 1);
       sum += lap;
       sumSq += (int64_t)lap * lap;
       ++n;
     }
   if (!n) return 0;
+  lastLuma = lumaSum / n;
   const int64_t mean = sum / n;
   return (uint32_t)(sumSq / n - mean * mean);
 }
@@ -1082,7 +1086,8 @@ void captureInTask() {
     r.problem = "Camera is unavailable.";
   } else {
     // A freshly started sensor needs a couple of frames for exposure to settle.
-    for (int i = 0; i < 2; ++i) {
+    // Measured on the OV5640: brightness is steady from the second frame after the switch.
+    {
       camera_fb_t *f = esp_camera_fb_get();
       if (f) esp_camera_fb_return(f);
     }
@@ -1094,7 +1099,7 @@ void captureInTask() {
                          frame->buf[1] == 0xd8 && frame->buf[frame->len - 2] == 0xff &&
                          frame->buf[frame->len - 1] == 0xd9;
       const uint32_t score = valid ? sharpness(frame->buf, frame->len, frame->width, frame->height) : 0;
-      Serial.printf("BURST %d sharpness=%lu\n", shot, (unsigned long)score);
+      Serial.printf("BURST %d sharpness=%lu luma=%d\n", shot, (unsigned long)score, lastLuma);
       if (valid && (!r.jpeg || score > best)) {
         uint8_t *copy = (uint8_t *)ps_malloc(frame->len);
         if (copy) {
@@ -1151,7 +1156,8 @@ void captureInTask() {
   captureOut = r;
   captureReady = true;
   Serial.printf("SHUTTER capture=%lums handoff=%lums\n", (unsigned long)(t1 - t0), (unsigned long)(millis() - t1));
-  if (previewWanted) cameraSetMode(CameraMode::Preview);
+  // Never leave the sensor streaming full-size frames: it heats up and takes core 0 from Wi-Fi.
+  cameraSetMode(previewWanted ? CameraMode::Preview : CameraMode::Off);
 }
 bool requestCapture(String &problem) {
   if (cameraOff) {
@@ -1230,6 +1236,7 @@ void startAsk(const uint8_t *wav = nullptr, size_t wavLength = 0) {
     return;
   }
   String key = settings.getString(useGemini ? "gemini-key" : "gpt-key", "");
+  remoteEnd();  // Bluetooth leaves too little memory for HTTPS
   const bool started = aiStart(useGemini, key, savedJpeg, jpegBytes, wav, wavLength);
   key = "";
   if (!started) {
@@ -1439,6 +1446,8 @@ void rebuildHistory() {
   }
 }
 void onEnter(Screen s) {
+  // Bluetooth only runs inside the apps that use it: it costs ~100 KB of RAM HTTPS needs.
+  if (s != Screen::Remote && s != Screen::Gestures) remoteEnd();
   if (s == Screen::Photos) {
     hide(photosImage, photoCount == 0);
     hide(photosEmpty, photoCount != 0);
@@ -3103,6 +3112,12 @@ void handleDeviceButton(char command) {
         http.end();
       }
       Serial.printf("NET generate_204 -> %d in %lu ms\n", code, (unsigned long)(millis() - t));
+      for (const char *host : {"generativelanguage.googleapis.com", "api.openai.com", "www.google.com"}) {
+        IPAddress ip;
+        const int ok = WiFi.hostByName(host, ip);
+        Serial.printf("NET dns %s -> %d %s\n", host, ok, ip.toString().c_str());
+      }
+      Serial.printf("NET dns server %s\n", WiFi.dnsIP().toString().c_str());
       break;
     }
     case 'k': {  // developer: OV5640 timing registers (PLL, frame size, exposure limits)
@@ -3118,6 +3133,7 @@ void handleDeviceButton(char command) {
       xSemaphoreGive(camLock);
       break;
     }
+    case '8': aiKeyCheck(settings.getString("gemini-key", "")); break;  // developer: free key check
     case 'J': {  // developer: raw touch samples, to check the touch wiring
       int pressedCount = 0;
       for (int i = 0; i < 30; ++i) {
@@ -3303,6 +3319,7 @@ void deviceTick() {
       uint8_t *wav = nullptr;
       size_t wavLen = 0;
       queueLoadAudio(queued[i].id, wav, wavLen);
+      remoteEnd();  // Bluetooth leaves too little memory for HTTPS
       const bool started = aiStart(queued[i].gemini, key, jpeg, len, wav, wavLen);
       free(wav);
       if (started) {

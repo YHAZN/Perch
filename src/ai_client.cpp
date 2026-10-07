@@ -4,7 +4,9 @@
 #include <WiFiClientSecure.h>
 #include <WiFi.h>
 #include <mbedtls/base64.h>
+#include <mbedtls/platform.h>
 #include <time.h>
+#include <memory>
 #include "wifi_secrets.h"
 #include "ai_root_certs.h"
 
@@ -165,32 +167,63 @@ bool request(bool gemini, const String &key, const uint8_t *jpeg, size_t length,
     free(payload);
     return fail("Cancelled. Nothing was sent.");
   }
-  WiFiClientSecure client;
-  client.setCACert(AI_ROOT_CERTS);
-  client.setHandshakeTimeout(12);
+  // Gemini attempts: the configured model, then a sibling model, then the first again.
+  // 500/503 mean Google did not process the request (overloaded; not billed), so only those
+  // are retried; any other error may mean the request was used, and is never resent.
+  // Model names and thinking levels: ai.google.dev/gemini-api/docs/generate-content/thinking
+  static const char *GEMINI_URLS[] = {
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent",
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.7-flash:generateContent",
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent"};
+  static const uint16_t WAIT_BEFORE_MS[] = {0, 1000, 4000};
+  const int attempts = gemini ? 3 : 1;
+  std::unique_ptr<WiFiClientSecure> client;
   HTTPClient http;
-  http.setConnectTimeout(12000);
-  http.setTimeout(90000);  // the model thinks before the first byte; 45 s cut answers off
-  const char *url = gemini ? "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent"
-                           : "https://api.openai.com/v1/chat/completions";
-  if (!http.begin(client, url)) {
-    free(payload);
-    return fail("Could not start the HTTPS request.");
+  int status = -1;
+  for (int attempt = 0; attempt < attempts; ++attempt) {
+    if (attempt) {
+      if (status != 503 && status != 500) break;
+      http.end();
+      const uint32_t until = millis() + WAIT_BEFORE_MS[attempt];
+      while (millis() < until && !cancelled) delay(100);
+      if (cancelled) break;
+    }
+    // A fresh connection per attempt: reusing one after an error hung until the read timeout.
+    client.reset(new WiFiClientSecure());
+    client->setCACert(AI_ROOT_CERTS);
+    client->setHandshakeTimeout(12);
+    http.setConnectTimeout(12000);
+    http.setTimeout(90000);  // thinking delays the first byte
+    const char *url = gemini ? GEMINI_URLS[attempt] : "https://api.openai.com/v1/chat/completions";
+    if (!http.begin(*client, url)) {
+      status = -1;
+      break;
+    }
+    http.addHeader("Content-Type", "application/json");
+    http.addHeader(gemini ? "x-goog-api-key" : "Authorization", gemini ? key : "Bearer " + key);
+    Serial.printf("AI_SEND try %d %s %u bytes, internal heap %u free, largest %u\n", attempt + 1,
+                  gemini ? (attempt == 1 ? "gemini-3.7-flash" : "gemini-3.8-flash") : "gpt-4.1", (unsigned)total,
+                  heap_caps_get_free_size(MALLOC_CAP_INTERNAL), heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+    const uint32_t sendStart = millis();
+    status = http.POST(payload, total);
+    Serial.printf("AI_STATUS %d after %lu ms\n", status, (unsigned long)(millis() - sendStart));
+    if (status == 503 || status == 500) {
+      String reason = http.getString().substring(0, 300);
+      reason.replace("\n", " ");
+      Serial.printf("AI_BUSY %s\n", reason.c_str());
+    }
   }
-  http.addHeader("Content-Type", "application/json");
-  http.addHeader(gemini ? "x-goog-api-key" : "Authorization", gemini ? key : "Bearer " + key);
-  Serial.printf("AI_SEND %u bytes, internal heap %u free, largest %u\n", (unsigned)total,
-                heap_caps_get_free_size(MALLOC_CAP_INTERNAL), heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
-  const uint32_t sendStart = millis();
-  int status = http.POST(payload, total);
   free(payload);
-  Serial.printf("AI_STATUS %d after %lu ms\n", status, (unsigned long)(millis() - sendStart));
   if (status != 200) {
     // Error bodies are small JSON; read a bounded amount to tell the user what went wrong.
-    String body = (status > 0 && http.getSize() > 0 && http.getSize() < 4096) ? http.getString() : "";
+    // Google sends error bodies chunked (size unknown, -1); they are small JSON either way.
+    String body = (status > 0 && http.getSize() < 4096) ? http.getString() : "";
     http.end();
     // Provider error bodies carry a reason, never the key; log it for diagnosis.
-    Serial.printf("AI_HTTP %d %s\n", status, body.substring(0, 600).c_str());
+    String flat = body.substring(0, 600);
+    flat.replace("\n", " ");
+    flat.replace("  ", " ");
+    Serial.printf("AI_HTTP %d %s\n", status, flat.c_str());
     if (body.indexOf("API_KEY_INVALID") >= 0 || body.indexOf("API key not valid") >= 0 || status == 401)
       return fail("API key rejected. Check the key in PC setup.");
     if (status == 403) return fail("Access denied for this API key.");
@@ -201,7 +234,11 @@ bool request(bool gemini, const String &key, const uint8_t *jpeg, size_t length,
       return false;
     }
     if (status < 0) {
+      char tlsError[100] = "";
+      if (client) client->lastError(tlsError, sizeof tlsError);
+      Serial.printf("AI_TLS %s\n", tlsError);
       answer = String("Connection lost (") + HTTPClient::errorToString(status) +
+               (tlsError[0] ? String(": ") + tlsError : String("")) +
                "). The photo may or may not have reached the provider; it was not resent.";
       return false;
     }
@@ -347,7 +384,9 @@ AiState aiPoll(String &text) {
 
 // Developer: the photo upload path without an API key. Google rejects it unauthenticated,
 // so no model runs and nothing is billed; it shows whether TLS and a large upload succeed.
-void aiUploadTest(size_t bytes) {
+size_t uploadTestBytes = 0;
+void uploadTestTask(void *) {
+  const size_t bytes = uploadTestBytes;
   const char *head = "{\"contents\":[{\"parts\":[{\"inline_data\":{\"mime_type\":\"image/jpeg\",\"data\":\"";
   const char *tail = "\"}}]}]}";
   const size_t total = strlen(head) + bytes + strlen(tail);
@@ -367,6 +406,10 @@ void aiUploadTest(size_t bytes) {
   http.setTimeout(45000);
   Serial.printf("UPLOAD_TEST %u bytes, internal heap %u, largest %u\n", (unsigned)total,
                 heap_caps_get_free_size(MALLOC_CAP_INTERNAL), heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+  IPAddress resolved;
+  const int dns = WiFi.hostByName("generativelanguage.googleapis.com", resolved);
+  Serial.printf("UPLOAD_TEST dns=%d ip=%s stack_free=%u\n", dns, resolved.toString().c_str(),
+                (unsigned)uxTaskGetStackHighWaterMark(nullptr));
   const uint32_t t = millis();
   int status = -100;
   if (http.begin(client, "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent")) {
@@ -375,6 +418,48 @@ void aiUploadTest(size_t bytes) {
     http.end();
   }
   free(payload);
+  char tlsError[100] = "";
+  client.lastError(tlsError, sizeof tlsError);
+  Serial.printf("UPLOAD_TEST tls: %s\n", tlsError);
   Serial.printf("UPLOAD_TEST status %d (%s) in %lu ms\n", status,
                 status < 0 ? HTTPClient::errorToString(status).c_str() : "http", (unsigned long)(millis() - t));
+  vTaskDelete(nullptr);
+}
+// Same core, priority and stack as a real request, so it meets the same conditions.
+void aiUploadTest(size_t bytes) {
+  uploadTestBytes = bytes;
+  xTaskCreatePinnedToCore(uploadTestTask, "upload-test", 16384, nullptr, 1, nullptr, 0);
+}
+
+// The prebuilt Arduino SDK forces every TLS allocation into internal RAM, which camera,
+// Wi-Fi and Bluetooth leave fragmented (52 KB free but no 17 KB block: "SSL - Memory
+// allocation failed"). Large TLS buffers go to PSRAM instead (ESP-IDF supports this as
+// CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC); small ones stay internal for speed.
+static void *tlsCalloc(size_t count, size_t size) {
+  const size_t total = count * size;
+  void *p = total > 2048 ? heap_caps_calloc(count, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) : nullptr;
+  if (!p) p = heap_caps_calloc(count, size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  if (!p) p = heap_caps_calloc(count, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  return p;
+}
+void aiBegin() { mbedtls_platform_set_calloc_free(tlsCalloc, free); }
+
+// Developer: is the saved key valid, and can it see the model? A GET of the model's details
+// is free (no content is generated). Prints the HTTP status and the start of the reply.
+void aiKeyCheck(const String &key) {
+  WiFiClientSecure client;
+  client.setCACert(AI_ROOT_CERTS);
+  client.setHandshakeTimeout(12);
+  HTTPClient http;
+  http.setConnectTimeout(12000);
+  http.setTimeout(20000);
+  if (!http.begin(client, "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash")) {
+    Serial.println("KEYCHECK begin failed");
+    return;
+  }
+  http.addHeader("x-goog-api-key", key);
+  const int status = http.GET();
+  const String body = status > 0 ? http.getString() : String(HTTPClient::errorToString(status));
+  http.end();
+  Serial.printf("KEYCHECK %d %s\n", status, body.substring(0, 400).c_str());
 }

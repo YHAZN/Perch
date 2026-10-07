@@ -84,3 +84,15 @@ void remoteMedia(uint16_t usage) {
   consumer->setValue(report, sizeof(report));
   consumer->notify();
 }
+
+// Bluetooth holds ~100 KB of internal RAM; HTTPS needs it back. Reopening Remote restarts
+// advertising and a bonded computer reconnects by itself.
+void remoteEnd() {
+  if (!started) return;
+  delete hid;
+  hid = nullptr;
+  keyboard = consumer = nullptr;
+  NimBLEDevice::deinit(true);
+  started = false;
+  connected = false;
+}
