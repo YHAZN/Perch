@@ -235,7 +235,33 @@ int queueList(QueuedAsk *out, int max) {
   return n;
 }
 
-bool queueRemove(uint32_t id) { return mounted && LittleFS.remove(path("/queue", id, ".q")); }
+bool queueRemove(uint32_t id) {
+  if (!mounted) return false;
+  LittleFS.remove(path("/queue", id, ".wav"));
+  return LittleFS.remove(path("/queue", id, ".q"));
+}
+
+bool queueSaveAudio(uint32_t id, const uint8_t *wav, size_t length) {
+  return mounted && writeFile(path("/queue", id, ".wav"), wav, length);
+}
+
+bool queueLoadAudio(uint32_t id, uint8_t *&wav, size_t &length) {
+  wav = nullptr;
+  length = 0;
+  if (!mounted) return false;
+  File f = LittleFS.open(path("/queue", id, ".wav"), "r");
+  if (!f) return false;
+  length = f.size();
+  wav = static_cast<uint8_t *>(ps_malloc(length));
+  const bool ok = wav && f.read(wav, length) == length;
+  f.close();
+  if (!ok) {
+    free(wav);
+    wav = nullptr;
+    length = 0;
+  }
+  return ok;
+}
 
 bool queueSetFailed(uint32_t id, bool failed) {
   QueuedAsk all[16];

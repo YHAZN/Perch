@@ -45,5 +45,8 @@ uint32_t queueAdd(uint32_t photoId, bool gemini, uint32_t when);
 int queueList(QueuedAsk *out, int max);  // oldest first
 bool queueRemove(uint32_t id);
 bool queueSetFailed(uint32_t id, bool failed);
+// Optional spoken question kept with a queued item (WAV). Removed with the item.
+bool queueSaveAudio(uint32_t id, const uint8_t *wav, size_t length);
+bool queueLoadAudio(uint32_t id, uint8_t *&wav, size_t &length);
 
 size_t storageFreeBytes();

@@ -11,6 +11,7 @@
 #include <time.h>
 #include <vector>
 #include "ai_client.h"
+#include "audio.h"
 #include "camera.h"
 #include "clock.h"
 #include "display.h"
@@ -119,6 +120,7 @@ QueuedAsk queued[16];
 int queuedCount = 0;
 uint32_t queueInFlight = 0;
 bool queueWhenSaved = false;
+lv_obj_t *listenOverlay = nullptr, *listenRing = nullptr, *listenTime = nullptr;
 unsigned long queueRetryAt = 0;
 void refreshQueue();
 void rebuildHistory();
@@ -1065,17 +1067,23 @@ bool takePhoto(String &problem) {
   }
   return acceptCapture(problem);
 }
-void startAsk() {
+void startAsk(const uint8_t *wav = nullptr, size_t wavLength = 0) {
   if (!jpegBytes) {
     notice("Take a photo first.", Screen::Ask);
     return;
+  }
+  if (wav && !useGemini) {
+    toast("Voice needs Gemini. Asking about the photo");
+    wav = nullptr;
+    wavLength = 0;
   }
   if (!networkConnected()) {
     // Badge mode: keep the question and answer it when Wi-Fi returns.
     if (photoSavePending) {
       queueWhenSaved = true;
     } else if (latestPhotoId) {
-      queueAdd(latestPhotoId, useGemini, clockKnown() ? (uint32_t)time(nullptr) : 0);
+      const uint32_t q = queueAdd(latestPhotoId, useGemini, clockKnown() ? (uint32_t)time(nullptr) : 0);
+      if (q && wav) queueSaveAudio(q, wav, wavLength);
       refreshQueue();
     }
     toast("Saved. It will ask when Wi-Fi is back");
@@ -1088,7 +1096,7 @@ void startAsk() {
     return;
   }
   String key = settings.getString(useGemini ? "gemini-key" : "gpt-key", "");
-  const bool started = aiStart(useGemini, key, savedJpeg, jpegBytes);
+  const bool started = aiStart(useGemini, key, savedJpeg, jpegBytes, wav, wavLength);
   key = "";
   if (!started) {
     notice("Could not start the request. Not enough memory.", Screen::Ask);
@@ -1096,7 +1104,7 @@ void startAsk() {
   }
   pendingGemini = useGemini;
   pendingPhotoId = photoSavePending ? UINT32_MAX : latestPhotoId;
-  lv_label_set_text(busyLabel, useGemini ? "Asking Gemini" : "Asking GPT");
+  lv_label_set_text(busyLabel, wav ? "Asking about what you said" : useGemini ? "Asking Gemini" : "Asking GPT");
   lv_obj_remove_flag(busy, LV_OBJ_FLAG_HIDDEN);
   show(Screen::Ask);
 }
@@ -1513,7 +1521,7 @@ void buildAsk() {
   scrimBottom(hero, 120);
   askOffline = text(hero, "Offline", F_SMALL, INK);
   lv_obj_align(askOffline, LV_ALIGN_TOP_MID, 0, 26);
-  askHint = text(hero, "Hold for a new photo", F_SMALL, MIST);
+  askHint = text(hero, "Hold the button to ask by voice", F_SMALL, MIST);
   lv_obj_align(askHint, LV_ALIGN_BOTTOM_MID, 0, -ABOVE_HOME - 56);
   historyList = plain(askScroll);
   lv_obj_set_size(historyList, W, LV_SIZE_CONTENT);
@@ -1528,10 +1536,41 @@ void buildAsk() {
   lv_obj_align(ring, LV_ALIGN_LEFT_MID, 9, 0);
   askButtonLabel = text(askPill, "", F_BODY, INK);
   lv_obj_align(askButtonLabel, LV_ALIGN_LEFT_MID, 46, 0);
-  onClick(askPill, [] {
-    if (jpegBytes) startAsk();
-    else captureAndAsk();
-  });
+  // Tap: ask about the photo. Hold: speak the question, release to ask.
+  lv_obj_add_flag(askPill, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(
+      askPill,
+      [](lv_event_t *) {
+        if (micRecording()) return;
+        if (jpegBytes) startAsk();
+        else captureAndAsk();
+      },
+      LV_EVENT_SHORT_CLICKED, nullptr);
+  lv_obj_add_event_cb(
+      askPill,
+      [](lv_event_t *) {
+        if (!jpegBytes || !lv_obj_has_flag(busy, LV_OBJ_FLAG_HIDDEN)) return;
+        if (!micStart()) {
+          toast("Microphone unavailable");
+          return;
+        }
+        lv_obj_remove_flag(listenOverlay, LV_OBJ_FLAG_HIDDEN);
+      },
+      LV_EVENT_LONG_PRESSED, nullptr);
+  auto release = [](lv_event_t *) {
+    if (!micRecording()) return;
+    micStop();
+    lv_obj_add_flag(listenOverlay, LV_OBJ_FLAG_HIDDEN);
+    size_t len = 0;
+    const uint8_t *wav = micWav(len);
+    if (micSeconds() < 0.6f) {
+      toast("Hold and speak, then let go");
+      return;
+    }
+    startAsk(wav, len);
+  };
+  lv_obj_add_event_cb(askPill, release, LV_EVENT_RELEASED, nullptr);
+  lv_obj_add_event_cb(askPill, release, LV_EVENT_PRESS_LOST, nullptr);
   // Long-press the photo: new photo, then ask. Replaces the tiny corner icon of the old UI.
   lv_obj_add_flag(askHero, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_event_cb(
@@ -1563,6 +1602,20 @@ void buildAsk() {
   lv_obj_set_style_border_color(keep, LINE, 0);
   lv_obj_center(text(keep, "Keep this photo", F_BODY, INK));
   onClick(keep, [] { lv_obj_add_flag(askSheet, LV_OBJ_FLAG_HIDDEN); });
+
+  // Listening: the amber ring follows your voice. Release the button to ask.
+  listenOverlay = plain(s);
+  lv_obj_set_size(listenOverlay, W, H);
+  lv_obj_set_style_bg_color(listenOverlay, VOID_, 0);
+  lv_obj_set_style_bg_opa(listenOverlay, 170, 0);
+  lv_obj_add_flag(listenOverlay, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_remove_flag(listenOverlay, LV_OBJ_FLAG_CLICKABLE);
+  listenRing = circle(listenOverlay, 56, LENS, 3, LENS, LV_OPA_20);
+  lv_obj_align(listenRing, LV_ALIGN_CENTER, 0, -40);
+  lv_obj_t *listenLabel = text(listenOverlay, "Listening", F_BODY, INK);
+  lv_obj_align(listenLabel, LV_ALIGN_CENTER, 0, 20);
+  listenTime = text(listenOverlay, "Let go to ask", F_SMALL, MIST);
+  lv_obj_align(listenTime, LV_ALIGN_CENTER, 0, 44);
 
   // Thinking state: calm breathing ring, honest label, always cancellable.
   busy = plain(s);
@@ -2681,6 +2734,34 @@ void handleDeviceButton(char command) {
       break;
     case 'R': show(Screen::Remote); break;
     case 'W': show(Screen::Wifi); break;
+    case 'L': {
+      if (!micStart()) {
+        Serial.println("MIC_ERROR start failed");
+        return;
+      }
+      const unsigned long t = millis();
+      while (millis() - t < 3000) {
+        lv_timer_handler();
+        delay(5);
+      }
+      micStop();
+      size_t len = 0;
+      const uint8_t *wav = micWav(len);
+      int64_t sumSq = 0;
+      int peak = 0;
+      const int16_t *pcm = (const int16_t *)(wav + 44);
+      const size_t n = len > 44 ? (len - 44) / 2 : 0;
+      for (size_t i = 0; i < n; ++i) {
+        sumSq += (int32_t)pcm[i] * pcm[i];
+        peak = max(peak, abs((int)pcm[i]));
+      }
+      Serial.printf("MIC samples=%u rms=%d peak=%d seconds=%.1f\n", (unsigned)n, n ? (int)sqrt((double)sumSq / n) : 0,
+                    peak, micSeconds());
+      Serial.printf("WAV_BEGIN %u\n", (unsigned)len);
+      sendAcknowledged(wav, len);
+      Serial.println("\nWAV_END");
+      return;
+    }
     case 'U':  // developer: clear the offline queue (so test questions are never sent)
       for (int i = 0; i < queuedCount; ++i) queueRemove(queued[i].id);
       refreshQueue();
@@ -2808,13 +2889,32 @@ void deviceTick() {
         break;
       }
       const String key = settings.getString(queued[i].gemini ? "gemini-key" : "gpt-key", "");
-      if (aiStart(queued[i].gemini, key, jpeg, len)) {
+      uint8_t *wav = nullptr;
+      size_t wavLen = 0;
+      queueLoadAudio(queued[i].id, wav, wavLen);
+      const bool started = aiStart(queued[i].gemini, key, jpeg, len, wav, wavLen);
+      free(wav);
+      if (started) {
         queueInFlight = queued[i].id;
         historyDirty = true;
         if (current == Screen::Ask) rebuildHistory();
       }
       free(jpeg);
       break;
+    }
+  }
+  if (micRecording() && listenRing) {
+    // Ring grows with loudness; time left shows near the limit.
+    const int size = 56 + micLevel() * 50 / 100;
+    if (lv_obj_get_width(listenRing) != size) lv_obj_set_size(listenRing, size, size);
+    const int left = MIC_MAX_SECONDS - (int)micSeconds();
+    setText(listenTime, left <= 5 ? (String(left) + " s left").c_str() : "Let go to ask");
+    if (left <= 0) {
+      micStop();
+      lv_obj_add_flag(listenOverlay, LV_OBJ_FLAG_HIDDEN);
+      size_t len = 0;
+      const uint8_t *wav = micWav(len);
+      startAsk(wav, len);
     }
   }
   static unsigned long lastRefresh = 0;

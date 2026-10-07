@@ -36,6 +36,12 @@ class BoundedResponse : public Stream {
   int peek() override { return -1; }
   void flush() override {}
 };
+// With a spoken question the photo is context for what the user asks out loud.
+const char *VOICE_PROMPT =
+    "The attached audio is the user's spoken question about the attached photo. Answer that question using the photo. "
+    "If the audio is unclear, say what you could not hear and answer what you can about the photo; never invent "
+    "missing content. Give the answer first, then concise reasoning. Use plain text suitable for a small display, "
+    "ASCII math, and no Markdown tables.";
 const char *PROMPT =
     "Read the photographed problem carefully and solve it. If symbols or text are unclear, say exactly what cannot be "
     "read and ask for a closer photo; never invent missing content. Give the answer first, then concise reasoning. Use "
@@ -97,7 +103,8 @@ String toDisplayText(const String &input) {
   return out;
 }
 
-bool request(bool gemini, const String &key, const uint8_t *jpeg, size_t length, String &answer) {
+bool request(bool gemini, const String &key, const uint8_t *jpeg, size_t length, const uint8_t *wav, size_t wavLength,
+             String &answer) {
   auto fail = [&](const char *message) {
     answer = message;
     return false;
@@ -116,23 +123,41 @@ bool request(bool gemini, const String &key, const uint8_t *jpeg, size_t length,
     if (time(nullptr) < 1700000000)
       return fail("Internet clock unavailable. Wi-Fi may need a login page. Nothing was sent.");
   }
-  String prefix = gemini ? String("{\"contents\":[{\"parts\":[{\"text\":\"") + PROMPT +
+  // Voice goes to Gemini only; GPT's chat endpoint used here takes images, not audio.
+  const bool voice = gemini && wav && wavLength;
+  String prefix = gemini ? String("{\"contents\":[{\"parts\":[{\"text\":\"") + (voice ? VOICE_PROMPT : PROMPT) +
                                "\"},{\"inline_data\":{\"mime_type\":\"image/jpeg\",\"data\":\""
                          : String(
                                "{\"model\":\"gpt-4.1\",\"max_completion_tokens\":1600,\"messages\":[{\"role\":\"user\","
                                "\"content\":[{\"type\":\"text\",\"text\":\"") +
                                PROMPT + "\"},{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/jpeg;base64,";
   String suffix = gemini ? "\"}}]}],\"generationConfig\":{\"maxOutputTokens\":4096}}" : "\",\"detail\":\"high\"}}]}]}";
-  size_t encoded = 4 * ((length + 2) / 3), total = prefix.length() + encoded + suffix.length(), written = 0;
+  const String middle = "\"}},{\"inline_data\":{\"mime_type\":\"audio/wav\",\"data\":\"";
+  size_t encoded = 4 * ((length + 2) / 3), audioEncoded = voice ? 4 * ((wavLength + 2) / 3) : 0;
+  size_t total = prefix.length() + encoded + (voice ? middle.length() + audioEncoded : 0) + suffix.length(),
+         written = 0;
   uint8_t *payload = (uint8_t *)ps_malloc(total + 1);
   if (!payload) return fail("Not enough memory for the photo request.");
-  memcpy(payload, prefix.c_str(), prefix.length());
-  int result = mbedtls_base64_encode(payload + prefix.length(), encoded + 1, &written, jpeg, length);
+  uint8_t *at = payload;
+  memcpy(at, prefix.c_str(), prefix.length());
+  at += prefix.length();
+  int result = mbedtls_base64_encode(at, encoded + 1, &written, jpeg, length);
   if (result || written != encoded) {
     free(payload);
     return fail("Photo encoding failed.");
   }
-  memcpy(payload + prefix.length() + encoded, suffix.c_str(), suffix.length());
+  at += encoded;
+  if (voice) {
+    memcpy(at, middle.c_str(), middle.length());
+    at += middle.length();
+    result = mbedtls_base64_encode(at, audioEncoded + 1, &written, wav, wavLength);
+    if (result || written != audioEncoded) {
+      free(payload);
+      return fail("Voice encoding failed.");
+    }
+    at += audioEncoded;
+  }
+  memcpy(at, suffix.c_str(), suffix.length());
   payload[total] = 0;
   if (cancelled) {
     free(payload);
@@ -226,16 +251,20 @@ struct Job {
   String key;
   uint8_t *jpeg;
   size_t length;
+  uint8_t *wav;
+  size_t wavLength;
   String result;
   bool ok;
 };
 Job *job = nullptr;
 
 void workerTask(void *) {
-  job->ok = request(job->gemini, job->key, job->jpeg, job->length, job->result);
+  job->ok = request(job->gemini, job->key, job->jpeg, job->length, job->wav, job->wavLength, job->result);
   job->key = "";
   free(job->jpeg);
   job->jpeg = nullptr;
+  free(job->wav);
+  job->wav = nullptr;
   portENTER_CRITICAL(&slotLock);
   state = cancelled ? AiState::Cancelled : (job->ok ? AiState::Done : AiState::Failed);
   worker = nullptr;
@@ -247,13 +276,25 @@ void workerTask(void *) {
 
 bool aiBusy() { return state != AiState::Idle; }
 
-bool aiStart(bool gemini, const String &key, const uint8_t *jpeg, size_t length) {
+bool aiStart(bool gemini, const String &key, const uint8_t *jpeg, size_t length, const uint8_t *wav, size_t wavLength) {
   if (state != AiState::Idle) return false;
   if (!job) job = new Job();
-  // The worker owns its own copy, so a new capture can never change an upload in flight.
+  // The worker owns its own copies, so a new capture or recording can never change an upload.
   job->jpeg = (uint8_t *)ps_malloc(length);
   if (!job->jpeg) return false;
   memcpy(job->jpeg, jpeg, length);
+  job->wav = nullptr;
+  job->wavLength = 0;
+  if (wav && wavLength) {
+    job->wav = (uint8_t *)ps_malloc(wavLength);
+    if (!job->wav) {
+      free(job->jpeg);
+      job->jpeg = nullptr;
+      return false;
+    }
+    memcpy(job->wav, wav, wavLength);
+    job->wavLength = wavLength;
+  }
   job->length = length;
   job->gemini = gemini;
   job->key = key;
@@ -265,6 +306,8 @@ bool aiStart(bool gemini, const String &key, const uint8_t *jpeg, size_t length)
   if (xTaskCreatePinnedToCore(workerTask, "ai-request", 16384, nullptr, 1, &worker, 0) != pdPASS) {
     free(job->jpeg);
     job->jpeg = nullptr;
+    free(job->wav);
+    job->wav = nullptr;
     state = AiState::Idle;
     return false;
   }
