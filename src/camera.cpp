@@ -5,6 +5,7 @@
 
 namespace {
 CameraMode mode = CameraMode::Off;
+uint16_t sensorPid = 0;  // known after the first start
 
 camera_config_t baseConfig() {
   // Seeed XIAO ESP32-S3 Sense camera connector mapping.
@@ -45,15 +46,20 @@ bool cameraSetMode(CameraMode next) {
   if (next == CameraMode::Still) {
     config.pixel_format = PIXFORMAT_JPEG;
     config.frame_size = FRAMESIZE_QXGA;
-    config.jpeg_quality = 8;
-    config.fb_count = 1;
+    // The driver's JPEG buffer holds ~630 KB. Measured on the OV5640 at 2048x1536: quality 8
+    // overflowed it on busy scenes (no frame at all); 12 gives ~430 KB with headroom.
+    // Two buffers let the burst take consecutive frames (~0.3 s apart instead of ~0.5 s).
+    config.jpeg_quality = 12;
+    config.fb_count = 2;
     config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
   } else {
     // Raw pixels: converting costs ~13 ms per frame vs ~80 ms to decode even a small JPEG.
     // Measured on the OV3660: ~10.5 FPS either way; the sensor, not the code, sets the rate.
     config.pixel_format = PIXFORMAT_RGB565;
     config.frame_size = FRAMESIZE_QVGA;
-    config.xclk_freq_hz = 24000000;
+    // OV3660: 24 MHz input raises its frame rate. OV5640: keep 20 MHz (24 adds stripes);
+    // its PLL is raised after start instead.
+    if (sensorPid != OV5640_PID) config.xclk_freq_hz = 24000000;
     config.fb_count = 3;  // slack so the sensor rarely finds every buffer busy
     config.grab_mode = CAMERA_GRAB_LATEST;
   }
@@ -67,14 +73,38 @@ bool cameraSetMode(CameraMode next) {
     return false;
   }
   sensor_t *sensor = esp_camera_sensor_get();
+  sensorPid = sensor->id.PID;
   Serial.printf("CAMERA mode %d sensor PID 0x%04x\n", (int)next, sensor->id.PID);
   // Correct the mirrored worksheet in the sensor, so photos and preview match the scene.
   sensor->set_hmirror(sensor, !sensor->status.hmirror);
+  if (next == CameraMode::Still && sensor->id.PID == OV5640_PID) {
+    // No reset line on this board: the preview's night mode survives a driver restart and
+    // stretches full-size frames past the driver's timeout. Restore normal exposure limits.
+    sensor->set_reg(sensor, 0x3A00, 0x04, 0x00);
+    const int vts = (sensor->get_reg(sensor, 0x380E, 0xFF) << 8) | sensor->get_reg(sensor, 0x380F, 0xFF);
+    sensor->set_reg(sensor, 0x3A02, 0xFF, vts >> 8);
+    sensor->set_reg(sensor, 0x3A03, 0xFF, vts & 0xFF);
+    sensor->set_reg(sensor, 0x3A14, 0xFF, vts >> 8);
+    sensor->set_reg(sensor, 0x3A15, 0xFF, vts & 0xFF);
+  }
   if (next == CameraMode::Preview) {
     // Indoors, auto-exposure stretches each frame to gather light and the viewfinder drops
     // to ~10 FPS. For framing, prefer more gain (a little noise) over long exposures.
     sensor->set_aec2(sensor, 0);
     sensor->set_gainceiling(sensor, GAINCEILING_32X);
+    if (sensor->id.PID == OV5640_PID) {
+      // The driver's QVGA clock (PLL multiplier 8) caps the OV5640 at ~8 FPS. 24 measured
+      // ~27 FPS with clean frames; higher multipliers overrun the ESP32-S3 camera input.
+      sensor->set_reg(sensor, 0x3036, 0xFF, config.xclk_freq_hz > 20000000 ? 0x18 : 0x1C);
+      // Night mode: only when gain runs out does the sensor stretch frames (to at most 2x),
+      // so bright scenes stay ~27 FPS and dim rooms trade speed for a usable picture.
+      const int vts = (sensor->get_reg(sensor, 0x380E, 0xFF) << 8) | sensor->get_reg(sensor, 0x380F, 0xFF);
+      sensor->set_reg(sensor, 0x3A02, 0xFF, (vts * 2) >> 8);
+      sensor->set_reg(sensor, 0x3A03, 0xFF, (vts * 2) & 0xFF);
+      sensor->set_reg(sensor, 0x3A14, 0xFF, (vts * 2) >> 8);
+      sensor->set_reg(sensor, 0x3A15, 0xFF, (vts * 2) & 0xFF);
+      sensor->set_reg(sensor, 0x3A00, 0x04, 0x04);
+    }
   }
   mode = next;
   return true;

@@ -183,12 +183,17 @@ bool request(bool gemini, const String &key, const uint8_t *jpeg, size_t length,
     // Error bodies are small JSON; read a bounded amount to tell the user what went wrong.
     String body = (status > 0 && http.getSize() > 0 && http.getSize() < 4096) ? http.getString() : "";
     http.end();
+    // Provider error bodies carry a reason, never the key; log it for diagnosis.
+    Serial.printf("AI_HTTP %d %s\n", status, body.substring(0, 600).c_str());
     if (body.indexOf("API_KEY_INVALID") >= 0 || body.indexOf("API key not valid") >= 0 || status == 401)
       return fail("API key rejected. Check the key in PC setup.");
     if (status == 403) return fail("Access denied for this API key.");
     if (status == 429) return fail("Provider quota reached. Wait or check the API account.");
     if (status == 404) return fail("Configured AI model unavailable for this account.");
-    if (status == 503 || status == 500) return fail("The AI service is busy. Try again in a minute.");
+    if (status == 503 || status == 500) {
+      answer = String("The AI service is busy (") + status + "). Try again in a minute.";
+      return false;
+    }
     if (status < 0)
       return fail("Connection lost. The photo may or may not have reached the provider; it was not resent.");
     answer = "AI service returned HTTP " + String(status) + ".";

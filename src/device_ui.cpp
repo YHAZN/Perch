@@ -1106,9 +1106,11 @@ void captureInTask() {
         }
       }
       esp_camera_fb_return(frame);
+      vTaskDelay(1);  // each step is long; let core 0's idle task run so the watchdog stays fed
     }
     if (!r.jpeg) r.problem = "No usable photo. Try again.";
     r.blurry = r.jpeg && best < BLUR_FLOOR;
+    vTaskDelay(1);
     if (r.jpeg && !haveScreen)
       haveScreen = decodeStoredWith(r.jpeg, r.len, captureScreen, taskScratch, taskScratchCapacity);
   }
@@ -1121,11 +1123,13 @@ void captureInTask() {
     job->small = nullptr;
     job->smallLen = 0;
     if (job->jpeg) memcpy(job->jpeg, r.jpeg, r.len);
+    vTaskDelay(1);
     makeThumb(captureScreen, job->thumb);
     // A screen-sized copy makes browsing Photos fast.
     uint16_t *swapped = (uint16_t *)ps_malloc(W * H * 2);
     if (swapped) {
       for (int i = 0; i < W * H; ++i) swapped[i] = __builtin_bswap16(captureScreen[i]);
+      vTaskDelay(1);
       fmt2jpg((uint8_t *)swapped, W * H * 2, W, H, PIXFORMAT_RGB565, 80, &job->small, &job->smallLen);
       free(swapped);
     }
@@ -2712,7 +2716,8 @@ void initDeviceUi() {
   galleryPixels = (uint16_t *)ps_calloc(W * H, 2);
   historyThumbs = (uint16_t *)ps_calloc(ANSWER_KEEP * THUMB * THUMB, 2);
   // Screen link speed is stored so it can be tuned for the wiring without reflashing ('Y').
-  spiMhz = constrain(settings.getUChar("lcd-mhz", 10), 5, 80);
+  // 40 MHz works on both boards over jumper wires; 80 halves tearing if the wiring allows.
+  spiMhz = constrain(settings.getUChar("lcd-mhz", 40), 5, 80);
   const bool lcd = displayBegin(spiMhz * 1000000UL, drawDone);
   for (auto &b : drawBuffers)
     b = (uint16_t *)heap_caps_malloc(W * DISPLAY_CHUNK_ROWS * 2, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
@@ -2956,6 +2961,19 @@ void handleDeviceButton(char command) {
     delay(100);
     ESP.restart();
   }
+  if (command == 'm') {
+    // Developer: write one sensor register, "m3036=10" (hex), then report preview FPS.
+    const String arg = Serial.readStringUntil('\n');
+    const int eq = arg.indexOf('=');
+    if (eq < 1) return;
+    const int reg = strtol(arg.substring(0, eq).c_str(), nullptr, 16);
+    const int val = strtol(arg.substring(eq + 1).c_str(), nullptr, 16);
+    xSemaphoreTake(camLock, portMAX_DELAY);
+    sensor_t *sensor = esp_camera_sensor_get();
+    if (sensor) Serial.printf("SETREG %04X=%02X -> %d\n", reg, val, sensor->set_reg(sensor, reg, 0xFF, val));
+    xSemaphoreGive(camLock);
+    return;
+  }
   if (command == 'Z') {
     // PC clock over USB (sent by the bridge when it connects). No screen reply.
     const uint32_t epoch = strtoul(Serial.readStringUntil('\n').c_str(), nullptr, 10);
@@ -3068,7 +3086,7 @@ void handleDeviceButton(char command) {
       break;
     case 'R': launch(Screen::Remote); break;
     case 'W': launch(Screen::Wifi); break;
-    case 'N': {  // developer: internet check (no AI). 204 = real internet; anything else = sign-in page
+    case 'I': {  // developer: internet check (no AI). 204 = real internet; anything else = sign-in page
       WiFiClientSecure tls;
       tls.setInsecure();  // only a reachability probe; nothing secret is sent
       HTTPClient http;
@@ -3079,6 +3097,19 @@ void handleDeviceButton(char command) {
         http.end();
       }
       Serial.printf("NET generate_204 -> %d in %lu ms\n", code, (unsigned long)(millis() - t));
+      break;
+    }
+    case 'k': {  // developer: OV5640 timing registers (PLL, frame size, exposure limits)
+      xSemaphoreTake(camLock, portMAX_DELAY);
+      sensor_t *sensor = esp_camera_sensor_get();
+      if (sensor) {
+        static const uint16_t regs[] = {0x3034, 0x3035, 0x3036, 0x3037, 0x3108, 0x3824, 0x460C, 0x4837,
+                                        0x380C, 0x380D, 0x380E, 0x380F, 0x3808, 0x3809, 0x380A, 0x380B,
+                                        0x3814, 0x3815, 0x3A00, 0x3A02, 0x3A03, 0x3A14, 0x3A15, 0x3500,
+                                        0x3501, 0x3502, 0x350A, 0x350B, 0x3503, 0x5001, 0x3031};
+        for (uint16_t r : regs) Serial.printf("REG %04X=%02X\n", r, sensor->get_reg(sensor, r, 0xFF));
+      }
+      xSemaphoreGive(camLock);
       break;
     }
     case 'J': {  // developer: raw touch samples, to check the touch wiring
