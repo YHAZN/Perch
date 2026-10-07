@@ -175,71 +175,100 @@ bool request(bool gemini, const String &key, const uint8_t *jpeg, size_t length,
     while (flashBusy() && millis() - waitStart < 10000 && !cancelled) delay(50);
     Serial.printf("AI_WAIT photo save %lu ms\n", (unsigned long)(millis() - waitStart));
   }
-  // Gemini attempts: the configured model, then a sibling model, then the first again.
-  // 500/503 mean Google did not process the request (overloaded; not billed), so only those
-  // are retried; any other error may mean the request was used, and is never resent.
-  // Model names and thinking levels: ai.google.dev/gemini-api/docs/generate-content/thinking
-  static const char *GEMINI_URLS[] = {
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent",
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.7-flash:generateContent",
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent"};
-  static const uint16_t WAIT_BEFORE_MS[] = {0, 1000, 4000};
-  const int attempts = gemini ? 3 : 1;
+  // Gemini attempts. Only requests Google cannot have processed are retried:
+  //  - 500/503 overloaded: try the sibling model, then the first again, with a pause;
+  //  - 429 per-minute limit: wait as long as Google asks (if short), same model;
+  //  - 429 per-day limit: daily quotas are per model, so move to the next model;
+  //  - -1 never connected / -3 body cut off mid-send: same model once more.
+  // Model names: ai.google.dev/gemini-api/docs/generate-content/thinking (all support "low").
+  static const char *MODELS[] = {"gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.5-flash"};
+  constexpr int MODEL_COUNT = 3, MAX_TRIES = 4;
   std::unique_ptr<WiFiClientSecure> client;
   HTTPClient http;
-  int status = -1;
-  for (int attempt = 0; attempt < attempts; ++attempt) {
-    if (attempt) {
-      // Retry only when Google cannot have processed the request: overloaded (500/503),
-      // never connected (-1), or the body was cut off mid-send (-3, incomplete JSON).
-      if (status != 503 && status != 500 && status != HTTPC_ERROR_CONNECTION_REFUSED &&
-          status != HTTPC_ERROR_SEND_PAYLOAD_FAILED)
-        break;
+  int status = -1, model = 0, tries = 0;
+  uint32_t waitMs = 0;
+  bool dailyLimit = false;
+  int retryAfterS = 0;
+  String errorBody;
+  while (tries < MAX_TRIES && !cancelled) {
+    if (tries) {
       http.end();
-      const uint32_t until = millis() + WAIT_BEFORE_MS[attempt];
+      const uint32_t until = millis() + waitMs;
       while (millis() < until && !cancelled) delay(100);
       if (cancelled) break;
     }
+    ++tries;
     // A fresh connection per attempt: reusing one after an error hung until the read timeout.
     client.reset(new WiFiClientSecure());
     client->setCACert(AI_ROOT_CERTS);
     client->setHandshakeTimeout(12);
     http.setConnectTimeout(12000);
     http.setTimeout(65000);  // uint16_t ms: 65 s is the maximum (90000 wrapped to 24.5 s)
-    const char *url = gemini ? GEMINI_URLS[attempt] : "https://api.openai.com/v1/chat/completions";
+    const String url =
+        gemini ? String("https://generativelanguage.googleapis.com/v1beta/models/") + MODELS[model] + ":generateContent"
+               : String("https://api.openai.com/v1/chat/completions");
     if (!http.begin(*client, url)) {
       status = -1;
       break;
     }
     http.addHeader("Content-Type", "application/json");
     http.addHeader(gemini ? "x-goog-api-key" : "Authorization", gemini ? key : "Bearer " + key);
-    Serial.printf("AI_SEND try %d %s %u bytes, internal heap %u free, largest %u\n", attempt + 1,
-                  gemini ? (attempt == 1 ? "gemini-3.7-flash" : "gemini-3.8-flash") : "gpt-4.1", (unsigned)total,
-                  heap_caps_get_free_size(MALLOC_CAP_INTERNAL), heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+    Serial.printf("AI_SEND try %d %s %u bytes, internal heap %u free, largest %u\n", tries,
+                  gemini ? MODELS[model] : "gpt-4.1", (unsigned)total, heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                  heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
     const uint32_t sendStart = millis();
     status = http.POST(payload, total);
     Serial.printf("AI_STATUS %d after %lu ms\n", status, (unsigned long)(millis() - sendStart));
-    if (status == 503 || status == 500) {
-      String reason = http.getString().substring(0, 300);
-      reason.replace("\n", " ");
-      Serial.printf("AI_BUSY %s\n", reason.c_str());
-    }
-  }
-  free(payload);
-  if (status != 200) {
-    // Error bodies are small JSON; read a bounded amount to tell the user what went wrong.
-    // Google sends error bodies chunked (size unknown, -1); they are small JSON either way.
-    String body = (status > 0 && http.getSize() < 4096) ? http.getString() : "";
-    http.end();
-    // Provider error bodies carry a reason, never the key; log it for diagnosis.
-    String flat = body.substring(0, 600);
+    if (status == 200) break;
+    // Google sends error bodies chunked (size unknown); they are small JSON. Never the key.
+    errorBody = status > 0 ? http.getString().substring(0, 2000) : String("");
+    String flat = errorBody.substring(0, 600);
     flat.replace("\n", " ");
     flat.replace("  ", " ");
     Serial.printf("AI_HTTP %d %s\n", status, flat.c_str());
+    if (!gemini) break;
+    if (status == 429) {
+      dailyLimit = errorBody.indexOf("PerDay") >= 0;
+      const int at = errorBody.indexOf("\"retryDelay\"");
+      retryAfterS = at >= 0 ? errorBody.substring(errorBody.indexOf('"', at + 13) + 1).toInt() : 0;
+      if (!dailyLimit && retryAfterS > 0 && retryAfterS <= 20) {
+        waitMs = retryAfterS * 1000UL + 500;
+        continue;
+      }
+      if (model + 1 < MODEL_COUNT) {
+        ++model;
+        waitMs = 0;
+        continue;
+      }
+      break;
+    }
+    if (status == 503 || status == 500) {
+      model = model == 0 ? 1 : 0;
+      waitMs = tries == 1 ? 1000 : 4000;
+      continue;
+    }
+    if (status == HTTPC_ERROR_CONNECTION_REFUSED || status == HTTPC_ERROR_SEND_PAYLOAD_FAILED) {
+      waitMs = 1000;
+      continue;
+    }
+    break;
+  }
+  free(payload);
+  if (status != 200) {
+    http.end();
+    const String &body = errorBody;
     if (body.indexOf("API_KEY_INVALID") >= 0 || body.indexOf("API key not valid") >= 0 || status == 401)
       return fail("API key rejected. Check the key in PC setup.");
     if (status == 403) return fail("Access denied for this API key.");
-    if (status == 429) return fail("Provider quota reached. Wait or check the API account.");
+    if (status == 429) {
+      if (dailyLimit)
+        return fail(
+            "Today's free Gemini limit is used up on every model. It resets at midnight Pacific time; a paid key "
+            "removes the cap.");
+      answer = String("Too many requests right now. Try again in ") +
+               (retryAfterS > 0 ? String(retryAfterS) + " s." : String("a minute."));
+      return false;
+    }
     if (status == 404) return fail("Configured AI model unavailable for this account.");
     if (status == 503 || status == 500) {
       answer = String("The AI service is busy (") + status + "). Try again in a minute.";
