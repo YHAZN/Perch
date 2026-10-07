@@ -49,4 +49,8 @@ bool queueSetFailed(uint32_t id, bool failed);
 bool queueSaveAudio(uint32_t id, const uint8_t *wav, size_t length);
 bool queueLoadAudio(uint32_t id, uint8_t *&wav, size_t &length);
 
+// Privacy: delete answers, photos and waiting questions written at or after `since`
+// (file times; needs the clock to have been known when they were written).
+int storageForgetSince(time_t since);
+
 size_t storageFreeBytes();

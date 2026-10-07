@@ -121,10 +121,14 @@ QueuedAsk queued[16];
 int queuedCount = 0;
 uint32_t queueInFlight = 0;
 bool queueWhenSaved = false;
+lv_obj_t *recordingDot = nullptr;
 lv_obj_t *listenOverlay = nullptr, *listenRing = nullptr, *listenTime = nullptr;
 unsigned long queueRetryAt = 0;
 void refreshQueue();
 void rebuildHistory();
+void restoreLatestPhoto();
+void refreshPhotos();
+extern String cardSignature;
 lv_obj_t *wifiList, *wifiStatus, *passwordTitle, *passwordField, *keyboard;
 String joiningSsid;
 bool scanShown = false;
@@ -776,7 +780,7 @@ void showAnswer(uint32_t id) {
 enum class Card { Answer, Photo, Offline, Queue };
 std::vector<Card> cards;
 int cardIndex = 0;
-String cardSignature;
+String cardSignature = "";
 void renderCard() {
   const bool online = networkConnected();
   // Rebuild only when something the card shows has changed.
@@ -2218,9 +2222,40 @@ void buildSettings() {
   lv_obj_align(storageValue, LV_ALIGN_TOP_RIGHT, -20, 12);
   storageSub = text(storage, "", F_SMALL, MIST);
   lv_obj_set_pos(storageSub, 22, 36);
+  lv_obj_t *forget = row(s, 278, "Forget last hour", nullptr, 64);
+  lv_obj_align(lv_obj_get_child(forget, 0), LV_ALIGN_TOP_LEFT, 22, 12);
+  lv_obj_t *forgetSub = text(forget, "Hold to delete answers and photos", F_SMALL, MIST);
+  lv_obj_set_pos(forgetSub, 22, 36);
+  lv_obj_add_flag(forget, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(
+      forget, [](lv_event_t *) { toast("Hold to forget the last hour"); }, LV_EVENT_SHORT_CLICKED, nullptr);
+  lv_obj_add_event_cb(
+      forget,
+      [](lv_event_t *) {
+        if (!clockKnown()) {
+          toast("Clock not set yet: nothing to match");
+          return;
+        }
+        const int removed = storageForgetSince(time(nullptr) - 3600);
+        loadLatestAnswer();
+        refreshPhotos();
+        refreshQueue();
+        // If the newest photo was removed, the on-screen photo goes too.
+        if (latestPhotoId && (!photoCount || photoIds[0] != latestPhotoId)) {
+          free(savedJpeg);
+          savedJpeg = nullptr;
+          jpegBytes = jpegCapacity = 0;
+          latestPhotoId = photoCount ? 0 : 0;
+          restoreLatestPhoto();
+        }
+        cardSignature = "";
+        refreshDynamic();
+        toast(removed ? "Forgot the last hour" : "Nothing from the last hour");
+      },
+      LV_EVENT_LONG_PRESSED, nullptr);
   lv_obj_t *spacer = plain(s);
   lv_obj_set_size(spacer, 1, 1);
-  lv_obj_set_pos(spacer, 0, 330);
+  lv_obj_set_pos(spacer, 0, 400);
 }
 
 void buildModel() {
@@ -2688,6 +2723,11 @@ void initDeviceUi() {
         },
         LV_EVENT_CLICKED, nullptr);
   }
+  // Recording indicator: amber dot whenever a photo or your voice is leaving the device.
+  recordingDot = circle(lv_layer_top(), 8, LENS, 0, LENS, LV_OPA_COVER);
+  lv_obj_align(recordingDot, LV_ALIGN_TOP_MID, 0, 8);
+  lv_obj_add_flag(recordingDot, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_remove_flag(recordingDot, LV_OBJ_FLAG_CLICKABLE);
   toastBox = plain(lv_layer_top());
   lv_obj_set_size(toastBox, LV_SIZE_CONTENT, 30);
   lv_obj_set_style_pad_hor(toastBox, 14, 0);
@@ -3067,6 +3107,7 @@ void deviceTick() {
       startAsk(wav, len);
     }
   }
+  if (recordingDot) hide(recordingDot, !(aiBusy() || micRecording()));
   static unsigned long lastRefresh = 0;
   if (now - lastRefresh > 1000 && !dragging && !fingerDown) {
     lastRefresh = now;

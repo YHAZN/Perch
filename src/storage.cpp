@@ -274,3 +274,19 @@ bool queueSetFailed(uint32_t id, bool failed) {
   }
   return false;
 }
+
+int storageForgetSince(time_t since) {
+  if (!mounted) return 0;
+  int removed = 0;
+  const char *dirs[] = {"/answers", "/photos", "/queue"};
+  for (const char *dir : dirs) {
+    std::vector<String> doomed;
+    File d = LittleFS.open(dir);
+    if (!d) continue;
+    for (File f = d.openNextFile(); f; f = d.openNextFile())
+      if (f.getLastWrite() >= since) doomed.push_back(String(dir) + "/" + f.name());
+    d.close();
+    for (const String &path : doomed) removed += LittleFS.remove(path);
+  }
+  return removed;
+}
