@@ -175,8 +175,13 @@ void setupImage(lv_image_dsc_t &dsc, const uint16_t *pixels, int w, int h) {
   dsc.data = reinterpret_cast<const uint8_t *>(pixels);
 }
 void hide(lv_obj_t *o, bool hidden) {
+  if (lv_obj_has_flag(o, LV_OBJ_FLAG_HIDDEN) == hidden) return;
   if (hidden) lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
   else lv_obj_remove_flag(o, LV_OBJ_FLAG_HIDDEN);
+}
+// Set a label only when the text differs: every set redraws the label's area.
+void setText(lv_obj_t *l, const char *t) {
+  if (strcmp(lv_label_get_text(l), t) != 0) lv_label_set_text(l, t);
 }
 void onClick(lv_obj_t *o, void (*fn)()) {
   lv_obj_add_flag(o, LV_OBJ_FLAG_CLICKABLE);
@@ -456,7 +461,7 @@ void show(Screen next) {
   lv_obj_move_foreground(to);
   if (ccOpen) lv_obj_move_foreground(cc);
   enter(next);
-  animY(to, 28, 0, 200, lv_anim_path_ease_out, settleLayers);
+  animY(to, 28, 0, 260, lv_anim_path_ease_out, settleLayers);
 }
 void notice(const String &message, Screen back) {
   lv_label_set_text(noticeText, message.c_str());
@@ -472,14 +477,14 @@ void leaveTo(Screen under, int fromY) {
   lv_obj_set_y(below, 0);
   lv_obj_move_foreground(top);
   enter(under);
-  animY(top, fromY, -H, 180, lv_anim_path_ease_in, settleLayers);
+  animY(top, fromY, -H, 240, lv_anim_path_ease_in, settleLayers);
 }
 void openApps(int fromY = H) {
   lv_obj_t *grid = layer(Screen::Apps);
   lv_obj_remove_flag(grid, LV_OBJ_FLAG_HIDDEN);
   lv_obj_move_foreground(grid);
   enter(Screen::Apps);
-  animY(grid, fromY, 0, 220, lv_anim_path_ease_out, settleLayers);
+  animY(grid, fromY, 0, 280, lv_anim_path_ease_out, settleLayers);
 }
 void setX(void *o, int32_t v) { lv_obj_set_x((lv_obj_t *)o, v); }
 void animX(lv_obj_t *o, int from, int to, uint32_t ms, lv_anim_path_cb_t path, lv_anim_completed_cb_t done) {
@@ -509,7 +514,7 @@ void goBack(int fromX = 0) {
   lv_obj_set_pos(below, 0, 0);
   lv_obj_move_foreground(top);
   enter(target);
-  animX(top, fromX, W, 200, lv_anim_path_ease_in, resetX);
+  animX(top, fromX, W, 240, lv_anim_path_ease_in, resetX);
 }
 bool backDragging = false;
 void dragBack(int dx) {
@@ -526,7 +531,7 @@ void releaseBack(int dx, int speedX) {
   if (!backDragging) return;
   backDragging = false;
   if (dx > COMMIT_DRAG || (dx > 24 && speedX > 600)) goBack(dx);
-  else animX(layer(current), dx, 0, 220, lv_anim_path_ease_out, resetX);
+  else animX(layer(current), dx, 0, 280, lv_anim_path_ease_out, resetX);
 }
 void goHome() {
   // Same gesture everywhere: from an app to the face, from the face to the app grid.
@@ -559,10 +564,10 @@ void releaseHome(int dy, int speed) {
   const bool commit = dy > COMMIT_DRAG || (dy > 24 && speed > 600);
   if (current == Screen::Face) {
     if (commit) openApps(H - dy);
-    else animY(layer(Screen::Apps), H - dy, H, 200, lv_anim_path_ease_out, settleLayers);
+    else animY(layer(Screen::Apps), H - dy, H, 260, lv_anim_path_ease_out, settleLayers);
   } else {
     if (commit) leaveTo(Screen::Face, -dy);
-    else animY(layer(current), -dy, 0, 220, lv_anim_path_ease_out, settleLayers);
+    else animY(layer(current), -dy, 0, 280, lv_anim_path_ease_out, settleLayers);
   }
 }
 
@@ -573,12 +578,12 @@ void openControl(int fromY = -H) {
   refreshDynamic();
   lv_obj_remove_flag(cc, LV_OBJ_FLAG_HIDDEN);
   lv_obj_move_foreground(cc);
-  animY(cc, fromY, 0, 220, lv_anim_path_ease_out, nullptr);
+  animY(cc, fromY, 0, 280, lv_anim_path_ease_out, nullptr);
 }
 void closeControl(int fromY = 0) {
   if (!ccOpen) return;
   ccOpen = false;
-  animY(cc, fromY, -H, 180, lv_anim_path_ease_in, ccClosed);
+  animY(cc, fromY, -H, 240, lv_anim_path_ease_in, ccClosed);
 }
 void dragControl(int dy) {
   if (!ccOpen && !lv_obj_has_flag(cc, LV_OBJ_FLAG_HIDDEN)) return;
@@ -636,9 +641,16 @@ void showAnswer(uint32_t id) {
 enum class Card { Answer, Photo, Offline };
 std::vector<Card> cards;
 int cardIndex = 0;
+String cardSignature;
 void renderCard() {
+  const bool online = networkConnected();
+  // Rebuild only when something the card shows has changed.
+  const String signature = String(online) + networkEnabled() + "|" + lastInfo.id + "|" + latestPhotoId + "|" +
+                           jpegBytes + "|" + cardIndex + "|" + ago(lastInfo.when);
+  if (signature == cardSignature) return;
+  cardSignature = signature;
   cards.clear();
-  if (!networkConnected()) cards.push_back(Card::Offline);
+  if (!online) cards.push_back(Card::Offline);
   if (!lastAnswer.isEmpty()) cards.push_back(Card::Answer);
   if (jpegBytes) cards.push_back(Card::Photo);
   if (cards.empty()) cards.push_back(Card::Answer);
@@ -650,18 +662,18 @@ void renderCard() {
   hide(cardValue, photo);
   hide(cardRing, c != Card::Answer);
   if (c == Card::Offline) {
-    lv_label_set_text(cardKey, "Wi-Fi");
-    lv_label_set_text(cardValue, networkEnabled() ? "Not connected. Camera and Photos work offline."
-                                                  : "Wi-Fi is off. Turn it on in Control Center.");
+    setText(cardKey, "Wi-Fi");
+    setText(cardValue, networkEnabled() ? "Not connected. Camera and Photos work offline."
+                                        : "Wi-Fi is off. Turn it on in Control Center.");
   } else if (c == Card::Photo) {
-    lv_label_set_text(cardKey, "Last photo");
+    setText(cardKey, "Last photo");
   } else if (!lastAnswer.isEmpty()) {
     const String when = ago(lastInfo.when);
-    lv_label_set_text(cardKey, when.length() ? ("Last answer, " + when).c_str() : "Last answer");
-    lv_label_set_text(cardValue, lastAnswer.c_str());
+    setText(cardKey, when.length() ? ("Last answer, " + when).c_str() : "Last answer");
+    setText(cardValue, lastAnswer.c_str());
   } else {
-    lv_label_set_text(cardKey, "Ask");
-    lv_label_set_text(cardValue, "Point at a question, then open Ask.");
+    setText(cardKey, "Ask");
+    setText(cardValue, "Point at a question, then open Ask.");
   }
   lv_obj_set_style_text_color(cardKey, photo ? INK : MIST, 0);
   lv_obj_align(cardKey, photo ? LV_ALIGN_BOTTOM_LEFT : LV_ALIGN_TOP_LEFT, c == Card::Answer ? 16 : 0, 0);
@@ -685,6 +697,11 @@ void cycleCard(int step) {
   animY(card, -ABOVE_HOME + (step > 0 ? 18 : -18), -ABOVE_HOME, 200, lv_anim_path_ease_out, nullptr);
 }
 
+// Cached so the UI never waits on flash: key presence changes only via 'K'; free space is
+// measured on the save task (the query walks the whole filesystem, ~175 ms).
+int keyCache = -1;  // bit 0 = Gemini key, bit 1 = GPT key; -1 = unknown
+volatile uint32_t freeKbCache = 0;
+String ccSignature;
 void refreshDynamic() {
   const bool online = networkConnected();
   const time_t now = time(nullptr);
@@ -693,12 +710,12 @@ void refreshDynamic() {
     localtime_r(&now, &t);
     char buf[16];
     strftime(buf, sizeof(buf), "%I:%M", &t);
-    lv_label_set_text(clockLabel, buf[0] == '0' ? buf + 1 : buf);
+    setText(clockLabel, buf[0] == '0' ? buf + 1 : buf);
     strftime(buf, sizeof(buf), "%a %b %e", &t);
-    lv_label_set_text(dateLabel, buf);
+    setText(dateLabel, buf);
   } else {
-    lv_label_set_text(clockLabel, "");
-    lv_label_set_text(dateLabel, "");
+    setText(clockLabel, "");
+    setText(dateLabel, "");
   }
   hide(faceOffline, online);
   hide(askOffline, online || !lv_obj_has_flag(busy, LV_OBJ_FLAG_HIDDEN));
@@ -709,40 +726,44 @@ void refreshDynamic() {
   hide(askPhoto, !photo);
   hide(askEmpty, photo);
   hide(askHint, !photo || !online);
-  lv_label_set_text(askButtonLabel, !online ? "Ask when online" : photo ? "Ask about this" : "Capture and ask");
-  lv_obj_set_style_opa(askPill, online ? LV_OPA_COVER : LV_OPA_60, 0);
+  setText(askButtonLabel, !online ? "Ask when online" : photo ? "Ask about this" : "Capture and ask");
+  const lv_opa_t pillOpa = online ? LV_OPA_COVER : LV_OPA_60;
+  if (lv_obj_get_style_opa(askPill, 0) != pillOpa) lv_obj_set_style_opa(askPill, pillOpa, 0);
   // Camera privacy
   hide(viewfinder, cameraOff);
   hide(shutter, cameraOff);
   hide(cameraOffLabel, !cameraOff);
   // Settings and Model
-  const char *model = useGemini ? "Gemini" : "GPT";
-  lv_label_set_text(modelValue, model);
-  lv_label_set_text(wifiValue, !networkEnabled() ? "Off" : online ? WiFi.SSID().c_str() : "Not connected");
-  const bool keys[2] = {settings.isKey("gemini-key"), settings.isKey("gpt-key")};
+  setText(modelValue, useGemini ? "Gemini" : "GPT");
+  setText(wifiValue, !networkEnabled() ? "Off" : online ? WiFi.SSID().c_str() : "Not connected");
+  if (keyCache < 0) keyCache = (settings.isKey("gemini-key") ? 1 : 0) | (settings.isKey("gpt-key") ? 2 : 0);
   for (int i = 0; i < 2; ++i) {
-    lv_label_set_text(modelCheck[i], (i == 0) == useGemini ? LV_SYMBOL_OK : "");
-    lv_label_set_text(modelSub[i], keys[i] ? "Key saved" : "No key saved");
+    setText(modelCheck[i], (i == 0) == useGemini ? LV_SYMBOL_OK : "");
+    setText(modelSub[i], (keyCache >> i) & 1 ? "Key saved" : "No key saved");
   }
-  lv_label_set_text(storageValue, (String(storageFreeBytes() / 1024) + " KB free").c_str());
-  lv_label_set_text(storageSub, (String(photoCount) + " photos, " + answerCount + " answers on the device").c_str());
-  // Control Center
-  auto toggle = [](lv_obj_t *t, bool on) {
-    lv_obj_set_style_bg_color(t, on ? INK : ICON_BG, 0);
-    lv_obj_t *glyph = lv_obj_get_child(t, 0);
-    if (glyph) lv_obj_set_style_text_color(glyph, on ? VOID_ : INK, 0);
-    for (uint32_t i = 0; i < lv_obj_get_child_count(t); ++i) {
-      lv_obj_t *c = lv_obj_get_child(t, i);
-      lv_obj_set_style_border_color(c, on ? VOID_ : INK, 0);
-      lv_obj_set_style_bg_color(c, on ? VOID_ : INK, 0);
-    }
-  };
-  toggle(ccWifi, networkEnabled());
-  toggle(ccBright, brightnessLevel == 0);
-  toggle(ccCamera, cameraOff);
-  toggle(ccModel, false);
-  lv_label_set_text(lv_obj_get_child(ccModel, 0), useGemini ? "G" : "GPT");
-  lv_label_set_text(ccBrightLabel, brightnessLevel == 0 ? "100%" : brightnessLevel == 1 ? "55%" : "20%");
+  setText(storageValue, freeKbCache ? (String(freeKbCache) + " KB free").c_str() : "");
+  setText(storageSub, (String(photoCount) + " photos, " + answerCount + " answers on the device").c_str());
+  // Control Center: restyle only when a toggle actually changed.
+  const String cc = String(networkEnabled()) + brightnessLevel + cameraOff + useGemini;
+  if (cc != ccSignature) {
+    ccSignature = cc;
+    auto toggle = [](lv_obj_t *t, bool on) {
+      lv_obj_set_style_bg_color(t, on ? INK : ICON_BG, 0);
+      lv_obj_t *glyph = lv_obj_get_child(t, 0);
+      if (glyph) lv_obj_set_style_text_color(glyph, on ? VOID_ : INK, 0);
+      for (uint32_t i = 0; i < lv_obj_get_child_count(t); ++i) {
+        lv_obj_t *c = lv_obj_get_child(t, i);
+        lv_obj_set_style_border_color(c, on ? VOID_ : INK, 0);
+        lv_obj_set_style_bg_color(c, on ? VOID_ : INK, 0);
+      }
+    };
+    toggle(ccWifi, networkEnabled());
+    toggle(ccBright, brightnessLevel == 0);
+    toggle(ccCamera, cameraOff);
+    toggle(ccModel, false);
+    setText(lv_obj_get_child(ccModel, 0), useGemini ? "G" : "GPT");
+    setText(ccBrightLabel, brightnessLevel == 0 ? "100%" : brightnessLevel == 1 ? "55%" : "20%");
+  }
 }
 
 // ---------- actions ----------
@@ -785,6 +806,7 @@ struct SaveJob {
 };
 QueueHandle_t saveQueue = nullptr;
 void saveTask(void *) {
+  freeKbCache = storageFreeBytes() / 1024;
   for (;;) {
     SaveJob *job = nullptr;
     if (xQueueReceive(saveQueue, &job, portMAX_DELAY) != pdTRUE || !job) continue;
@@ -793,6 +815,7 @@ void saveTask(void *) {
     if (id && job->small) savePhotoScreen(id, job->small, job->smallLen);
     if (id) savedPhotoId = id;
     else Serial.println("STORAGE_ERROR Photo not saved");
+    freeKbCache = storageFreeBytes() / 1024;
     Serial.printf("PHOTO_SAVED id=%lu in %lums\n", (unsigned long)id, (unsigned long)(millis() - t));
     free(job->jpeg);
     free(job->small);
@@ -1138,14 +1161,15 @@ void buildFace() {
 }
 
 // Icons shrink toward the rounded edges of the screen, like watchOS.
+// Sizes are set once from the position (no per-frame transforms, which are expensive).
 void fisheye() {
-  lv_obj_t *grid = layer(Screen::Apps);
-  const int scroll = lv_obj_get_scroll_y(grid);
   for (lv_obj_t *icon : icons) {
-    const float cx = lv_obj_get_x(icon) + 31, cy = lv_obj_get_y(icon) + 31 - scroll;
+    const float cx = lv_obj_get_x(icon) + lv_obj_get_width(icon) / 2.0f;
+    const float cy = lv_obj_get_y(icon) + lv_obj_get_height(icon) / 2.0f;
     const float d = sqrtf(powf((cx - 120) / 120, 2) + powf((cy - 142) / 142, 2));
-    const float scale = constrain(1.25f - d * 0.55f, 0.55f, 1.0f);
-    lv_obj_set_style_transform_scale(icon, (int)(256 * scale), 0);
+    const int size = (int)(62 * constrain(1.25f - d * 0.55f, 0.7f, 1.0f));
+    lv_obj_set_size(icon, size, size);
+    lv_obj_set_pos(icon, (int)cx - size / 2, (int)cy - size / 2);
   }
 }
 void appIcon(lv_obj_t *parent, int x, int y, const char *name, lv_color_t bg, void (*open)(),
@@ -1223,7 +1247,6 @@ void buildApps() {
   iconName = text(s, "", F_SMALL, INK);
   lv_obj_align(iconName, LV_ALIGN_TOP_MID, 0, 10);
   lv_obj_add_flag(iconName, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_add_event_cb(s, [](lv_event_t *) { fisheye(); }, LV_EVENT_SCROLL, nullptr);
   lv_obj_update_layout(s);
   fisheye();
 }
@@ -1581,6 +1604,10 @@ void buildControl() {
 }
 
 // ---------- LVGL glue ----------
+// Animation probe: timestamps of completed frames, for the 'F' command.
+uint32_t frameStamps[64];
+volatile int frameCount = 0;
+bool probing = false;
 void flush(lv_display_t *, const lv_area_t *area, uint8_t *pixels) {
   const int w = area->x2 - area->x1 + 1, h = area->y2 - area->y1 + 1;
   // Keep the full-screen copy for the USB mirror (little-endian, before the swap).
@@ -1589,6 +1616,7 @@ void flush(lv_display_t *, const lv_area_t *area, uint8_t *pixels) {
   // chunk into the other buffer meanwhile; transferDone() releases this one.
   lv_draw_sw_rgb565_swap(pixels, w * h);
   displayDraw(area->x1, area->y1, area->x2 + 1, area->y2 + 1, reinterpret_cast<uint16_t *>(pixels));
+  if (probing && lv_display_flush_is_last(display) && frameCount < 64) frameStamps[frameCount++] = micros();
 }
 void drawDone() { lv_display_flush_ready(display); }
 void readTouch(lv_indev_t *, lv_indev_data_t *data) {
@@ -1968,6 +1996,7 @@ void handleDeviceButton(char command) {
     const char *name = input[0] == 'G' ? "gemini-key" : "gpt-key";
     const bool ok = key.isEmpty() ? (!settings.isKey(name) || settings.remove(name))
                                   : settings.putString(name, key) == key.length();
+    keyCache = -1;
     key = "";
     input = "";
     if (!ok) {
@@ -2009,6 +2038,37 @@ void handleDeviceButton(char command) {
       total += micros() - t;
     }
     Serial.printf("BENCH full_frame_ms=%.1f fps=%.1f spi=%uMHz\n", total / 10000.0f, 1e7f / total, spiMhz);
+    return;
+  }
+  if (command == 'F') {
+    auto run = [](const char *name, void (*start)()) {
+      frameCount = 0;
+      probing = true;
+      const uint32_t t0 = micros();
+      start();
+      while (micros() - t0 < 450000) {
+        lv_timer_handler();
+        delay(1);
+      }
+      probing = false;
+      uint32_t worst = 0;
+      for (int i = 1; i < frameCount; ++i) worst = max(worst, frameStamps[i] - frameStamps[i - 1]);
+      const float span = frameCount > 1 ? (frameStamps[frameCount - 1] - frameStamps[0]) / 1000.0f : 0;
+      Serial.printf("ANIM %s frames=%d fps=%.1f worst_gap=%lums first_frame_after=%lums\n", name, frameCount,
+                    frameCount > 1 ? (frameCount - 1) * 1000.0f / span : 0, (unsigned long)(worst / 1000),
+                    (unsigned long)(frameCount ? (frameStamps[0] - t0) / 1000 : 0));
+    };
+    run("open_apps", [] { openApps(); });
+    run("open_settings", [] { show(Screen::Settings); });
+    run("back", [] { goBack(); });
+    run("home", [] { leaveTo(Screen::Face, 0); });
+    uint32_t t = micros();
+    refreshDynamic();
+    Serial.printf("REFRESH_DYNAMIC %lums\n", (unsigned long)((micros() - t) / 1000));
+    t = micros();
+    volatile size_t freeBytes = storageFreeBytes();
+    (void)freeBytes;
+    Serial.printf("STORAGE_FREE_QUERY %lums\n", (unsigned long)((micros() - t) / 1000));
     return;
   }
   if (command == 'n') {
