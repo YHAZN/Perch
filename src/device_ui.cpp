@@ -2727,6 +2727,7 @@ void initDeviceUi() {
   historyThumbs = (uint16_t *)ps_calloc(ANSWER_KEEP * THUMB * THUMB, 2);
   // Screen link speed is stored so it can be tuned for the wiring without reflashing ('Y').
   // 40 MHz works on both boards over jumper wires; 80 halves tearing if the wiring allows.
+  aiSetFlashBusy([] { return savesPending > 0; });
   spiMhz = constrain(settings.getUChar("lcd-mhz", 40), 5, 80);
   const bool lcd = displayBegin(spiMhz * 1000000UL, drawDone);
   for (auto &b : drawBuffers)

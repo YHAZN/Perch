@@ -16,6 +16,9 @@ constexpr size_t ANSWER_LIMIT = 10000;
 constexpr unsigned long WIFI_WAIT_MS = 15000;
 // Set by the UI; checked before anything leaves the device.
 volatile bool cancelled = false;
+// Set by the UI: true while a photo is still being written to flash. Flash writes stall
+// the cache Wi-Fi runs from, and an upload started meanwhile failed mid-send.
+bool (*flashBusy)() = nullptr;
 
 class BoundedResponse : public Stream {
  public:
@@ -167,6 +170,11 @@ bool request(bool gemini, const String &key, const uint8_t *jpeg, size_t length,
     free(payload);
     return fail("Cancelled. Nothing was sent.");
   }
+  if (flashBusy) {
+    const uint32_t waitStart = millis();
+    while (flashBusy() && millis() - waitStart < 10000 && !cancelled) delay(50);
+    Serial.printf("AI_WAIT photo save %lu ms\n", (unsigned long)(millis() - waitStart));
+  }
   // Gemini attempts: the configured model, then a sibling model, then the first again.
   // 500/503 mean Google did not process the request (overloaded; not billed), so only those
   // are retried; any other error may mean the request was used, and is never resent.
@@ -182,7 +190,11 @@ bool request(bool gemini, const String &key, const uint8_t *jpeg, size_t length,
   int status = -1;
   for (int attempt = 0; attempt < attempts; ++attempt) {
     if (attempt) {
-      if (status != 503 && status != 500) break;
+      // Retry only when Google cannot have processed the request: overloaded (500/503),
+      // never connected (-1), or the body was cut off mid-send (-3, incomplete JSON).
+      if (status != 503 && status != 500 && status != HTTPC_ERROR_CONNECTION_REFUSED &&
+          status != HTTPC_ERROR_SEND_PAYLOAD_FAILED)
+        break;
       http.end();
       const uint32_t until = millis() + WAIT_BEFORE_MS[attempt];
       while (millis() < until && !cancelled) delay(100);
@@ -463,3 +475,5 @@ void aiKeyCheck(const String &key) {
   http.end();
   Serial.printf("KEYCHECK %d %s\n", status, body.substring(0, 400).c_str());
 }
+
+void aiSetFlashBusy(bool (*busy)()) { flashBusy = busy; }

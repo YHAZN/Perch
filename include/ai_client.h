@@ -23,3 +23,5 @@ void aiBegin();
 void aiUploadTest(size_t bytes);
 // Developer: free check that the key is valid and can see the model.
 void aiKeyCheck(const String &key);
+// The UI reports when flash is busy (photo still saving); requests wait for it.
+void aiSetFlashBusy(bool (*busy)());
