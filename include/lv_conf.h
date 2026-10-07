@@ -13,6 +13,8 @@
 
 #define LV_USE_OS LV_OS_NONE
 #define LV_DEF_REFR_PERIOD 16
+// Wrap only at spaces and closing marks: "-4" and "3.14" must not split across lines.
+#define LV_TXT_BREAK_CHARS " ,;:_)]}"
 #define LV_DPI_DEF 160
 
 #define LV_USE_LOG 0

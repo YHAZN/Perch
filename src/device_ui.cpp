@@ -123,7 +123,7 @@ std::vector<lv_obj_t *> icons;
 lv_obj_t *viewfinder, *thumb, *flash, *shutter, *cameraOffLabel;
 lv_obj_t *askPhoto, *askEmpty, *askHint, *askPill, *askButtonLabel, *askOffline, *busy, *busyRing, *busyLabel,
     *askSheet;
-lv_obj_t *answerScroll, *answerPhoto, *answerLead, *answerBody, *answerMeta;
+lv_obj_t *answerScroll, *answerPhoto, *answerFlow, *answerMeta;
 lv_obj_t *photosImage, *photosEmpty, *photoCounter;
 lv_obj_t *historyList, *historyEmpty, *askScroll, *askHero;
 lv_obj_t *remoteStatus, *remoteSlides, *remoteMediaPanel, *remoteModeLabel[2];
@@ -839,6 +839,310 @@ void loadLatestAnswer() {
   if (answerCount) loadAnswer(answerIds[0], lastAnswer, lastInfo);
   historyDirty = true;
 }
+// ---------- answer formatting ----------
+// Models write Markdown-ish text. The answer screen turns it into blocks: the answer in large
+// type, numbered steps with a badge, bullets, formulas on a tinted panel, headings in small
+// caps, and **key terms** in amber. LaTeX that slips through becomes plain ASCII math.
+int closingBrace(const String &t, int open) {
+  int depth = 0;
+  for (int i = open; i < (int)t.length(); ++i) {
+    if (t[i] == '{') ++depth;
+    else if (t[i] == '}' && --depth == 0) return i;
+  }
+  return -1;
+}
+String cleanMath(String t) {
+  static const char *const pairs[][2] = {{"\\left", ""},
+                                         {"\\right", ""},
+                                         {"\\(", ""},
+                                         {"\\)", ""},
+                                         {"\\[", ""},
+                                         {"\\]", ""},
+                                         {"$$", ""},
+                                         {"\\cdot", "*"},
+                                         {"\\times", "x"},
+                                         {"\\div", "/"},
+                                         {"\\leq", "<="},
+                                         {"\\geq", ">="},
+                                         {"\\le", "<="},
+                                         {"\\ge", ">="},
+                                         {"\\neq", "!="},
+                                         {"\\ne", "!="},
+                                         {"\\pm", "+/-"},
+                                         {"\\approx", "~="},
+                                         {"\\pi", "pi"},
+                                         {"\\infty", "inf"},
+                                         {"\\theta", "theta"},
+                                         {"\\alpha", "alpha"},
+                                         {"\\beta", "beta"},
+                                         {"\\Delta", "Delta"},
+                                         {"\\log", "log"},
+                                         {"\\ln", "ln"},
+                                         {"\\sin", "sin"},
+                                         {"\\cos", "cos"},
+                                         {"\\tan", "tan"},
+                                         {"\\to", "->"},
+                                         {"\\rightarrow", "->"},
+                                         {"\\Rightarrow", "=>"},
+                                         {"\\,", " "},
+                                         {"\\;", " "},
+                                         {"\\quad", "  "},
+                                         {"\\!", ""},
+                                         {"\\text{", "{"},
+                                         {"\\mathrm{", "{"},
+                                         {"\\mathbf{", "{"},
+                                         {"\\displaystyle", ""},
+                                         {"\\dfrac{", "\\frac{"},
+                                         {"\\tfrac{", "\\frac{"}};
+  for (const auto &p : pairs) t.replace(p[0], p[1]);
+  // A single token needs no brackets: 1/2, x^2; anything longer keeps them: (x+1)/(2), x^(n+1).
+  auto group = [](const String &g) -> String {
+    for (size_t i = 0; i < g.length(); ++i)
+      if (!isalnum((unsigned char)g[i]) && g[i] != '.') return "(" + g + ")";
+    return g;
+  };
+  // \frac{a}{b} -> a/b, \sqrt{x} -> sqrt(x)
+  for (int guard = 0; guard < 40; ++guard) {
+    const int at = t.indexOf("\\frac{");
+    if (at < 0) break;
+    const int a1 = closingBrace(t, at + 5);
+    if (a1 < 0 || a1 + 1 >= (int)t.length() || t[a1 + 1] != '{') break;
+    const int b1 = closingBrace(t, a1 + 1);
+    if (b1 < 0) break;
+    t = t.substring(0, at) + group(t.substring(at + 6, a1)) + "/" + group(t.substring(a1 + 2, b1)) +
+        t.substring(b1 + 1);
+  }
+  for (int guard = 0; guard < 40; ++guard) {
+    const int at = t.indexOf("\\sqrt{");
+    if (at < 0) break;
+    const int b = closingBrace(t, at + 5);
+    if (b < 0) break;
+    t = t.substring(0, at) + "sqrt(" + t.substring(at + 6, b) + ")" + t.substring(b + 1);
+  }
+  // x^{2} -> x^2, x^{n+1} -> x^(n+1); the same for subscripts.
+  for (const char *mark : {"^{", "_{"}) {
+    for (int guard = 0; guard < 40; ++guard) {
+      const int at = t.indexOf(mark);
+      if (at < 0) break;
+      const int b = closingBrace(t, at + 1);
+      if (b < 0) break;
+      t = t.substring(0, at + 1) + group(t.substring(at + 2, b)) + t.substring(b + 1);
+    }
+  }
+  t.replace("{", "");
+  t.replace("}", "");
+  t.replace("$", "");
+  t.replace("`", "");
+  return t;
+}
+String stripMarks(String t) {
+  t.replace("**", "");
+  t.replace("__", "");
+  return t;
+}
+// The one-line answer: the "Answer:" line if there is one, else the first line. For the
+// card on the clock face and the Ask history.
+String answerHeadline(const String &raw) {
+  String body = cleanMath(raw);
+  int from = 0;
+  String first;
+  while (from <= (int)body.length()) {
+    int end = body.indexOf('\n', from);
+    if (end < 0) end = body.length();
+    String line = stripMarks(body.substring(from, end));
+    line.trim();
+    from = end + 1;
+    if (line.isEmpty()) continue;
+    String lower = line;
+    lower.toLowerCase();
+    if (lower.startsWith("answer:") || lower.startsWith("final answer:")) {
+      line = line.substring(line.indexOf(':') + 1);
+      line.trim();
+      return line;
+    }
+    if (first.isEmpty()) first = line;
+  }
+  while (first.startsWith("#")) first = first.substring(1);
+  first.trim();
+  return first;
+}
+// Body text that may contain **bold**: a label, or a span group when there is emphasis.
+lv_obj_t *flowText(lv_obj_t *parent, const String &line, const lv_font_t *font, lv_color_t color, int width) {
+  if (line.indexOf("**") < 0) {
+    lv_obj_t *l = text(parent, line.c_str(), font, color);
+    lv_obj_set_width(l, width);
+    lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_line_space(l, 4, 0);
+    return l;
+  }
+  lv_obj_t *sg = lv_spangroup_create(parent);
+  lv_obj_remove_flag(sg, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_set_width(sg, width);
+  lv_obj_set_height(sg, LV_SIZE_CONTENT);
+  lv_spangroup_set_mode(sg, LV_SPAN_MODE_BREAK);
+  lv_obj_set_style_text_font(sg, font, 0);
+  lv_obj_set_style_text_color(sg, color, 0);
+  lv_obj_set_style_text_line_space(sg, 4, 0);
+  int from = 0;
+  bool bold = false;
+  while (true) {
+    const int at = line.indexOf("**", from);
+    const String seg = line.substring(from, at < 0 ? line.length() : at);
+    if (seg.length()) {
+      lv_span_t *sp = lv_spangroup_new_span(sg);
+      lv_span_set_text(sp, seg.c_str());
+      if (bold) lv_style_set_text_color(lv_span_get_style(sp), LENS);
+    }
+    if (at < 0) break;
+    bold = !bold;
+    from = at + 2;
+  }
+  lv_spangroup_refr_mode(sg);
+  return sg;
+}
+// A badge (number) or dot beside wrapped text, with a hanging indent.
+lv_obj_t *markedRow(const char *mark, const String &rest) {
+  lv_obj_t *r = plain(answerFlow);
+  lv_obj_set_size(r, W - 40, LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(r, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(r, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+  lv_obj_set_style_pad_column(r, 10, 0);
+  if (mark) {
+    lv_obj_t *badge = circle(r, 24, LINE, 0, GRAPHITE, LV_OPA_COVER);
+    lv_obj_center(text(badge, mark, F_SMALL, INK));
+  } else {
+    lv_obj_t *dot = circle(r, 6, MIST, 0, MIST, LV_OPA_COVER);
+    lv_obj_set_style_margin_top(dot, 8, 0);
+    lv_obj_set_style_margin_left(dot, 9, 0);
+    lv_obj_set_style_margin_right(dot, 9, 0);
+  }
+  lv_obj_t *t = flowText(r, rest, F_BODY, INK, W - 40 - 34);
+  if (mark) lv_obj_set_style_margin_top(t, 2, 0);
+  return r;
+}
+lv_obj_t *panel(const String &content) {
+  lv_obj_t *b = plain(answerFlow);
+  lv_obj_set_size(b, W - 40, LV_SIZE_CONTENT);
+  lv_obj_set_style_bg_color(b, GRAPHITE, 0);
+  lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
+  lv_obj_set_style_radius(b, 10, 0);
+  lv_obj_set_style_pad_all(b, 10, 0);
+  flowText(b, content, F_BODY, INK, W - 60);
+  return b;
+}
+void heading(const String &t) {
+  String h = stripMarks(t);
+  while (h.startsWith("#")) h = h.substring(1);
+  if (h.endsWith(":")) h = h.substring(0, h.length() - 1);
+  h.trim();
+  h.toUpperCase();
+  lv_obj_t *l = text(answerFlow, h.c_str(), F_SMALL, MIST);
+  lv_obj_set_style_text_letter_space(l, 1, 0);
+  lv_obj_set_style_margin_top(l, 6, 0);
+}
+// Mostly symbols and numbers, few words: show it as a formula.
+bool looksLikeFormula(const String &t) {
+  if (t.length() > 70 || (t.indexOf('=') < 0 && t.indexOf('^') < 0)) return false;
+  int words = 0, run = 0;
+  for (size_t i = 0; i <= t.length(); ++i) {
+    const char c = i < t.length() ? t[i] : ' ';
+    if (isalpha((unsigned char)c)) ++run;
+    else {
+      if (run > 3) ++words;
+      run = 0;
+    }
+  }
+  return words <= 2;
+}
+void renderAnswer(const String &raw) {
+  lv_obj_clean(answerFlow);
+  String body = cleanMath(raw);
+  body.replace("\r", "");
+  bool sawAnswer = false, firstBlock = true, inCode = false;
+  String code;
+  int from = 0;
+  while (from <= (int)body.length()) {
+    int end = body.indexOf('\n', from);
+    if (end < 0) end = body.length();
+    const String line = body.substring(from, end);
+    from = end + 1;
+    String t = line;
+    t.trim();
+    if (t.startsWith("```")) {
+      if (inCode && code.length()) panel(code);
+      code = "";
+      inCode = !inCode;
+      continue;
+    }
+    if (inCode) {
+      code += (code.length() ? "\n" : "") + line;
+      continue;
+    }
+    if (t.isEmpty() || t == "---" || t == "***") continue;
+    String lower = stripMarks(t);
+    lower.toLowerCase();
+    // The answer itself: large, under a small label.
+    if (!sawAnswer && (lower.startsWith("answer:") || lower.startsWith("final answer:"))) {
+      String value = stripMarks(t);
+      value = value.substring(value.indexOf(':') + 1);
+      value.trim();
+      lv_obj_t *label = text(answerFlow, "ANSWER", F_SMALL, LENS);
+      lv_obj_set_style_text_letter_space(label, 1, 0);
+      flowText(answerFlow, value, F_LARGE, INK, W - 40);
+      sawAnswer = true;
+      firstBlock = false;
+      continue;
+    }
+    if (t.startsWith("#") || (t.endsWith(":") && t.length() < 34 && !isdigit((unsigned char)t[0]))) {
+      heading(t);
+      firstBlock = false;
+      continue;
+    }
+    // "1." / "1)" steps
+    int digits = 0;
+    while (digits < (int)t.length() && digits < 3 && isdigit((unsigned char)t[digits])) ++digits;
+    if (digits && digits + 1 < (int)t.length() && (t[digits] == '.' || t[digits] == ')') && t[digits + 1] == ' ') {
+      String rest = t.substring(digits + 2);
+      rest.trim();
+      markedRow(t.substring(0, digits).c_str(), rest);
+      firstBlock = false;
+      continue;
+    }
+    if ((t.startsWith("- ") || t.startsWith("* ") || t.startsWith("+ ")) && t.length() > 2) {
+      String rest = t.substring(2);
+      rest.trim();
+      markedRow(nullptr, rest);
+      firstBlock = false;
+      continue;
+    }
+    if (t.startsWith("|")) {
+      if (t.indexOf("---") >= 0) continue;  // table rule
+      String cells = t.substring(1, t.endsWith("|") ? t.length() - 1 : t.length());
+      cells.replace("|", "  -  ");
+      cells.trim();
+      t = cells;
+    }
+    if (t.startsWith("[Answer cut off]")) {
+      text(answerFlow, "The answer was cut off.", F_SMALL, MIST);
+      continue;
+    }
+    if (looksLikeFormula(stripMarks(t))) {
+      panel(t);
+      firstBlock = false;
+      continue;
+    }
+    // Without an "Answer:" line, a short first sentence still leads in large type.
+    if (firstBlock && !sawAnswer && t.length() <= 120) {
+      flowText(answerFlow, t, F_LARGE, INK, W - 40);
+      firstBlock = false;
+      continue;
+    }
+    flowText(answerFlow, t, F_BODY, INK, W - 40);
+    firstBlock = false;
+  }
+  if (inCode && code.length()) panel(code);
+}
+
 void showAnswer(uint32_t id) {
   String body;
   AnswerInfo info;
@@ -846,17 +1150,7 @@ void showAnswer(uint32_t id) {
     notice("That answer could not be read.", Screen::Ask);
     return;
   }
-  // Answer first: the first sentence (or line) is set large, the rest as body text.
-  int cut = body.indexOf('\n');
-  const int period = body.indexOf(". ");
-  if (period >= 0 && period < 140 && (cut < 0 || period < cut)) cut = period + 1;
-  if (cut > 160) cut = -1;
-  String lead = cut > 0 ? body.substring(0, cut) : "";
-  String rest = cut > 0 ? body.substring(cut) : body;
-  rest.trim();
-  lv_label_set_text(answerLead, lead.c_str());
-  hide(answerLead, lead.isEmpty());
-  lv_label_set_text(answerBody, rest.c_str());
+  renderAnswer(body);
   String meta = String("Answered by ") + (info.gemini ? "Gemini" : "GPT");
   const String when = ago(info.when);
   if (when.length()) meta += ", " + when;
@@ -907,7 +1201,7 @@ void renderCard() {
   } else if (!lastAnswer.isEmpty()) {
     const String when = ago(lastInfo.when);
     setText(cardKey, when.length() ? ("Last answer, " + when).c_str() : "Last answer");
-    setText(cardValue, lastAnswer.c_str());
+    setText(cardValue, answerHeadline(lastAnswer).c_str());
   } else {
     setText(cardKey, "Ask");
     setText(cardValue, "Point at a question, then open Ask.");
@@ -1588,8 +1882,7 @@ void rebuildHistory() {
       lv_obj_align(img, LV_ALIGN_LEFT_MID, 18, 0);
       textX = 70;
     }
-    body.replace("\n", " ");
-    lv_obj_t *one = text(r, body.c_str(), F_BODY, INK);
+    lv_obj_t *one = text(r, answerHeadline(body).c_str(), F_BODY, INK);
     lv_label_set_long_mode(one, LV_LABEL_LONG_DOT);
     lv_obj_set_size(one, W - textX - 16, 20);
     lv_obj_set_pos(one, textX, 9);
@@ -2052,17 +2345,15 @@ void buildAnswer() {
   lv_obj_set_size(answerPhoto, W, 84);
   lv_image_set_inner_align(answerPhoto, LV_IMAGE_ALIGN_CENTER);  // middle band of the photo
   lv_obj_set_style_image_opa(answerPhoto, LV_OPA_80, 0);
-  auto para = [](const lv_font_t *font, lv_color_t color) {
-    lv_obj_t *l = text(answerScroll, "", font, color);
-    lv_obj_set_width(l, W - 36);
-    lv_obj_set_style_margin_left(l, 18, 0);
-    lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
-    lv_obj_set_style_text_line_space(l, 4, 0);
-    return l;
-  };
-  answerLead = para(F_LARGE, INK);
-  answerBody = para(F_BODY, INK);
-  answerMeta = para(F_SMALL, MIST);
+  answerFlow = plain(answerScroll);
+  lv_obj_set_size(answerFlow, W, LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(answerFlow, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_style_pad_hor(answerFlow, 20, 0);
+  lv_obj_set_style_pad_row(answerFlow, 12, 0);
+  answerMeta = text(answerScroll, "", F_SMALL, MIST);
+  lv_obj_set_width(answerMeta, W - 40);
+  lv_obj_set_style_margin_left(answerMeta, 20, 0);
+  lv_obj_set_style_margin_top(answerMeta, 8, 0);
 }
 
 void buildPhotos() {
@@ -3587,9 +3878,16 @@ void handleDeviceButton(char command) {
       static uint16_t *th = (uint16_t *)ps_malloc(THUMB * THUMB * 2);
       const bool haveThumb = latestPhotoId && th && loadPhotoThumb(latestPhotoId, th);
       saveAnswer(
-          "Sample answer for a layout check. This text was written on the device, not by a model.\n\n"
-          "The first sentence is set large; everything after it is body text that scrolls. "
-          "Math like x^2 + 3x - 4 = 0 stays readable: x = 1 or x = -4.",
+          "Answer: x = 1 or x = -4\n\n"
+          "Steps:\n"
+          "1. Write the equation from the photo: **x^2 + 3x - 4 = 0**\n"
+          "2. Factor it into two brackets:\n"
+          "(x + 4)(x - 1) = 0\n"
+          "3. Set each bracket to zero and solve: x = -4 or x = 1\n\n"
+          "## Check\n"
+          "- Put x = 1 back in: 1 + 3 - 4 = 0\n"
+          "- A fraction from LaTeX reads as \\frac{1}{2} x^{2}\n\n"
+          "Sample written on the device for a layout check, not by a model.",
           true, latestPhotoId, clockKnown() ? (uint32_t)time(nullptr) : 0, haveThumb ? th : nullptr);
       loadLatestAnswer();
       cardSignature = "";
