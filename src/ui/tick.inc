@@ -131,10 +131,18 @@ void deviceTick() {
     const bool waiting = !lv_obj_has_flag(busy, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(busy, LV_OBJ_FLAG_HIDDEN);
     refreshDynamic();
-    if (waiting && current == Screen::Ask && id) showAnswer(id);
+    // Replace the streamed text with the saved answer (photo and source line included).
+    if (id && ((waiting && current == Screen::Ask) || (streaming && current == Screen::Answer))) {
+      const int32_t y = lv_obj_get_scroll_y(answerScroll);
+      const bool wasStreaming = streaming && current == Screen::Answer;
+      showAnswer(id);
+      if (wasStreaming) lv_obj_scroll_to_y(answerScroll, y, LV_ANIM_OFF);
+    }
+    streaming = false;
     if (screenAsleep || screenDim) wakeScreen();
   } else if (ai == AiState::Failed) {
     pending = Pending::None;
+    streaming = false;
     const bool waiting = !lv_obj_has_flag(busy, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(busy, LV_OBJ_FLAG_HIDDEN);
     if (waiting && current == Screen::Ask) notice(result, Screen::Ask);
@@ -142,6 +150,26 @@ void deviceTick() {
   if (btPaused && !aiBusy() && updaterState() != UpdateState::Checking && updaterState() != UpdateState::Installing)
     resumeBluetooth();
   zoomTick();
+  {
+    static uint32_t seen = 0;
+    static unsigned long drawnAt = 0;
+    if (pending == Pending::Answer && aiBusy()) {
+      String partial;
+      const uint32_t v = aiPartial(partial);
+      if (v != seen && partial.length() && now - drawnAt > 350) {
+        seen = v;
+        drawnAt = now;
+        const bool waiting = !lv_obj_has_flag(busy, LV_OBJ_FLAG_HIDDEN);
+        if (waiting && current == Screen::Ask) {
+          lv_obj_add_flag(busy, LV_OBJ_FLAG_HIDDEN);
+          streaming = true;
+          showStreaming(partial, true);
+        } else if (streaming && current == Screen::Answer) {
+          showStreaming(partial, false);
+        }
+      }
+    }
+  }
   static bool btStarted = false;  // start a few seconds after boot, once the UI is up
   if (!btStarted && now > 4000) {
     btStarted = true;

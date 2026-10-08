@@ -95,6 +95,10 @@ void handleDeviceButton(char command) {
     xSemaphoreGive(camLock);
     return;
   }
+  if (command == '~') {
+    if (jpegBytes) aiShrinkTest(savedJpeg, jpegBytes);
+    return;
+  }
   if (command == '#') {
     // Developer: "#<sha256 hex>|<base64 signature>" checks a release signature on the device.
     const String arg = Serial.readStringUntil('\n');

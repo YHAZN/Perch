@@ -95,18 +95,16 @@ void printStatus() {
                 ESP.getFreePsram());
   Serial.printf("Reset reason: %d\n", static_cast<int>(esp_reset_reason()));
   Serial.println("Type s to print this report again.");
-  Serial.printf("Wi-Fi status: %d | IP: %s\n", WiFi.status(), WiFi.localIP().toString().c_str());
+  Serial.printf("Wi-Fi status: %d | IP: %s | %s %d dBm\n", WiFi.status(), WiFi.localIP().toString().c_str(),
+                WiFi.SSID().c_str(), WiFi.RSSI());
   Serial.println("Type w to scan and test configured Wi-Fi.");
   Serial.println("Type g to scan and test campus guest Wi-Fi.");
 }
 
 void setup() {
-  // Internal RAM (~320 KB usable) is what Wi-Fi, Bluetooth, TLS and the camera's DMA need;
-  // by default every malloc under 4 KB lands there, and hundreds of UI objects and strings
-  // left too little for Bluetooth plus the camera (measured: 2-4 KB free, camera init failed).
-  // Ordinary allocations above 32 bytes now prefer PSRAM; drivers that need internal or DMA
-  // memory ask for it explicitly and are unaffected.
-  heap_caps_malloc_extmem_enable(32);
+  // Memory: LVGL allocates its widgets in PSRAM (src/lv_psram.c) so internal RAM stays free
+  // for Wi-Fi, Bluetooth, TLS and DMA. Do not send all mallocs to PSRAM
+  // (heap_caps_malloc_extmem_enable): lwIP's buffers then live there and uploads fail (-3).
   Serial.begin(115200);
   Serial.setDebugOutput(false);
   // The USB-serial driver treats a 100 ms pause in host reads as "unplugged" and then

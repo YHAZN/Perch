@@ -7,7 +7,7 @@
 #define LV_COLOR_DEPTH 16
 
 // Use the C library allocator: with CONFIG_SPIRAM_USE_MALLOC, large blocks land in PSRAM.
-#define LV_USE_STDLIB_MALLOC LV_STDLIB_CLIB
+#define LV_USE_STDLIB_MALLOC LV_STDLIB_CUSTOM  // src/lv_psram.c: widgets live in PSRAM
 #define LV_USE_STDLIB_STRING LV_STDLIB_CLIB
 #define LV_USE_STDLIB_SPRINTF LV_STDLIB_CLIB
 

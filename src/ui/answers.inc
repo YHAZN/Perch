@@ -351,6 +351,16 @@ void renderAnswer(const String &raw) {
   if (inCode && code.length()) panel(code);
 }
 
+// Streaming: the answer screen opens with the first words and grows as the model writes.
+void showStreaming(const String &text, bool first) {
+  renderAnswer(text);
+  if (first) {
+    setText(answerMeta, "Writing...");
+    hide(answerPhoto, true);
+    lv_obj_scroll_to_y(answerScroll, 0, LV_ANIM_OFF);
+    show(Screen::Answer);
+  }
+}
 void showAnswer(uint32_t id) {
   String body;
   AnswerInfo info;

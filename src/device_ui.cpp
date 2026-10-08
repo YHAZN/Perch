@@ -83,6 +83,7 @@ bool appendingPage = false;
 // What the running AI request is for: an answer, or writing down what was said.
 enum class Pending { None, Answer, Transcribe } pending = Pending::None;
 String heardText;
+bool streaming = false;  // the answer screen is showing an answer as it arrives
 // Text entry is shared: Wi-Fi password or a typed question. The Talk key dictates into it.
 enum class TextMode { Password, Question } textMode = TextMode::Password;
 bool dictating = false;    // the Talk key is held / its words are on their way

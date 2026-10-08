@@ -4,6 +4,7 @@
 #include <WiFiClientSecure.h>
 #include <WiFi.h>
 #include <mbedtls/base64.h>
+#include <img_converters.h>
 #include <mbedtls/platform.h>
 #include <time.h>
 #include <memory>
@@ -204,6 +205,69 @@ struct Body {
   }
 };
 
+// Streamed answers arrive as server-sent events ("data: {json}" lines): Gemini sends pieces
+// of GenerateContentResponse, OpenAI sends chat deltas. The text so far is shared with the UI.
+portMUX_TYPE partialLock = portMUX_INITIALIZER_UNLOCKED;
+String partialText;
+volatile uint32_t partialVersion = 0;
+class SseSink : public Stream {
+ public:
+  bool gemini;
+  String text, finish, line, error;
+  bool blocked = false;
+  explicit SseSink(bool g) : gemini(g) {}
+  size_t write(uint8_t b) override { return write(&b, 1); }
+  size_t write(const uint8_t *b, size_t n) override {
+    for (size_t i = 0; i < n; ++i) {
+      const char c = (char)b[i];
+      if (c == '\n') {
+        handle();
+        line = "";
+      } else if (c != '\r' && line.length() < 60000) line += c;
+    }
+    return n;
+  }
+  int available() override { return 0; }
+  int read() override { return -1; }
+  int peek() override { return -1; }
+  void flush() override {}
+  void handle() {
+    if (!line.startsWith("data:")) return;
+    String payload = line.substring(5);
+    payload.trim();
+    if (payload.isEmpty() || payload == "[DONE]") return;
+    JsonDocument doc;
+    if (deserializeJson(doc, payload)) return;
+    if (doc["error"].is<JsonObject>()) {
+      error = (const char *)(doc["error"]["message"] | "error");
+      return;
+    }
+    String piece;
+    if (gemini) {
+      for (JsonObject part : doc["candidates"][0]["content"]["parts"].as<JsonArray>()) {
+        if (part["thought"] == true) continue;
+        const char *t = part["text"];
+        if (t) piece += t;
+      }
+      const char *f = doc["candidates"][0]["finishReason"];
+      if (f) finish = f;
+      if (doc["promptFeedback"]["blockReason"].is<const char *>()) blocked = true;
+    } else {
+      const char *t = doc["choices"][0]["delta"]["content"];
+      if (t) piece = t;
+      const char *f = doc["choices"][0]["finish_reason"];
+      if (f) finish = f;
+    }
+    if (piece.isEmpty()) return;
+    text += piece;
+    const String shown = toDisplayText(text);
+    portENTER_CRITICAL(&partialLock);
+    partialText = shown;
+    ++partialVersion;
+    portEXIT_CRITICAL(&partialLock);
+  }
+};
+
 // Multipart body for OpenAI's transcription endpoint (raw bytes, not base64).
 uint8_t *multipartWav(const uint8_t *wav, size_t length, const char *model, const char *boundary, size_t &total) {
   const String head = String("--") + boundary + "\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\n" + model +
@@ -223,6 +287,45 @@ uint8_t *multipartWav(const uint8_t *wav, size_t length, const char *model, cons
   memcpy(buf + head.length(), wav, length);
   memcpy(buf + head.length() + length, tail.c_str(), tail.length());
   return buf;
+}
+
+// Half-size copy of a photo (1024x768 from 2048x1536, about a third of the bytes) for a
+// retry when a full upload failed part way on a weak connection.
+bool shrinkJpeg(const uint8_t *in, size_t inLen, uint8_t *&out, size_t &outLen) {
+  int w = 0, h = 0;
+  for (size_t i = 2; i + 9 < inLen;) {
+    if (in[i] != 0xFF) {
+      ++i;
+      continue;
+    }
+    const uint8_t m = in[i + 1];
+    if (m == 0xC0 || m == 0xC1 || m == 0xC2) {
+      h = (in[i + 5] << 8) | in[i + 6];
+      w = (in[i + 7] << 8) | in[i + 8];
+      break;
+    }
+    if (m == 0xD8 || m == 0x01 || (m >= 0xD0 && m <= 0xD7)) {
+      i += 2;
+      continue;
+    }
+    i += 2 + ((in[i + 2] << 8) | in[i + 3]);
+  }
+  if (w < 800) return false;  // already small
+  const int sw = w / 2, sh = h / 2;
+  uint8_t *rgb = (uint8_t *)ps_malloc((size_t)sw * sh * 2);
+  if (!rgb) return false;
+  bool ok = jpg2rgb565(in, inLen, rgb, JPG_SCALE_2X);
+  // The decoder writes little-endian pixels; the encoder reads them big-endian.
+  for (size_t i = 0; ok && i < (size_t)sw * sh * 2; i += 2) {
+    const uint8_t t = rgb[i];
+    rgb[i] = rgb[i + 1];
+    rgb[i + 1] = t;
+  }
+  out = nullptr;
+  outLen = 0;
+  ok = ok && fmt2jpg(rgb, (size_t)sw * sh * 2, sw, sh, PIXFORMAT_RGB565, 88, &out, &outLen);
+  free(rgb);
+  return ok && out;
 }
 
 enum class Kind { Answer, Transcribe };
@@ -280,8 +383,8 @@ void buildAnswerBody(const Job &j, Body &body) {
   } else {
     // Chat Completions: reasoning_effort and max_completion_tokens (max_tokens is deprecated).
     body.add(String("{\"model\":\"") + j.options.model + "\",\"reasoning_effort\":\"" + j.options.effort +
-             "\",\"max_completion_tokens\":8000,\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\","
-             "\"text\":\"" +
+             "\",\"max_completion_tokens\":8000,\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":[{"
+             "\"type\":\"text\",\"text\":\"" +
              prompt + "\"}");
     for (int i = 0; i < j.pages; ++i) {
       body.add(",{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/jpeg;base64,");
@@ -417,7 +520,8 @@ bool request(Job &j) {
     http.setTimeout(65000);  // uint16_t ms: 65 s is the maximum
     String url;
     if (gemini)
-      url = String("https://generativelanguage.googleapis.com/v1beta/models/") + models[model] + ":generateContent";
+      url = String("https://generativelanguage.googleapis.com/v1beta/models/") + models[model] +
+            (j.kind == Kind::Answer ? ":streamGenerateContent?alt=sse" : ":generateContent");
     else
       url = j.kind == Kind::Transcribe ? "https://api.openai.com/v1/audio/transcriptions"
                                        : "https://api.openai.com/v1/chat/completions";
@@ -464,6 +568,30 @@ bool request(Job &j) {
     if ((status == HTTPC_ERROR_CONNECTION_REFUSED || status == HTTPC_ERROR_SEND_PAYLOAD_FAILED) && !resent) {
       resent = true;
       waitMs = 1000;
+      // The upload broke part way (weak Wi-Fi): resend with half-size photos.
+      if (status == HTTPC_ERROR_SEND_PAYLOAD_FAILED && j.kind == Kind::Answer) {
+        bool shrunk = false;
+        for (int i = 0; i < j.pages; ++i) {
+          uint8_t *small = nullptr;
+          size_t smallLen = 0;
+          if (shrinkJpeg(j.jpegs[i], j.lengths[i], small, smallLen)) {
+            free(j.jpegs[i]);
+            j.jpegs[i] = small;
+            j.lengths[i] = smallLen;
+            shrunk = true;
+          }
+        }
+        if (shrunk) {
+          Body body;
+          buildAnswerBody(j, body);
+          uint8_t *smaller = body.build(total);
+          if (smaller) {
+            free(payload);
+            payload = smaller;
+          }
+          Serial.printf("AI_RETRY smaller photos: %u bytes\n", (unsigned)total);
+        }
+      }
       continue;
     }
     break;
@@ -506,6 +634,30 @@ bool request(Job &j) {
     }
     answer = "AI service returned HTTP " + String(status) + ".";
     return false;
+  }
+  if (j.kind == Kind::Answer) {
+    // Streamed: text appears on the device as it is written.
+    SseSink sink(gemini);
+    const int received = http.writeToStream(&sink);
+    http.end();
+    if (sink.line.length()) sink.handle();
+    if (sink.error.length() && sink.text.isEmpty()) {
+      answer = "The provider reported an error: " + sink.error;
+      return false;
+    }
+    if (received < 0 && sink.text.isEmpty()) return fail("Connection lost while answering. Try again.");
+    answer = toDisplayText(sink.text);
+    const bool cutOff = sink.finish == "MAX_TOKENS" || sink.finish == "length";
+    if (answer.isEmpty()) {
+      if (sink.blocked) return fail("The provider blocked this photo. Nothing to show.");
+      if (cutOff) return fail("The model ran out of space before answering. Try a lower effort.");
+      if (sink.finish == "SAFETY" || sink.finish == "content_filter") return fail("The provider blocked this answer.");
+      return fail("No text answer returned. The image may have been unreadable.");
+    }
+    if (answer.length() > ANSWER_LIMIT) answer = answer.substring(0, ANSWER_LIMIT);
+    if (cutOff || answer.length() >= ANSWER_LIMIT) answer += "\n\n[Answer cut off]";
+    if (received < 0) answer += "\n\n[Connection lost before the end]";
+    return true;
   }
   char *response = (char *)ps_malloc(RESPONSE_LIMIT + 1);
   if (!response) {
@@ -583,6 +735,10 @@ uint8_t *copyOf(const uint8_t *data, size_t length) {
 }
 
 bool launch() {
+  portENTER_CRITICAL(&partialLock);
+  partialText = "";
+  ++partialVersion;
+  portEXIT_CRITICAL(&partialLock);
   cancelled = false;
   state = AiState::Working;
   // TLS needs a deep stack; run beside the Wi-Fi stack on core 0, away from the UI loop.
@@ -646,6 +802,14 @@ bool aiTranscribe(const AiOptions &options, const uint8_t *wav, size_t wavLength
 
 void aiCancel() {
   if (state == AiState::Working) cancelled = true;
+}
+
+uint32_t aiPartial(String &text) {
+  portENTER_CRITICAL(&partialLock);
+  text = partialText;
+  const uint32_t v = partialVersion;
+  portEXIT_CRITICAL(&partialLock);
+  return v;
 }
 
 AiState aiPoll(String &text) {
@@ -804,3 +968,14 @@ void aiKeyCheck(const String &key) {
 }
 
 void aiSetFlashBusy(bool (*busy)()) { flashBusy = busy; }
+
+// Developer: how small and how fast a retry photo would be (nothing is sent).
+void aiShrinkTest(const uint8_t *jpeg, size_t len) {
+  const uint32_t t = millis();
+  uint8_t *out = nullptr;
+  size_t outLen = 0;
+  const bool ok = shrinkJpeg(jpeg, len, out, outLen);
+  Serial.printf("SHRINK %s %u -> %u bytes in %lums\n", ok ? "ok" : "failed", (unsigned)len, (unsigned)outLen,
+                (unsigned long)(millis() - t));
+  free(out);
+}
