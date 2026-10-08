@@ -19,6 +19,8 @@ std::vector<uint32_t> attachIds;  // photos for the next message
 int attachAwaiting = 0;           // photos taken for the chat that are still being saved
 uint8_t *chatWav = nullptr;       // a spoken question kept until it is sent
 size_t chatWavLen = 0;
+// The composer sits just above the home strip (only its middle starts the home swipe).
+constexpr int COMPOSER_Y = HOME_ZONE - 48;
 lv_obj_t *chatScroll, *chatEmpty, *chatTitle, *attachRow, *composerText, *sendBtn, *stopBtn, *plusSheet;
 lv_obj_t *assistantLive = nullptr;
 std::vector<void *> chatImages;  // thumbnails and their descriptors, freed when the chat is redrawn
@@ -267,7 +269,10 @@ void refreshChat() {
   const bool answering = aiBusy() && pending == Pending::Answer && requestChatId == chatId;
   const bool something = draft.length() || !attachIds.empty();
   hide(chatEmpty, !chat.empty() || !attachIds.empty() || attachAwaiting);
-  hide(attachRow, attachIds.empty() && !attachAwaiting);
+  const bool photosWaiting = !attachIds.empty() || attachAwaiting;
+  hide(attachRow, !photosWaiting);
+  const int pad = H - COMPOSER_Y + 8 + (photosWaiting ? 52 : 0);
+  if (lv_obj_get_style_pad_bottom(chatScroll, 0) != pad) lv_obj_set_style_pad_bottom(chatScroll, pad, 0);
   hide(stopBtn, !answering);
   hide(sendBtn, answering || !something);
   hide(micBtn, answering || something);
@@ -580,16 +585,15 @@ void buildChat(lv_obj_t *s) {
     toast("New chat");
   });
 
-  // Clear of the rounded bottom corners and the home strip, where the panel reads least well.
-  const int composerY = H - ABOVE_HOME - 56;
+  // The messages fill the screen to the bottom and scroll behind the floating composer; their
+  // bottom padding keeps the last message clear of it (and of waiting photos).
   chatScroll = plain(s);
   lv_obj_set_pos(chatScroll, 0, 58);
-  lv_obj_set_size(chatScroll, W, composerY - 58 - 54);
+  lv_obj_set_size(chatScroll, W, H - 58);
   scrollable(chatScroll);
   lv_obj_set_flex_flow(chatScroll, LV_FLEX_FLOW_COLUMN);
   lv_obj_set_style_pad_row(chatScroll, 14, 0);
-  lv_obj_set_style_pad_bottom(chatScroll, 8, 0);
-  // The chat area grows down to the composer when no photos are waiting.
+  lv_obj_set_style_pad_bottom(chatScroll, H - COMPOSER_Y + 8, 0);
   chatEmpty = plain(s);
   lv_obj_set_size(chatEmpty, W, 120);
   lv_obj_align(chatEmpty, LV_ALIGN_CENTER, 0, -24);
@@ -601,10 +605,11 @@ void buildChat(lv_obj_t *s) {
 
   attachRow = plain(s);
   lv_obj_set_size(attachRow, W - 24, 48);
-  lv_obj_set_pos(attachRow, 12, composerY - 52);
+  lv_obj_set_pos(attachRow, 12, COMPOSER_Y - 52);
   lv_obj_set_flex_flow(attachRow, LV_FLEX_FLOW_ROW);
   lv_obj_set_style_pad_column(attachRow, 8, 0);
 
+  const int composerY = COMPOSER_Y;
   // Composer: + | message box | mic, send or stop.
   lv_obj_t *plus = circle(s, 44, INK, 0, GRAPHITE, LV_OPA_COVER);
   lv_obj_set_pos(plus, 14, composerY);

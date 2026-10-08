@@ -59,11 +59,12 @@ void readTouch(lv_indev_t *, lv_indev_data_t *data) {
       downY = y;
       speed = speedX = 0;
       committed = passThrough = false;
-      edge = (injecting && !injectEdges)                                 ? Edge::None
-             : downY >= HOME_ZONE                                        ? Edge::Home
-             : (downY < TOP_ZONE && !ccOpen)                             ? Edge::Control
-             : (downX < BACK_ZONE && !ccOpen && current != Screen::Face) ? Edge::Back
-                                                                         : Edge::None;
+      edge = (injecting && !injectEdges)                                     ? Edge::None
+             : (downY >= HOME_ZONE && abs(downX - W / 2) <= HOME_HALF_WIDTH) ? Edge::Home
+             : downY >= HOME_ZONE                                            ? Edge::Corner
+             : (downY < TOP_ZONE && !ccOpen)                                 ? Edge::Control
+             : (downX < BACK_ZONE && !ccOpen && current != Screen::Face)     ? Edge::Back
+                                                                             : Edge::None;
     } else if (now > moveAt) {
       speed = (speed + (lastY - y) * 1000 / (int)(now - moveAt)) / 2;
       speedX = (speedX + (x - lastX) * 1000 / (int)(now - moveAt)) / 2;
@@ -75,6 +76,7 @@ void readTouch(lv_indev_t *, lv_indev_data_t *data) {
     if (edge != Edge::None && !committed) {
       // Commit when the movement matches the edge; give the touch to the app when it does not.
       if (edge == Edge::Home && -dy > 8 && -dy > abs(dx)) committed = true;
+      else if (edge == Edge::Corner && (abs(dx) > 8 || abs(dy) > 8)) committed = true;
       else if (edge == Edge::Control && dy > 8 && dy > abs(dx)) committed = true;
       else if (edge == Edge::Back && dx > 12 && dx > 2 * abs(dy)) committed = true;
       else if ((edge == Edge::Back && abs(dy) > 10 && abs(dy) > dx) ||
@@ -102,10 +104,10 @@ void readTouch(lv_indev_t *, lv_indev_data_t *data) {
       if (edge == Edge::Back) releaseBack(max(0, lastX - downX), speedX);
     } else if (edge != Edge::None) {
       // A tap that started on an edge: deliver it to the app (back arrow, edge buttons). A tap
-      // in the home strip is for the control just above it (the panel reads low at the edge).
+      // on the bottom strip is for the control just above it.
       tapPending = 2;
       tapX = downX;
-      tapY = edge == Edge::Home ? HOME_ZONE - 6 : downY;
+      tapY = (edge == Edge::Home || edge == Edge::Corner) ? HOME_ZONE - 6 : downY;
     }
     edge = Edge::None;
     committed = false;

@@ -31,6 +31,9 @@ constexpr int W = 240, H = 284;
 // top line for Control Center, right from the left edge for back. An edge swipe starts only
 // when the finger moves in that direction; anything else goes to the app underneath.
 constexpr int HOME_ZONE = 262;
+// Home swipes start on the middle of the bottom edge, under the home bar; the bottom corners
+// belong to the app.
+constexpr int HOME_HALF_WIDTH = 64;
 constexpr int TOP_ZONE = 22;
 // Distance from the bottom edge to the lowest tappable control (clear of the home bar).
 constexpr int ABOVE_HOME = 30;
@@ -223,7 +226,9 @@ bool injecting = false;
 bool injectEdges = false;  // injected drags exercise the system edges like a finger
 int injectX = 0, injectY = 0;
 bool fingerDown = false;
-enum class Edge { None, Home, Control, Back } edge = Edge::None;
+// Corner: a touch that starts in a bottom corner. A tap goes to the control above; a slide is
+// ignored, so a finger dragged up from the corner cannot trip the buttons it passes over.
+enum class Edge { None, Home, Control, Back, Corner } edge = Edge::None;
 int downX = 0, downY = 0, lastX = 0, lastY = 0;
 
 #include "ui/helpers.inc"
