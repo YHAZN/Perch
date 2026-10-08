@@ -32,8 +32,9 @@ constexpr int AI_MAX_PAGES = 3;
 // Ask about up to AI_MAX_PAGES photos (oldest first: earlier pages are context for the last).
 // `question` is an optional typed or transcribed question. `wav` (optional, Gemini only) is a
 // spoken question kept from offline use. Everything is copied. False if a request is running.
+// `history` is earlier questions and answers of the same conversation (plain text, short).
 bool aiStart(const AiOptions &options, const uint8_t *const *jpegs, const size_t *lengths, int pages,
-             const String &question, const uint8_t *wav = nullptr, size_t wavLength = 0);
+             const String &question, const String &history, const uint8_t *wav = nullptr, size_t wavLength = 0);
 // Speech to text for the hold-to-talk button: OpenAI gpt-transcribe for GPT, Gemini otherwise.
 // The words arrive through aiPoll like an answer.
 bool aiTranscribe(const AiOptions &options, const uint8_t *wav, size_t wavLength);
@@ -48,7 +49,7 @@ void aiBegin();
 
 // Developer: build the exact request for `options` (tiny stand-in photo) and validate its JSON,
 // printing the shape with image data elided. Nothing is sent.
-void aiDryRun(const AiOptions &options, int pages, const String &question, bool transcribe);
+void aiDryRun(const AiOptions &options, int pages, const String &question, bool transcribe, const String &history = "");
 // Developer: unauthenticated upload of `bytes` to the Gemini endpoint (nothing billed).
 void aiUploadTest(size_t bytes);
 // Developer: free check that the key is valid and can see the model.

@@ -14,6 +14,7 @@
 #include <vector>
 #include "ai_client.h"
 #include "audio.h"
+#include "battery.h"
 #include "camera.h"
 #include "clock.h"
 #include "board_pins.h"
@@ -29,7 +30,7 @@ constexpr int W = 240, H = 284;
 constexpr int HOME_ZONE = 262;
 constexpr int TOP_ZONE = 22;
 // Distance from the bottom edge to the lowest tappable control (clear of the home bar).
-constexpr int ABOVE_HOME = 62;
+constexpr int ABOVE_HOME = 30;
 // Drag this far (or flick) to commit an edge gesture; less springs back.
 constexpr int COMMIT_DRAG = 70;
 // When Ask has earlier answers, its first screen ends this short so the list peeks in.
@@ -69,14 +70,28 @@ Preferences settings;
 bool useGemini = true;
 // AI settings, saved per provider: model and effort (indexes into ai_client's lists).
 int geminiModel = 0, geminiEffort = 0, gptModel = 0, gptEffort = 0;
-// A question can span pages: earlier pages (saved photo ids, oldest first) give context for
-// the newest photo. "+ Page" appends; any other new photo starts a new question.
+// Ask is a conversation: every question keeps the chat's earlier photos (contextIds, oldest
+// first) and earlier answers as context, until "New chat". Works the same for every provider.
 std::vector<uint32_t> contextIds;
+std::vector<uint32_t> sessionAnswers;  // answer ids in this chat, oldest first
+std::vector<String> sessionQuestions;  // what was asked for each ("" = about the photo)
+String pendingQuestion;
+bool chatFresh = false;  // "New chat" pressed: the next photo starts clean
 bool appendingPage = false;
 // What the running AI request is for: an answer, or writing down what was said.
 enum class Pending { None, Answer, Transcribe } pending = Pending::None;
 String heardText;
+// Text entry is shared: Wi-Fi password or a typed question. The Talk key dictates into it.
+enum class TextMode { Password, Question } textMode = TextMode::Password;
+bool dictating = false;    // the Talk key is held / its words are on their way
+bool confirmWords = true;  // show what was said before asking (Settings > AI)
+bool sendAfterTranscribe = false;
 bool cameraOff = false;
+// Bluetooth is a system setting (Control Center). It pauses only while an AI request runs:
+// with it on, the ESP32-S3 has too little internal RAM left for HTTPS (measured: ~50 KB free,
+// uploads failed). It comes back by itself and a paired computer reconnects.
+bool bluetoothOn = false;
+bool btPaused = false;
 uint8_t brightnessPct = 100;  // 5..100, continuous (Control Center and Settings sliders)
 uint8_t spiMhz = 10;
 unsigned long sequence = 0;
@@ -116,15 +131,22 @@ bool historyDirty = true;
 
 // Widgets
 lv_obj_t *scr[(int)Screen::Count];
+lv_obj_t *faceWifi, *faceBt, *faceBattery;
 lv_obj_t *clockLabel, *dateLabel, *faceOffline, *card, *cardImage, *cardScrim, *cardRing, *cardKey, *cardValue,
     *cardDots;
 lv_obj_t *iconName;
 std::vector<lv_obj_t *> icons;
 lv_obj_t *viewfinder, *thumb, *flash, *shutter, *cameraOffLabel;
-lv_obj_t *askPhoto, *askEmpty, *askHint, *askPill, *askButtonLabel, *askOffline, *busy, *busyRing, *busyLabel,
-    *askSheet;
+lv_obj_t *askPhoto, *askEmpty, *askPill, *askButtonLabel, *askOffline, *busy, *busyRing, *busyLabel, *askSheet;
 lv_obj_t *answerScroll, *answerPhoto, *answerFlow, *answerMeta;
 lv_obj_t *photosImage, *photosEmpty, *photoCounter, *photoPrev, *photoNext, *photoDelete;
+// Zoom: the touch panel (CST816D) senses one finger, so no pinch. Double-tap decodes the full
+// photo at half resolution (2.7x the screen) and shows it in a window you drag around.
+lv_obj_t *zoomView, *zoomImage, *zoomExit;
+uint16_t *zoomPixels = nullptr;
+lv_image_dsc_t zoomDsc;
+int zoomW = 0, zoomH = 0;
+unsigned long lastPhotoTap = 0;
 lv_obj_t *historyList, *historyEmpty, *askScroll, *askHero;
 lv_obj_t *remoteStatus, *remoteSlides, *remoteMediaPanel, *remoteModeLabel[2];
 bool remoteMediaMode = false;
@@ -149,20 +171,24 @@ lv_obj_t *modelValue, *wifiValue, *brightSlider, *storageValue, *storageSub;
 lv_obj_t *modelCheck[2], *modelSub[2];
 lv_obj_t *noticeText;
 // Ask: pages and "what you said"
-lv_obj_t *pageBar, *pageChip, *addPageBtn, *newPhotoBtn, *pageBanner, *micBtn;
+lv_obj_t *typeBtn, *passwordEye;
+lv_obj_t *pageBar, *plusBtn, *plusBadge, *newChatBtn, *pageBanner, *micBtn;
 lv_obj_t *heardSheet, *heardLabel;
 bool pageCamera = false;  // the camera was opened from Ask ("New photo" / "+ Page"); return after the shot
 void newPhoto();
+void pauseBluetooth();
+void setBluetooth(bool on);
 void showHeard(const String &words);
 void addPage();
 int pageCount();
 void refreshAiScreen();
 // AI settings screen
-lv_obj_t *aiUseCheck[2], *aiUseSub[2];
+lv_obj_t *aiUseCheck[2], *aiUseSub[2], *wordsCheck, *wordsSub;
 lv_obj_t *gemModelCheck[8], *gptModelCheck[8];
 lv_obj_t *effortSeg[2][AI_EFFORT_COUNT];
 String aiScreenSignature;
 lv_obj_t *homeBar, *topBar;
+lv_obj_t *ccBt, *ccBtLabel, *ccWifiState, *ccBtState, *ccCameraState, *ccModelState;
 lv_obj_t *cc, *ccWifi, *ccWifiLabel, *ccBright, *ccModel, *ccModelLabel, *ccCamera, *ccCameraLabel;
 bool ccOpen = false;
 
@@ -941,12 +967,33 @@ String stripMarks(String t) {
   t.replace("__", "");
   return t;
 }
+// "Q2: c", "Question 3a: 12", "Q4) yes": one question's answer. Fills number and answer.
+bool questionLine(const String &line, String &number, String &answer) {
+  String t = stripMarks(line);
+  t.trim();
+  String lower = t;
+  lower.toLowerCase();
+  int i = 0;
+  if (lower.startsWith("question")) i = 8;
+  else if (lower.startsWith("q")) i = 1;
+  else return false;
+  while (i < (int)t.length() && t[i] == ' ') ++i;
+  const int start = i;
+  while (i < (int)t.length() && isdigit((unsigned char)t[i])) ++i;
+  if (i == start) return false;
+  while (i < (int)t.length() && isalpha((unsigned char)t[i]) && i - start < 4) ++i;  // 3a, 3b
+  number = t.substring(start, i);
+  if (i >= (int)t.length() || (t[i] != ':' && t[i] != '.' && t[i] != ')')) return false;
+  answer = t.substring(i + 1);
+  answer.trim();
+  return answer.length() > 0;
+}
 // The one-line answer: the "Answer:" line if there is one, else the first line. For the
 // card on the clock face and the Ask history.
 String answerHeadline(const String &raw) {
   String body = cleanMath(raw);
   int from = 0;
-  String first;
+  String first, answers;
   while (from <= (int)body.length()) {
     int end = body.indexOf('\n', from);
     if (end < 0) end = body.length();
@@ -956,13 +1003,20 @@ String answerHeadline(const String &raw) {
     if (line.isEmpty()) continue;
     String lower = line;
     lower.toLowerCase();
+    String number, value;
+    if (questionLine(line, number, value)) {
+      answers += (answers.length() ? "  " : "") + String("Q") + number + " " + value;
+      continue;
+    }
     if (lower.startsWith("answer:") || lower.startsWith("final answer:")) {
-      line = line.substring(line.indexOf(':') + 1);
-      line.trim();
-      return line;
+      value = line.substring(line.indexOf(':') + 1);
+      value.trim();
+      answers += (answers.length() ? "  " : "") + value;
+      continue;
     }
     if (first.isEmpty()) first = line;
   }
+  if (answers.length()) return answers;
   while (first.startsWith("#")) first = first.substring(1);
   first.trim();
   return first;
@@ -1082,8 +1136,19 @@ void renderAnswer(const String &raw) {
     if (t.isEmpty() || t == "---" || t == "***") continue;
     String lower = stripMarks(t);
     lower.toLowerCase();
-    // The answer itself: large, under a small label.
-    if (!sawAnswer && (lower.startsWith("answer:") || lower.startsWith("final answer:"))) {
+    // A question's answer (pages often have several): a label with its number, then large type.
+    String qNumber, qAnswer;
+    if (questionLine(t, qNumber, qAnswer)) {
+      lv_obj_t *label = text(answerFlow, (String("QUESTION ") + qNumber).c_str(), F_SMALL, LENS);
+      lv_obj_set_style_text_letter_space(label, 1, 0);
+      if (sawAnswer) lv_obj_set_style_margin_top(label, 10, 0);
+      flowText(answerFlow, qAnswer, F_LARGE, INK, W - 40);
+      sawAnswer = true;
+      firstBlock = false;
+      continue;
+    }
+    // The answer itself: large, under a small label (every one, not only the first).
+    if (lower.startsWith("answer:") || lower.startsWith("final answer:")) {
       String value = stripMarks(t);
       value = value.substring(value.indexOf(':') + 1);
       value.trim();
@@ -1250,7 +1315,21 @@ void refreshDynamic() {
     setText(clockLabel, "");
     setText(dateLabel, "");
   }
-  hide(faceOffline, online);
+  {
+    const lv_color_t wifiColor = online ? INK : MIST;
+    if (!lv_color_eq(lv_obj_get_style_text_color(faceWifi, 0), wifiColor))
+      lv_obj_set_style_text_color(faceWifi, wifiColor, 0);
+    const lv_color_t btColor = remoteConnected() ? INK : MIST;
+    if (!lv_color_eq(lv_obj_get_style_text_color(faceBt, 0), btColor)) lv_obj_set_style_text_color(faceBt, btColor, 0);
+    hide(faceBt, !bluetoothOn);
+    const int battery = batteryPercent();
+    hide(faceBattery, battery < 0);
+    if (battery >= 0) {
+      setText(faceBattery, (String(battery) + "%").c_str());
+      const lv_color_t c = battery <= 15 ? lv_color_hex(0xFF5A4E) : INK;
+      if (!lv_color_eq(lv_obj_get_style_text_color(faceBattery, 0), c)) lv_obj_set_style_text_color(faceBattery, c, 0);
+    }
+  }
   hide(askOffline, online || !lv_obj_has_flag(busy, LV_OBJ_FLAG_HIDDEN));
   renderCard();
   // Ask: offline is stated on the button itself, not hidden.
@@ -1258,16 +1337,14 @@ void refreshDynamic() {
   hide(thumb, !photo || cameraOff);
   hide(askPhoto, !photo);
   hide(askEmpty, photo);
-  hide(askHint, !photo || !online);
   const int pages = pageCount();
-  setText(askButtonLabel, !photo      ? "Take a photo"
-                          : !online   ? "Ask later"
-                          : pages > 1 ? (String("Ask: ") + pages + " pages").c_str()
-                                      : "Ask");
+  setText(askButtonLabel, !photo ? "Photo" : "Ask");
   hide(micBtn, !photo);
-  hide(addPageBtn, !photo);
-  hide(pageChip, pages < 2);
-  if (pages > 1) setText(lv_obj_get_child(pageChip, 0), (String(pages) + " pages  " LV_SYMBOL_CLOSE).c_str());
+  hide(typeBtn, !photo);
+  hide(plusBtn, !photo);
+  hide(newChatBtn, !photo || (sessionAnswers.empty() && contextIds.empty()));
+  hide(plusBadge, pages < 2);
+  if (pages > 1) setText(lv_obj_get_child(plusBadge, 0), String(pages).c_str());
   hide(pageBanner, !pageCamera);
   const lv_opa_t pillOpa = online ? LV_OPA_COVER : LV_OPA_60;
   if (lv_obj_get_style_opa(askPill, 0) != pillOpa) lv_obj_set_style_opa(askPill, pillOpa, 0);
@@ -1299,7 +1376,8 @@ void refreshDynamic() {
   lv_obj_set_style_opa(remoteSlides, remoteConnected() ? LV_OPA_COVER : LV_OPA_40, 0);
   lv_obj_set_style_opa(remoteMediaPanel, remoteConnected() ? LV_OPA_COVER : LV_OPA_40, 0);
   // Control Center: restyle only when a toggle actually changed.
-  const String cc = String(networkEnabled()) + online + cameraOff + useGemini;
+  const String cc =
+      String(networkEnabled()) + online + cameraOff + useGemini + bluetoothOn + remoteConnected() + btPaused;
   if (cc != ccSignature) {
     ccSignature = cc;
     // On: amber disc, dark glyph. Off: dark disc, light glyph. The label always says which.
@@ -1309,13 +1387,15 @@ void refreshDynamic() {
       if (glyph) lv_obj_set_style_text_color(glyph, on ? VOID_ : INK, 0);
     };
     toggle(ccWifi, networkEnabled());
-    setText(ccWifiLabel, !networkEnabled() ? "Wi-Fi off" : online ? "Wi-Fi on" : "Searching");
+    setText(ccWifiState, !networkEnabled() ? "Off" : online ? "On" : "No net");
+    toggle(ccBt, bluetoothOn);
+    setText(ccBtState, !bluetoothOn ? "Off" : btPaused ? "Paused" : remoteConnected() ? "Linked" : "On");
     toggle(ccCamera, !cameraOff);
     setText(lv_obj_get_child(ccCamera, 0), cameraOff ? LV_SYMBOL_EYE_CLOSE : LV_SYMBOL_EYE_OPEN);
-    setText(ccCameraLabel, cameraOff ? "Camera off" : "Camera on");
+    setText(ccCameraState, cameraOff ? "Off" : "On");
     toggle(ccModel, false);
     setText(lv_obj_get_child(ccModel, 0), useGemini ? "G" : "GPT");
-    setText(ccModelLabel, useGemini ? "Gemini" : "GPT");
+    setText(ccModelState, useGemini ? "Gemini" : "GPT");
   }
 }
 
@@ -1534,12 +1614,13 @@ bool acceptCapture(String &problem) {
   }
   if (captureOut.blurry) toast("Blurry. Hold still and try again");
   // "+ Page" keeps the previous photo as context; any other photo starts a new question.
-  if (appendingPage && latestPhotoId && jpegBytes) {
+  // A new photo joins the conversation; the previous one becomes context. After "New chat"
+  // the next photo starts clean.
+  if (!chatFresh && latestPhotoId && jpegBytes) {
     contextIds.push_back(latestPhotoId);
     while ((int)contextIds.size() > AI_MAX_PAGES - 1) contextIds.erase(contextIds.begin());
-  } else {
-    contextIds.clear();
   }
+  chatFresh = false;
   appendingPage = false;
   free(savedJpeg);
   savedJpeg = captureOut.jpeg;
@@ -1621,9 +1702,21 @@ void startAsk(const String &question = "", const uint8_t *wav = nullptr, size_t 
   jpegs[pages] = savedJpeg;
   lengths[pages] = jpegBytes;
   ++pages;
+  // Earlier questions and answers of this chat (the last three, trimmed) travel as context.
+  String history;
+  const int from = max(0, (int)sessionAnswers.size() - 3);
+  for (int i = from; i < (int)sessionAnswers.size(); ++i) {
+    String body;
+    AnswerInfo info;
+    if (!loadAnswer(sessionAnswers[i], body, info)) continue;
+    if (body.length() > 700) body = body.substring(0, 700) + "...";
+    history += "Q: " + (sessionQuestions[i].length() ? sessionQuestions[i] : String("(about the photo)")) +
+               "\nA: " + body + "\n";
+  }
+  pendingQuestion = question;
   AiOptions options = aiOptions(useGemini);
-  remoteEnd();  // Bluetooth leaves too little memory for HTTPS
-  const bool started = aiStart(options, jpegs, lengths, pages, question, wav, wavLength);
+  pauseBluetooth();  // Bluetooth leaves too little memory for HTTPS; it comes back after
+  const bool started = aiStart(options, jpegs, lengths, pages, question, history, wav, wavLength);
   options.key = "";
   for (uint8_t *l : loaded) free(l);
   if (!started) {
@@ -1648,12 +1741,19 @@ void startListenBack(const uint8_t *wav, size_t length) {
     startAsk("", wav, length);
     return;
   }
+  // Preview off: Gemini takes the recording with the photo in one request; GPT cannot hear
+  // audio, so its words are written down first and sent without stopping.
+  if (!confirmWords && useGemini) {
+    startAsk("", wav, length);
+    return;
+  }
+  sendAfterTranscribe = !confirmWords;
   if (aiBusy()) {
     notice("The previous request is still finishing. Try again in a moment.", Screen::Ask);
     return;
   }
   AiOptions options = aiOptions(useGemini);
-  remoteEnd();
+  pauseBluetooth();
   const bool started = aiTranscribe(options, wav, length);
   options.key = "";
   if (!started) {
@@ -1672,40 +1772,46 @@ void waitForSave() {
     delay(10);
   }
 }
+void typeQuestion() {
+  if (!jpegBytes) {
+    toast("Take a photo first");
+    return;
+  }
+  textMode = TextMode::Question;
+  setText(passwordTitle, "Your question");
+  lv_textarea_set_password_mode(passwordField, false);
+  lv_textarea_set_one_line(passwordField, true);
+  lv_textarea_set_placeholder_text(passwordField, "Type, or hold Talk");
+  hide(passwordEye, true);
+  lv_obj_set_width(passwordField, W - 28);
+  lv_textarea_set_text(passwordField, "");
+  show(Screen::Password);
+}
 void showHeard(const String &words) {
   heardText = words;
   setText(heardLabel, words.c_str());
   lv_obj_remove_flag(heardSheet, LV_OBJ_FLAG_HIDDEN);
   show(Screen::Ask);
 }
-// "New photo": open the camera; the shot becomes the question's photo and Ask comes back.
-void newPhoto() {
-  if (cameraOff) {
-    toast("Camera is off. Turn it on in Control Center");
-    return;
-  }
-  appendingPage = false;
-  pageCamera = true;
-  setText(pageBanner, "New photo for Ask");
-  show(Screen::Camera);
-}
-// "+ Page": open the camera to photograph the next page of the same question.
+// "+": open the camera; the shot joins this chat and Ask comes back.
 void addPage() {
   if (cameraOff) {
     toast("Camera is off. Turn it on in Control Center");
     return;
   }
-  if (!jpegBytes) {
-    newPhoto();
-    return;
-  }
   waitForSave();
-  appendingPage = true;
   pageCamera = true;
-  const int next = min(pageCount() + 1, AI_MAX_PAGES);
-  setText(pageBanner, pageCount() >= AI_MAX_PAGES ? "Next page (oldest is dropped)"
-                                                  : (String("Page ") + next + " of up to " + AI_MAX_PAGES).c_str());
+  setText(pageBanner, jpegBytes ? "Add a photo to this chat" : "Photo for Ask");
   show(Screen::Camera);
+}
+void newPhoto() { addPage(); }
+void newChat() {
+  contextIds.clear();
+  sessionAnswers.clear();
+  sessionQuestions.clear();
+  chatFresh = true;
+  refreshDynamic();
+  toast("New chat");
 }
 void refreshQueue() {
   queuedCount = queueList(queued, 16);
@@ -1765,6 +1871,26 @@ lv_obj_t *brightnessSlider(lv_obj_t *parent, int width, int height) {
       LV_EVENT_VALUE_CHANGED, nullptr);
   lv_obj_add_event_cb(sl, [](lv_event_t *) { setBrightness(brightnessPct, true); }, LV_EVENT_RELEASED, nullptr);
   return sl;
+}
+void setBluetooth(bool on) {
+  bluetoothOn = on;
+  settings.putBool("bt-on", on);
+  if (on && !btPaused) remoteBegin();
+  if (!on) {
+    remoteEnd();
+    btPaused = false;
+  }
+  refreshDynamic();
+}
+void pauseBluetooth() {
+  if (remoteStarted()) {
+    remoteEnd();
+    btPaused = true;
+  }
+}
+void resumeBluetooth() {
+  btPaused = false;
+  if (bluetoothOn && !remoteStarted()) remoteBegin();
 }
 void setCameraOff(bool off) {
   cameraOff = off;
@@ -1931,7 +2057,6 @@ void rebuildHistory() {
 }
 void onEnter(Screen s) {
   // Bluetooth only runs inside the apps that use it: it costs ~100 KB of RAM HTTPS needs.
-  if (s != Screen::Remote && s != Screen::Gestures) remoteEnd();
   if (s != Screen::Camera && pageCamera && !captureRequested && !captureReady) {
     pageCamera = false;
     appendingPage = false;
@@ -1942,17 +2067,25 @@ void onEnter(Screen s) {
   }
   if (s == Screen::Settings) lv_obj_scroll_to_y(layer(Screen::Settings), 0, LV_ANIM_OFF);
   if (s == Screen::Photos) {
+    if (zoomView) lv_obj_add_flag(zoomView, LV_OBJ_FLAG_HIDDEN);
+    hide(photoDelete, false);
     hide(photosImage, photoCount == 0);
     hide(photosEmpty, photoCount != 0);
     showPhoto(0);
   } else if (s == Screen::Ask) {
     rebuildHistory();
   } else if (s == Screen::Remote) {
-    remoteBegin();
+    if (!bluetoothOn) {
+      setBluetooth(true);
+      toast("Bluetooth on");
+    }
   } else if (s == Screen::Wifi) {
     startScan();
   } else if (s == Screen::Gestures) {
-    remoteBegin();
+    if (!bluetoothOn) {
+      setBluetooth(true);
+      toast("Bluetooth on");
+    }
     gestureCalibrating = 12;  // ~1 s of frames to learn the empty scene
   } else if (s == Screen::Apps) {
     lv_obj_scroll_to_y(layer(Screen::Apps), 0, LV_ANIM_OFF);
@@ -1966,8 +2099,19 @@ void buildFace() {
   lv_obj_set_pos(clockLabel, 20, 18);
   dateLabel = text(s, "", F_BODY, MIST);
   lv_obj_set_pos(dateLabel, 24, 76);
-  faceOffline = text(s, "Offline", F_SMALL, MIST);
-  lv_obj_align(faceOffline, LV_ALIGN_TOP_RIGHT, -26, 28);
+  // Status: bright when connected, grey when on but not connected or off.
+  lv_obj_t *status = plain(s);
+  lv_obj_set_size(status, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(status, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(status, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_column(status, 8, 0);
+  lv_obj_align(status, LV_ALIGN_TOP_RIGHT, -24, 30);
+  faceBt = text(status, LV_SYMBOL_BLUETOOTH, F_BODY, MIST);
+  faceWifi = text(status, LV_SYMBOL_WIFI, F_BODY, MIST);
+  faceBattery = text(status, "", F_SMALL, MIST);
+  lv_obj_add_flag(faceBattery, LV_OBJ_FLAG_HIDDEN);  // shown once the battery sense is wired
+  faceOffline = text(s, "", F_SMALL, MIST);
+  lv_obj_add_flag(faceOffline, LV_OBJ_FLAG_HIDDEN);
   card = pressedFeedback(plain(s));
   lv_obj_set_size(card, 216, 108);
   lv_obj_align(card, LV_ALIGN_BOTTOM_MID, 0, -ABOVE_HOME);
@@ -2160,37 +2304,35 @@ void buildAsk() {
   scrimBottom(hero, 160);  // dark enough under the hint and the buttons on any photo
   askOffline = text(hero, "Offline", F_SMALL, INK);
   lv_obj_align(askOffline, LV_ALIGN_TOP_MID, 0, 26);
-  // Pages: "+ Page" photographs another page for the same question; the chip shows how
-  // many pages will be sent and clears back to this one.
+  // Top right, small so the photo stays visible: new chat, and + to add a photo to this chat.
   pageBar = plain(hero);
   lv_obj_set_size(pageBar, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
   lv_obj_set_flex_flow(pageBar, LV_FLEX_FLOW_ROW);
-  lv_obj_set_style_pad_column(pageBar, 8, 0);
-  lv_obj_align(pageBar, LV_ALIGN_TOP_RIGHT, -12, 30);
-  newPhotoBtn = chip(pageBar, "New photo");
-  onClick(newPhotoBtn, newPhoto);
-  pageChip = chip(hero, "");
-  lv_obj_align(pageChip, LV_ALIGN_TOP_RIGHT, -12, 74);
-  lv_obj_add_flag(pageChip, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_add_event_cb(
-      pageChip,
-      [](lv_event_t *) {
-        contextIds.clear();
-        refreshDynamic();
-        toast("Just this page now");
-      },
-      LV_EVENT_CLICKED, nullptr);
-  addPageBtn = chip(pageBar, "+ Page");
-  onClick(addPageBtn, addPage);
-  askHint = text(hero, "Hold the mic to ask out loud", F_SMALL, MIST);
-  lv_obj_align(askHint, LV_ALIGN_BOTTOM_MID, 0, -ABOVE_HOME - 58);
+  lv_obj_set_style_pad_column(pageBar, 10, 0);
+  lv_obj_set_style_pad_all(pageBar, 4, 0);
+  lv_obj_align(pageBar, LV_ALIGN_TOP_RIGHT, -10, 24);
+  newChatBtn = circle(pageBar, 38, INK, 0, GRAPHITE, 210);
+  lv_obj_set_style_opa(newChatBtn, LV_OPA_60, LV_STATE_PRESSED);
+  lv_obj_center(text(newChatBtn, LV_SYMBOL_EDIT, F_BODY, INK));
+  lv_obj_set_ext_click_area(newChatBtn, 5);
+  onClick(newChatBtn, newChat);
+  plusBtn = circle(pageBar, 38, INK, 0, GRAPHITE, 210);
+  lv_obj_set_style_opa(plusBtn, LV_OPA_60, LV_STATE_PRESSED);
+  lv_obj_center(text(plusBtn, LV_SYMBOL_PLUS, F_BODY, INK));
+  lv_obj_set_ext_click_area(plusBtn, 5);
+  onClick(plusBtn, addPage);
+  // Photos in this chat, when more than one.
+  plusBadge = circle(hero, 18, VOID_, 0, LENS, LV_OPA_COVER);
+  lv_obj_center(text(plusBadge, "", F_SMALL, VOID_));
+  lv_obj_align(plusBadge, LV_ALIGN_TOP_RIGHT, -8, 22);
+  lv_obj_remove_flag(plusBadge, LV_OBJ_FLAG_CLICKABLE);
   historyList = plain(askScroll);
   lv_obj_set_size(historyList, W, LV_SIZE_CONTENT);
   lv_obj_set_flex_flow(historyList, LV_FLEX_FLOW_COLUMN);
   // Bottom: the main action, and a separate mic you hold while you speak.
   askPill = pressedFeedback(plain(hero));
-  lv_obj_set_size(askPill, 152, 48);
-  lv_obj_align(askPill, LV_ALIGN_BOTTOM_LEFT, 16, -ABOVE_HOME);
+  lv_obj_set_size(askPill, 106, 48);
+  lv_obj_align(askPill, LV_ALIGN_BOTTOM_LEFT, 12, -ABOVE_HOME);
   lv_obj_set_style_radius(askPill, 24, 0);
   lv_obj_set_style_bg_color(askPill, GRAPHITE, 0);
   lv_obj_set_style_bg_opa(askPill, 235, 0);
@@ -2203,8 +2345,15 @@ void buildAsk() {
     if (jpegBytes) startAsk();
     else newPhoto();
   });
+  typeBtn = circle(hero, 48, INK, 0, GRAPHITE, 235);
+  lv_obj_align(typeBtn, LV_ALIGN_BOTTOM_RIGHT, -66, -ABOVE_HOME);
+  lv_obj_set_style_opa(typeBtn, LV_OPA_60, LV_STATE_PRESSED);
+  glyphSymbol(typeBtn, LV_SYMBOL_KEYBOARD, INK);
+  lv_obj_set_style_text_font(lv_obj_get_child(typeBtn, 0), F_BODY, 0);
+  lv_obj_set_ext_click_area(typeBtn, 4);
+  onClick(typeBtn, typeQuestion);
   micBtn = circle(hero, 48, INK, 0, GRAPHITE, 235);
-  lv_obj_align(micBtn, LV_ALIGN_BOTTOM_RIGHT, -16, -ABOVE_HOME);
+  lv_obj_align(micBtn, LV_ALIGN_BOTTOM_RIGHT, -12, -ABOVE_HOME);
   lv_obj_set_style_bg_color(micBtn, LENS, LV_STATE_PRESSED);
   {
     // Microphone glyph: capsule, cradle, stem.
@@ -2418,6 +2567,56 @@ lv_obj_t *roundButton(lv_obj_t *parent, const char *symbol, void (*fn)()) {
   lv_obj_set_ext_click_area(b, 4);
   return b;
 }
+void zoomOut() {
+  lv_obj_add_flag(zoomView, LV_OBJ_FLAG_HIDDEN);
+  hide(photoDelete, false);
+  showPhoto(photoIndex);
+}
+// Double-tap at (x, y) on the screen copy: show that spot of the full photo, 2.7x larger.
+void zoomIn(int x, int y) {
+  if (!photoCount) return;
+  uint8_t *jpeg;
+  size_t len;
+  int w, h;
+  if (!loadPhoto(photoIds[photoIndex], jpeg, len)) {
+    toast("Could not open the full photo");
+    return;
+  }
+  if (!jpegSize(jpeg, len, w, h)) {
+    free(jpeg);
+    return;
+  }
+  zoomW = w / 2;
+  zoomH = h / 2;
+  const size_t needed = (size_t)zoomW * zoomH * 2;
+  static size_t zoomCapacity = 0;
+  if (needed > zoomCapacity) {
+    free(zoomPixels);
+    zoomPixels = (uint16_t *)ps_malloc(needed);
+    zoomCapacity = zoomPixels ? needed : 0;
+  }
+  toast("Zooming");
+  lv_refr_now(display);
+  const bool ok = zoomPixels && jpg2rgb565(jpeg, len, (uint8_t *)zoomPixels, JPG_SCALE_2X);
+  free(jpeg);
+  if (!ok) {
+    toast("Could not open the full photo");
+    return;
+  }
+  setupImage(zoomDsc, zoomPixels, zoomW, zoomH);
+  lv_image_cache_drop(&zoomDsc);
+  lv_image_set_src(zoomImage, &zoomDsc);
+  lv_obj_set_size(zoomImage, zoomW, zoomH);
+  // The screen copy is the photo scaled to the screen height with the width centre-cropped;
+  // map the tap into the decoded photo and centre the window on it.
+  const int cropW = zoomH * W / H, left = (zoomW - cropW) / 2;
+  const int px = left + x * cropW / W, py = y * zoomH / H;
+  lv_obj_set_pos(zoomImage, -constrain(px - W / 2, 0, max(0, zoomW - W)), -constrain(py - H / 2, 0, max(0, zoomH - H)));
+  lv_obj_remove_flag(zoomView, LV_OBJ_FLAG_HIDDEN);
+  hide(photoPrev, true);
+  hide(photoNext, true);
+  hide(photoDelete, true);
+}
 void buildPhotos() {
   lv_obj_t *s = scr[(int)Screen::Photos] = screenBase();
   photosImage = lv_image_create(s);
@@ -2433,7 +2632,20 @@ void buildPhotos() {
         else if (dir == LV_DIR_RIGHT) showPhoto(photoIndex - 1);
       },
       LV_EVENT_GESTURE, nullptr);
-  lv_obj_add_event_cb(photosImage, [](lv_event_t *) { showPhoto(photoIndex); }, LV_EVENT_SHORT_CLICKED, nullptr);
+  lv_obj_add_event_cb(
+      photosImage,
+      [](lv_event_t *) {
+        const unsigned long now = millis();
+        if (now - lastPhotoTap < 380) {
+          lastPhotoTap = 0;
+          lv_point_t at;
+          lv_indev_get_point(lv_indev_active(), &at);
+          zoomIn(at.x, at.y);
+          return;
+        }
+        lastPhotoTap = now;
+      },
+      LV_EVENT_SHORT_CLICKED, nullptr);
   lv_obj_add_event_cb(photosImage, [](lv_event_t *) { deleteShownPhoto(); }, LV_EVENT_LONG_PRESSED, nullptr);
   photoCounter = text(s, "", F_SMALL, INK);
   lv_obj_align(photoCounter, LV_ALIGN_TOP_MID, 0, 18);
@@ -2445,6 +2657,42 @@ void buildPhotos() {
   photoDelete = pill(s, "Delete", 100);
   lv_obj_align(photoDelete, LV_ALIGN_BOTTOM_MID, 0, -ABOVE_HOME);
   onClick(photoDelete, deleteShownPhoto);
+  zoomView = plain(s);
+  lv_obj_set_size(zoomView, W, H);
+  lv_obj_set_style_bg_color(zoomView, VOID_, 0);
+  lv_obj_set_style_bg_opa(zoomView, LV_OPA_COVER, 0);
+  lv_obj_set_style_clip_corner(zoomView, true, 0);
+  lv_obj_add_flag(zoomView, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_remove_flag(zoomView, LV_OBJ_FLAG_GESTURE_BUBBLE);
+  lv_obj_add_flag(zoomView, LV_OBJ_FLAG_HIDDEN);
+  zoomImage = lv_image_create(zoomView);
+  lv_obj_remove_flag(zoomImage, LV_OBJ_FLAG_CLICKABLE);
+  // Drag moves the window over the photo.
+  lv_obj_add_event_cb(
+      zoomView,
+      [](lv_event_t *) {
+        lv_point_t v;
+        lv_indev_get_vect(lv_indev_active(), &v);
+        const int x = constrain((int)lv_obj_get_x(zoomImage) + v.x, -max(0, zoomW - W), 0);
+        const int y = constrain((int)lv_obj_get_y(zoomImage) + v.y, -max(0, zoomH - H), 0);
+        lv_obj_set_pos(zoomImage, x, y);
+      },
+      LV_EVENT_PRESSING, nullptr);
+  lv_obj_add_event_cb(
+      zoomView,
+      [](lv_event_t *) {
+        const unsigned long now = millis();
+        if (now - lastPhotoTap < 380) {
+          lastPhotoTap = 0;
+          zoomOut();
+          return;
+        }
+        lastPhotoTap = now;
+      },
+      LV_EVENT_SHORT_CLICKED, nullptr);
+  zoomExit = chip(zoomView, "1x");
+  lv_obj_align(zoomExit, LV_ALIGN_TOP_RIGHT, -14, 24);
+  onClick(zoomExit, zoomOut);
   photosEmpty = plain(s);
   lv_obj_set_size(photosEmpty, W, H);
   lv_obj_align(text(photosEmpty, "No photos yet.", F_BODY, MIST), LV_ALIGN_CENTER, 0, -30);
@@ -2542,6 +2790,11 @@ void renderScan() {
           }
           joiningSsid = row->ssid;
           setText(passwordTitle, row->ssid.c_str());
+          textMode = TextMode::Password;
+          lv_textarea_set_password_mode(passwordField, true);
+          lv_textarea_set_placeholder_text(passwordField, "Password");
+          hide(passwordEye, false);
+          lv_obj_set_width(passwordField, 166);
           lv_textarea_set_text(passwordField, "");
           show(Screen::Password);
         },
@@ -2572,18 +2825,18 @@ void buildWifi() {
   lv_obj_set_style_pad_bottom(wifiList, 56, 0);
 }
 // Keyboard: three layouts, keys as large as 240 px allows, kept above the home strip.
-const char *KB_LOWER[] = {"q",  "w",   "e", "r",          "t", "y", "u", "i", "o", "p",
-                          "\n", "a",   "s", "d",          "f", "g", "h", "j", "k", "l",
-                          "\n", "ABC", "z", "x",          "c", "v", "b", "n", "m", LV_SYMBOL_BACKSPACE,
-                          "\n", "1#",  " ", LV_SYMBOL_OK, ""};
-const char *KB_UPPER[] = {"Q",  "W",   "E", "R",          "T", "Y", "U", "I", "O", "P",
-                          "\n", "A",   "S", "D",          "F", "G", "H", "J", "K", "L",
-                          "\n", "abc", "Z", "X",          "C", "V", "B", "N", "M", LV_SYMBOL_BACKSPACE,
-                          "\n", "1#",  " ", LV_SYMBOL_OK, ""};
+const char *KB_LOWER[] = {"q",  "w",   "e",    "r", "t",          "y", "u", "i", "o", "p",
+                          "\n", "a",   "s",    "d", "f",          "g", "h", "j", "k", "l",
+                          "\n", "ABC", "z",    "x", "c",          "v", "b", "n", "m", LV_SYMBOL_BACKSPACE,
+                          "\n", "1#",  "Talk", " ", LV_SYMBOL_OK, ""};
+const char *KB_UPPER[] = {"Q",  "W",   "E",    "R", "T",          "Y", "U", "I", "O", "P",
+                          "\n", "A",   "S",    "D", "F",          "G", "H", "J", "K", "L",
+                          "\n", "abc", "Z",    "X", "C",          "V", "B", "N", "M", LV_SYMBOL_BACKSPACE,
+                          "\n", "1#",  "Talk", " ", LV_SYMBOL_OK, ""};
 const char *KB_SPECIAL[] = {
-    "1",  "2",   "3", "4",          "5",  "6",  "7", "8", "9", "0", "\n", "-", "_", "/", ":", ";",
-    "(",  ")",   "@", "&",          "\"", "\n", "#", "%", "*", "+", "=",  ".", ",", "?", "!", LV_SYMBOL_BACKSPACE,
-    "\n", "abc", " ", LV_SYMBOL_OK, ""};
+    "1",  "2",   "3",    "4", "5",          "6",  "7", "8", "9", "0", "\n", "-", "_", "/", ":", ";",
+    "(",  ")",   "@",    "&", "\"",         "\n", "#", "%", "*", "+", "=",  ".", ",", "?", "!", LV_SYMBOL_BACKSPACE,
+    "\n", "abc", "Talk", " ", LV_SYMBOL_OK, ""};
 const lv_buttonmatrix_ctrl_t KB_CTRL_LETTERS[] = {(lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
                                                   (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
                                                   (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
@@ -2613,7 +2866,8 @@ const lv_buttonmatrix_ctrl_t KB_CTRL_LETTERS[] = {(lv_buttonmatrix_ctrl_t)(LV_BU
                                                   (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
                                                   (lv_buttonmatrix_ctrl_t)(4),
                                                   (lv_buttonmatrix_ctrl_t)(3),
-                                                  (lv_buttonmatrix_ctrl_t)(9),
+                                                  (lv_buttonmatrix_ctrl_t)(3),
+                                                  (lv_buttonmatrix_ctrl_t)(6),
                                                   (lv_buttonmatrix_ctrl_t)(3)};
 const lv_buttonmatrix_ctrl_t KB_CTRL_SPECIAL[] = {(lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
                                                   (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
@@ -2646,7 +2900,8 @@ const lv_buttonmatrix_ctrl_t KB_CTRL_SPECIAL[] = {(lv_buttonmatrix_ctrl_t)(LV_BU
                                                   (lv_buttonmatrix_ctrl_t)(LV_BUTTONMATRIX_CTRL_POPOVER | 2),
                                                   (lv_buttonmatrix_ctrl_t)(3),
                                                   (lv_buttonmatrix_ctrl_t)(3),
-                                                  (lv_buttonmatrix_ctrl_t)(9),
+                                                  (lv_buttonmatrix_ctrl_t)(3),
+                                                  (lv_buttonmatrix_ctrl_t)(6),
                                                   (lv_buttonmatrix_ctrl_t)(3)};
 void buildPassword() {
   lv_obj_t *s = scr[(int)Screen::Password] = screenBase();
@@ -2671,7 +2926,7 @@ void buildPassword() {
   lv_obj_set_style_bg_opa(passwordField, LV_OPA_COVER, LV_PART_CURSOR);
   lv_obj_set_style_text_color(passwordField, MIST, LV_PART_TEXTAREA_PLACEHOLDER);
   // Show or hide what was typed.
-  lv_obj_t *eye = circle(s, 36, ICON_BG, 0, ICON_BG, LV_OPA_COVER);
+  lv_obj_t *eye = passwordEye = circle(s, 36, ICON_BG, 0, ICON_BG, LV_OPA_COVER);
   lv_obj_set_pos(eye, 188, 54);
   lv_obj_set_style_opa(eye, LV_OPA_60, LV_STATE_PRESSED);
   static lv_obj_t *eyeGlyph = nullptr;
@@ -2708,16 +2963,81 @@ void buildPassword() {
   lv_obj_add_event_cb(
       keyboard,
       [](lv_event_t *) {
-        const String password = lv_textarea_get_text(passwordField);
-        if (password.length() < 8) {
+        const String typed = lv_textarea_get_text(passwordField);
+        if (textMode == TextMode::Question) {
+          String q = typed;
+          q.trim();
+          if (q.isEmpty()) {
+            toast("Type a question, or hold Talk");
+            return;
+          }
+          lv_textarea_set_text(passwordField, "");
+          goBack();
+          startAsk(q);
+          return;
+        }
+        if (typed.length() < 8) {
           toast("Wi-Fi passwords have at least 8 characters");
           return;
         }
-        joinNetwork(joiningSsid, password);
+        joinNetwork(joiningSsid, typed);
         lv_textarea_set_text(passwordField, "");
         goBack();
       },
       LV_EVENT_READY, nullptr);
+  // Talk: hold the key and speak; the words are typed into the field.
+  lv_obj_remove_event_cb(keyboard, lv_keyboard_def_event_cb);
+  lv_obj_add_event_cb(
+      keyboard,
+      [](lv_event_t *e) {
+        lv_obj_t *kb = (lv_obj_t *)lv_event_get_target(e);
+        const uint32_t id = lv_buttonmatrix_get_selected_button(kb);
+        const char *label = id == LV_BUTTONMATRIX_BUTTON_NONE ? nullptr : lv_buttonmatrix_get_button_text(kb, id);
+        if (label && strcmp(label, "Talk") == 0) return;  // handled on press / release
+        lv_keyboard_def_event_cb(e);
+      },
+      LV_EVENT_VALUE_CHANGED, nullptr);
+  lv_obj_add_event_cb(
+      keyboard,
+      [](lv_event_t *e) {
+        lv_obj_t *kb = (lv_obj_t *)lv_event_get_target(e);
+        const uint32_t id = lv_buttonmatrix_get_selected_button(kb);
+        const char *label = id == LV_BUTTONMATRIX_BUTTON_NONE ? nullptr : lv_buttonmatrix_get_button_text(kb, id);
+        if (!label || strcmp(label, "Talk") != 0 || micRecording() || aiBusy()) return;
+        if (!networkConnected()) {
+          toast("Talk needs Wi-Fi");
+          return;
+        }
+        if (micStart()) {
+          dictating = true;
+          toast("Listening. Let go when done");
+        }
+      },
+      LV_EVENT_PRESSED, nullptr);
+  auto talkUp = [](lv_event_t *) {
+    if (!dictating || !micRecording()) return;
+    micStop();
+    size_t len = 0;
+    const uint8_t *wav = micWav(len);
+    if (micSeconds() < 0.6f) {
+      dictating = false;
+      toast("Hold Talk while you speak");
+      return;
+    }
+    AiOptions options = aiOptions(useGemini);
+    pauseBluetooth();
+    const bool started = aiTranscribe(options, wav, len);
+    options.key = "";
+    if (!started) {
+      dictating = false;
+      toast("Could not start");
+      return;
+    }
+    pending = Pending::Transcribe;
+    toast("Writing it down");
+  };
+  lv_obj_add_event_cb(keyboard, talkUp, LV_EVENT_RELEASED, nullptr);
+  lv_obj_add_event_cb(keyboard, talkUp, LV_EVENT_PRESS_LOST, nullptr);
 }
 
 // ---------- Gestures: wave to change slides on a paired computer ----------
@@ -2975,13 +3295,15 @@ void segmented(lv_obj_t *list, lv_obj_t **segs, lv_event_cb_t cb, int provider) 
   }
 }
 void refreshAiScreen() {
-  const String sig = String(useGemini) + geminiModel + geminiEffort + gptModel + gptEffort + keyCache;
+  const String sig = String(useGemini) + geminiModel + geminiEffort + gptModel + gptEffort + keyCache + confirmWords;
   if (sig == aiScreenSignature) return;
   aiScreenSignature = sig;
   for (int i = 0; i < 2; ++i) {
     setText(aiUseCheck[i], (i == 0) == useGemini ? LV_SYMBOL_OK : "");
     setText(aiUseSub[i], (keyCache >> i) & 1 ? "Key saved" : "No key: add it in PC setup");
   }
+  setText(wordsCheck, confirmWords ? LV_SYMBOL_OK : "");
+  setText(wordsSub, confirmWords ? "On: you check the words, then Ask" : "Off: your voice goes straight in");
   for (int i = 0; i < GEMINI_MODEL_COUNT; ++i) setText(gemModelCheck[i], i == geminiModel ? LV_SYMBOL_OK : "");
   for (int i = 0; i < GPT_MODEL_COUNT; ++i) setText(gptModelCheck[i], i == gptModel ? LV_SYMBOL_OK : "");
   for (int p = 0; p < 2; ++p)
@@ -3048,7 +3370,19 @@ void buildModel() {
         saveAi();
       },
       1);
+  sectionLabel(list, "VOICE");
+  choiceRow(
+      list, "Show words first", "Check what you said before asking", &wordsCheck, &wordsSub,
+      [](lv_event_t *) {
+        confirmWords = !confirmWords;
+        settings.putBool("words-first", confirmWords);
+        aiScreenSignature = "";
+        refreshDynamic();
+      },
+      0);
   lv_obj_t *note = text(list,
+                        "Showing your words first uses one extra short request (free on Gemini's daily limit). "
+                        "Off: Gemini hears your voice with the photo in one request. "
                         "More thinking is slower, and costs more with GPT. When a free Gemini limit runs out, "
                         "the next Gemini model answers instead.",
                         F_SMALL, MIST);
@@ -3069,15 +3403,20 @@ void buildNotice() {
   onClick(ok, [] { goBack(); });
 }
 
-lv_obj_t *ccToggle(lv_obj_t *parent, const char *label, lv_obj_t **labelOut) {
+// One control: disc (amber = on), its name, and its state in plain words underneath.
+lv_obj_t *ccToggle(lv_obj_t *parent, const char *label, lv_obj_t **labelOut, lv_obj_t **stateOut = nullptr) {
   lv_obj_t *col = plain(parent);
-  lv_obj_set_size(col, 70, 84);
-  lv_obj_t *t = circle(col, 58, INK, 0, ICON_BG, LV_OPA_COVER);
+  lv_obj_set_size(col, 58, 92);
+  lv_obj_t *t = circle(col, 50, INK, 0, ICON_BG, LV_OPA_COVER);
   lv_obj_align(t, LV_ALIGN_TOP_MID, 0, 0);
   lv_obj_set_style_opa(t, LV_OPA_70, LV_STATE_PRESSED);
+  lv_obj_set_ext_click_area(t, 4);
   lv_obj_t *l = text(col, label, F_SMALL, INK);
-  lv_obj_align(l, LV_ALIGN_BOTTOM_MID, 0, 0);
+  lv_obj_align(l, LV_ALIGN_TOP_MID, 0, 56);
   if (labelOut) *labelOut = l;
+  lv_obj_t *st = text(col, "", F_SMALL, MIST);
+  lv_obj_align(st, LV_ALIGN_TOP_MID, 0, 74);
+  if (stateOut) *stateOut = st;
   return t;
 }
 void buildControl() {
@@ -3090,11 +3429,11 @@ void buildControl() {
   lv_obj_remove_flag(cc, LV_OBJ_FLAG_GESTURE_BUBBLE);
   lv_obj_set_y(cc, -H);
   lv_obj_t *grid = plain(cc);
-  lv_obj_set_size(grid, 228, 90);
+  lv_obj_set_size(grid, 236, 96);
   lv_obj_align(grid, LV_ALIGN_TOP_MID, 0, 34);
   lv_obj_set_flex_flow(grid, LV_FLEX_FLOW_ROW);
   lv_obj_set_flex_align(grid, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-  ccWifi = ccToggle(grid, "Wi-Fi", &ccWifiLabel);
+  ccWifi = ccToggle(grid, "Wi-Fi", &ccWifiLabel, &ccWifiState);
   glyphSymbol(ccWifi, LV_SYMBOL_WIFI, INK);
   onClick(ccWifi, [] {
     networkSetEnabled(!networkEnabled());
@@ -3108,13 +3447,19 @@ void buildControl() {
         show(Screen::Wifi);
       },
       LV_EVENT_LONG_PRESSED, nullptr);
-  ccCamera = ccToggle(grid, "Camera", &ccCameraLabel);
+  ccBt = ccToggle(grid, "BT", &ccBtLabel, &ccBtState);
+  glyphSymbol(ccBt, LV_SYMBOL_BLUETOOTH, INK);
+  onClick(ccBt, [] {
+    setBluetooth(!bluetoothOn);
+    toast(bluetoothOn ? "Bluetooth on" : "Bluetooth off");
+  });
+  ccCamera = ccToggle(grid, "Camera", &ccCameraLabel, &ccCameraState);
   glyphSymbol(ccCamera, LV_SYMBOL_EYE_OPEN, INK);
   onClick(ccCamera, [] {
     setCameraOff(!cameraOff);
     toast(cameraOff ? "Camera off" : "Camera on");
   });
-  ccModel = ccToggle(grid, "Gemini", &ccModelLabel);
+  ccModel = ccToggle(grid, "AI", &ccModelLabel, &ccModelState);
   lv_obj_t *modelGlyph = text(ccModel, "G", F_BODY, INK);
   lv_obj_center(modelGlyph);
   onClick(ccModel, [] {
@@ -3123,9 +3468,9 @@ void buildControl() {
   });
   // Brightness: drag along the bar.
   lv_obj_t *brightTitle = text(cc, "Brightness", F_SMALL, MIST);
-  lv_obj_align(brightTitle, LV_ALIGN_TOP_LEFT, 22, 138);
+  lv_obj_align(brightTitle, LV_ALIGN_TOP_LEFT, 22, 140);
   ccBright = brightnessSlider(cc, W - 44, 44);
-  lv_obj_align(ccBright, LV_ALIGN_TOP_MID, 0, 158);
+  lv_obj_align(ccBright, LV_ALIGN_TOP_MID, 0, 160);
   // Sun mark: grey reads on both the filled and the empty part of the bar.
   lv_obj_t *sun = circle(ccBright, 10, MIST, 2, VOID_, LV_OPA_TRANSP);
   lv_obj_align(sun, LV_ALIGN_LEFT_MID, 22, 0);
@@ -3418,6 +3763,9 @@ void deviceNoteSerial() { lastSerialMs = millis(); }
 void initDeviceUi() {
   settings.begin("tiny-ai", false);
   useGemini = settings.getBool("gemini", true);
+  bluetoothOn = settings.getBool("bt-on", false);
+  confirmWords = settings.getBool("words-first", true);
+  batteryBegin();
   geminiModel = constrain(settings.getUChar("gm-model", 0), 0, GEMINI_MODEL_COUNT - 1);
   geminiEffort = constrain(settings.getUChar("gm-effort", 0), 0, AI_EFFORT_COUNT - 1);
   gptModel = constrain(settings.getUChar("gp-model", 0), 0, GPT_MODEL_COUNT - 1);
@@ -3648,6 +3996,17 @@ void handleDeviceButton(char command) {
     const int y = xy.substring(comma + 1, comma2 > 0 ? comma2 : xy.length()).toInt();
     const int hold = comma2 > 0 ? constrain((int)xy.substring(comma2 + 1).toInt(), 0, 20000) : 80;
     if (x >= 0 && x < W && y >= TOP_ZONE && y < HOME_ZONE) injectTap(x, y, hold);
+    sendFrame();
+    return;
+  }
+  if (command == '^') {
+    // Developer: "x,y" double tap (photo zoom checks), then a frame.
+    const String xy = Serial.readStringUntil('\n');
+    const int comma = xy.indexOf(',');
+    const int x = constrain((int)xy.substring(0, comma).toInt(), 0, W - 1);
+    const int y = constrain((int)xy.substring(comma + 1).toInt(), TOP_ZONE, HOME_ZONE - 1);
+    injectTap(x, y, 60);
+    injectTap(x, y, 60);
     sendFrame();
     return;
   }
@@ -3919,15 +4278,14 @@ void handleDeviceButton(char command) {
       static uint16_t *th = (uint16_t *)ps_malloc(THUMB * THUMB * 2);
       const bool haveThumb = latestPhotoId && th && loadPhotoThumb(latestPhotoId, th);
       saveAnswer(
-          "Answer: x = 1 or x = -4\n\n"
-          "Steps:\n"
-          "1. Write the equation from the photo: **x^2 + 3x - 4 = 0**\n"
-          "2. Factor it into two brackets:\n"
-          "(x + 4)(x - 1) = 0\n"
-          "3. Set each bracket to zero and solve: x = -4 or x = 1\n\n"
-          "## Check\n"
-          "- Put x = 1 back in: 1 + 3 - 4 = 0\n"
-          "- A fraction from LaTeX reads as \\frac{1}{2} x^{2}\n\n"
+          "Q1: c. O(n^2)\n"
+          "1. **.get(i)** on a LinkedList walks i nodes: O(n)\n"
+          "2. The loop calls it n times: n * O(n) = O(n^2)\n\n"
+          "**Q2:** b. 2n\n"
+          "1. The loop runs while i < data.size() * 2\n"
+          "2. So foo is called 2n times\n\n"
+          "Question 3: x = 1 or x = -4\n"
+          "(x + 4)(x - 1) = 0\n\n"
           "Sample written on the device for a layout check, not by a model.",
           true, latestPhotoId, clockKnown() ? (uint32_t)time(nullptr) : 0, haveThumb ? th : nullptr);
       loadLatestAnswer();
@@ -4026,8 +4384,19 @@ void deviceTick() {
   if ((ai == AiState::Done || ai == AiState::Failed) && pending == Pending::Transcribe) {
     pending = Pending::None;
     lv_obj_add_flag(busy, LV_OBJ_FLAG_HIDDEN);
-    if (ai == AiState::Failed) notice(result, Screen::Ask);
-    else showHeard(result);
+    if (dictating) {
+      dictating = false;
+      if (ai == AiState::Failed) toast("Could not hear that. Try again");
+      else {
+        String current = lv_textarea_get_text(passwordField);
+        if (current.length() && !current.endsWith(" ")) lv_textarea_add_text(passwordField, " ");
+        lv_textarea_add_text(passwordField, result.c_str());
+      }
+    } else if (ai == AiState::Failed) notice(result, Screen::Ask);
+    else if (sendAfterTranscribe) {
+      sendAfterTranscribe = false;
+      startAsk(result);
+    } else showHeard(result);
   } else if (ai == AiState::Cancelled && pending == Pending::Transcribe) {
     pending = Pending::None;
   } else if (ai == AiState::Done && queueInFlight) {
@@ -4063,6 +4432,15 @@ void deviceTick() {
     const uint32_t when = clockKnown() ? (uint32_t)time(nullptr) : 0;
     const uint32_t id = saveAnswer(result, pendingGemini, pendingPhotoId, when, haveThumb ? th : nullptr);
     if (!id) Serial.println("STORAGE_ERROR Answer not saved");
+    if (id) {
+      sessionAnswers.push_back(id);
+      sessionQuestions.push_back(pendingQuestion);
+      while (sessionAnswers.size() > 6) {
+        sessionAnswers.erase(sessionAnswers.begin());
+        sessionQuestions.erase(sessionQuestions.begin());
+      }
+      chatFresh = false;
+    }
     loadLatestAnswer();
     const bool waiting = !lv_obj_has_flag(busy, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(busy, LV_OBJ_FLAG_HIDDEN);
@@ -4073,6 +4451,12 @@ void deviceTick() {
     const bool waiting = !lv_obj_has_flag(busy, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(busy, LV_OBJ_FLAG_HIDDEN);
     if (waiting && current == Screen::Ask) notice(result, Screen::Ask);
+  }
+  if (btPaused && !aiBusy()) resumeBluetooth();
+  static bool btStarted = false;  // start a few seconds after boot, once the UI is up
+  if (!btStarted && now > 4000) {
+    btStarted = true;
+    if (bluetoothOn && !aiBusy()) remoteBegin();
   }
   if (captureReady && !captureRequested) {
     String problem;
@@ -4109,11 +4493,11 @@ void deviceTick() {
       uint8_t *wav = nullptr;
       size_t wavLen = 0;
       queueLoadAudio(queued[i].id, wav, wavLen);
-      remoteEnd();  // Bluetooth leaves too little memory for HTTPS
+      pauseBluetooth();  // Bluetooth leaves too little memory for HTTPS
       AiOptions options = aiOptions(queued[i].gemini);
       const uint8_t *pages[1] = {jpeg};
       const size_t lengths[1] = {len};
-      const bool started = aiStart(options, pages, lengths, 1, "", wav, wavLen);
+      const bool started = aiStart(options, pages, lengths, 1, "", "", wav, wavLen);
       options.key = "";
       free(wav);
       if (started) {

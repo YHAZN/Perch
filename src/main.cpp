@@ -78,6 +78,8 @@ void printStatus() {
   Serial.printf("Chip: %s, revision %d, %d cores\n", ESP.getChipModel(), ESP.getChipRevision(), ESP.getChipCores());
   Serial.printf("Flash: %u bytes\n", ESP.getFlashChipSize());
   Serial.printf("Free heap: %u bytes\n", ESP.getFreeHeap());
+  Serial.printf("Internal: %u free, largest %u\n", heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
   Serial.printf("PSRAM: %s, total %u bytes, free %u bytes\n", psramFound() ? "FOUND" : "NOT FOUND", ESP.getPsramSize(),
                 ESP.getFreePsram());
   Serial.printf("Reset reason: %d\n", static_cast<int>(esp_reset_reason()));

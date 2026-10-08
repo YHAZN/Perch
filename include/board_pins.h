@@ -12,3 +12,7 @@ constexpr int PIN_SPI_SCK = 7;   // D8, shared with microSD
 constexpr int PIN_SPI_MISO = 8;  // D9, microSD only
 constexpr int PIN_SPI_MOSI = 9;  // D10, shared with microSD
 constexpr int PIN_SD_CS = 21;    // internal, also the user LED
+// Battery sense: BAT+ through a 1:2 divider (2 x 100 kOhm) to this pin. -1 = not wired yet.
+// When wired on D3 (GPIO4), TP_RST moves off D3 (see docs/PINS.md, "Battery").
+constexpr int PIN_BATTERY = -1;
+constexpr float BATTERY_DIVIDER = 2.0f;

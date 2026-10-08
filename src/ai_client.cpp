@@ -61,19 +61,24 @@ class BoundedResponse : public Stream {
 // The reply format is what the device renders (see the answer screen): a one-line answer,
 // then numbered steps, formulas on their own lines. Plain ASCII: the fonts have nothing else.
 const char *FORMAT =
-    "Reply in this exact format for a small screen:\n"
+    "Reply in this exact format for a small screen.\n"
+    "If there is one question:\n"
     "Answer: <the final answer, one short line>\n"
-    "\n"
     "Steps:\n"
     "1. <one short step>\n"
     "2. <next step>\n"
+    "If there are several questions, answer every one in order, each like this, with a blank line between them:\n"
+    "Q<number>: <the final answer, one short line>\n"
+    "1. <one short step>\n"
+    "2. <next step>\n"
+    "Use the question numbers printed on the page when there are any. "
     "Put each formula or equation on its own line. Use ASCII math (x^2, sqrt(x), *, /, <=). "
-    "No tables, no LaTeX, no headings other than 'Steps:'. Use **bold** only for key terms. "
+    "No tables, no LaTeX, no other headings. Use **bold** only for key terms. "
     "If text is unclear, say exactly what cannot be read and ask for a closer photo; never invent content.";
 const char *TASK_ONE = "Read the photographed problem carefully and solve it.";
 const char *TASK_PAGES =
-    "The photos are pages in order. Earlier pages give context for the last page. "
-    "Read all of them, then solve the problem on the last page.";
+    "Several photos are attached in order; the last one is the newest. Earlier photos are "
+    "context from this conversation. Solve what the newest photo asks.";
 const char *TASK_VOICE =
     "The attached audio is the user's spoken question about the photos. Answer that question. "
     "If the audio is unclear, say what you could not hear.";
@@ -227,6 +232,7 @@ struct Job {
   size_t lengths[AI_MAX_PAGES] = {0};
   int pages = 0;
   String question;
+  String history;  // earlier questions and answers in this conversation
   uint8_t *wav = nullptr;
   size_t wavLength = 0;
   String result;
@@ -243,6 +249,7 @@ struct Job {
     wavLength = 0;
     options.key = "";
     question = "";
+    history = "";
   }
 };
 
@@ -250,7 +257,9 @@ struct Job {
 void buildAnswerBody(const Job &j, Body &body) {
   const bool voice = j.options.gemini && j.wav && j.wavLength;
   String task = voice ? TASK_VOICE : (j.pages > 1 ? TASK_PAGES : TASK_ONE);
-  if (j.question.length()) task += String(" The user's question: \"") + j.question + "\". Answer that question.";
+  if (j.history.length())
+    task += String("\nEarlier in this conversation (context only, do not repeat it):\n") + j.history + "\n";
+  if (j.question.length()) task += String(" The user's question now: \"") + j.question + "\". Answer that question.";
   const String prompt = jsonEscape(task + "\n" + FORMAT);
   if (j.options.gemini) {
     body.add(String("{\"contents\":[{\"parts\":[{\"text\":\"") + prompt + "\"}");
@@ -574,13 +583,14 @@ bool launch() {
 bool aiBusy() { return state != AiState::Idle; }
 
 bool aiStart(const AiOptions &options, const uint8_t *const *jpegs, const size_t *lengths, int pages,
-             const String &question, const uint8_t *wav, size_t wavLength) {
+             const String &question, const String &history, const uint8_t *wav, size_t wavLength) {
   if (state != AiState::Idle || pages < 1 || pages > AI_MAX_PAGES) return false;
   if (!job) job = new Job();
   job->release();
   job->kind = Kind::Answer;
   job->options = options;
   job->question = question;
+  job->history = history;
   job->result = "";
   job->ok = false;
   // The worker owns its own copies, so a new capture or recording can never change an upload.
@@ -635,7 +645,7 @@ AiState aiPoll(String &text) {
   return current;
 }
 
-void aiDryRun(const AiOptions &options, int pages, const String &question, bool transcribe) {
+void aiDryRun(const AiOptions &options, int pages, const String &question, bool transcribe, const String &history) {
   // A minimal valid JPEG/WAV stand-in: the shape of the body is what is checked.
   static const uint8_t fakeJpeg[] = {0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0xFF, 0xD9};
   static const uint8_t fakeWav[] = {'R', 'I', 'F', 'F', 0, 0, 0, 0, 'W', 'A', 'V', 'E'};
@@ -643,6 +653,7 @@ void aiDryRun(const AiOptions &options, int pages, const String &question, bool 
   j.kind = transcribe ? Kind::Transcribe : Kind::Answer;
   j.options = options;
   j.question = question;
+  j.history = history;
   j.pages = transcribe ? 0 : constrain(pages, 1, AI_MAX_PAGES);
   for (int i = 0; i < j.pages; ++i) {
     j.jpegs[i] = (uint8_t *)fakeJpeg;

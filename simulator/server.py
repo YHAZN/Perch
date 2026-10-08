@@ -266,6 +266,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(200, result)
             except (serial.SerialException, RuntimeError, OSError, ValueError):
                 return self.reply(503, {'error': 'Preview interrupted. Check USB and retry.'})
+        if self.path == '/api/doubletap':
+            try:
+                length = int(self.headers.get('Content-Length', '0'))
+                d = json.loads(self.rfile.read(length)) if 1 <= length <= 64 else {}
+                x, y = d.get('x'), d.get('y')
+                if type(x) is not int or type(y) is not int:
+                    return self.reply(400, {'error': 'Invalid tap.'})
+                return self.reply(200, exchange(f'^{x},{y}\n', screen=True))
+            except (serial.SerialException, RuntimeError, ValueError, OSError) as error:
+                return self.reply(503, {'error': str(error)})
         if self.path == '/api/drag':
             # Developer: a finger drag, system edges included (gesture checks).
             try:
