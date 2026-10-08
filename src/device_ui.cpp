@@ -527,6 +527,7 @@ void analyseGesture(const camera_fb_t *f) {
 }
 volatile bool captureRequested = false;
 volatile bool captureProcessing = false;  // the save task is preparing the last photo
+volatile bool cameraFailed = false;       // the driver did not start (shown, retried every 2 s)
 bool cameraOffSetting();
 // The camera task owns the camera: it starts and stops the driver (0.3 s, longer the first
 // time) so the UI never waits for it. The UI only says what it wants (previewWanted).
@@ -549,8 +550,10 @@ void previewTask(void *) {
     const bool want = previewWanted;
     if (want != (cameraMode() == CameraMode::Preview)) {
       xSemaphoreTake(camLock, portMAX_DELAY);
-      cameraSetMode(want ? CameraMode::Preview : CameraMode::Off);
+      const bool ok = cameraSetMode(want ? CameraMode::Preview : CameraMode::Off);
       xSemaphoreGive(camLock);
+      cameraFailed = want && !ok;
+      if (cameraFailed) vTaskDelay(pdMS_TO_TICKS(2000));  // say so on screen; retry calmly
       continue;
     }
     if (!want) {
@@ -1372,7 +1375,9 @@ void refreshDynamic() {
   // Camera privacy
   hide(viewfinder, cameraOff);
   hide(shutter, cameraOff);
-  hide(cameraOffLabel, !cameraOff);
+  hide(cameraOffLabel, !cameraOff && !cameraFailed);
+  setText(cameraOffLabel,
+          cameraOff ? "Camera is off.\nTurn it on in Control Center." : "The camera did not start.\nTrying again...");
   // Settings and Model
   setText(modelValue, useGemini ? GEMINI_MODELS[constrain(geminiModel, 0, GEMINI_MODEL_COUNT - 1)].label
                                 : GPT_MODELS[constrain(gptModel, 0, GPT_MODEL_COUNT - 1)].label);

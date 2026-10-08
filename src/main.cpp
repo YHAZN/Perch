@@ -8,6 +8,7 @@
 #include "ai_client.h"
 #include "clock.h"
 #include "camera.h"
+#include "remote.h"
 
 void testWifi(const char *ssid = WIFI_TEST_SSID, const char *password = WIFI_TEST_PASSWORD) {
   WiFi.mode(WIFI_STA);
@@ -80,6 +81,7 @@ void printStatus() {
   Serial.printf("Free heap: %u bytes\n", ESP.getFreeHeap());
   Serial.printf("Internal: %u free, largest %u\n", heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                 heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+  Serial.printf("Bluetooth: %s\n", remoteStarted() ? "on" : "off");
   Serial.printf("PSRAM: %s, total %u bytes, free %u bytes\n", psramFound() ? "FOUND" : "NOT FOUND", ESP.getPsramSize(),
                 ESP.getFreePsram());
   Serial.printf("Reset reason: %d\n", static_cast<int>(esp_reset_reason()));
@@ -90,6 +92,12 @@ void printStatus() {
 }
 
 void setup() {
+  // Internal RAM (~320 KB usable) is what Wi-Fi, Bluetooth, TLS and the camera's DMA need;
+  // by default every malloc under 4 KB lands there, and hundreds of UI objects and strings
+  // left too little for Bluetooth plus the camera (measured: 2-4 KB free, camera init failed).
+  // Ordinary allocations above 32 bytes now prefer PSRAM; drivers that need internal or DMA
+  // memory ask for it explicitly and are unaffected.
+  heap_caps_malloc_extmem_enable(32);
   Serial.begin(115200);
   Serial.setDebugOutput(false);
   // The USB-serial driver treats a 100 ms pause in host reads as "unplugged" and then
