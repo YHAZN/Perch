@@ -2303,6 +2303,9 @@ void buildCamera() {
   lv_obj_add_flag(pageBanner, LV_OBJ_FLAG_HIDDEN);
   // Shutter: one ring. Press fills it, so the feedback lands on touch-down.
   shutter = circle(s, 60, INK, 4, INK, LV_OPA_TRANSP);
+  lv_obj_set_style_outline_width(shutter, 2, 0);
+  lv_obj_set_style_outline_color(shutter, VOID_, 0);
+  lv_obj_set_style_outline_opa(shutter, 140, 0);
   lv_obj_align(shutter, LV_ALIGN_BOTTOM_MID, 0, -ABOVE_HOME);
   lv_obj_set_style_bg_opa(shutter, 215, LV_STATE_PRESSED);
   onClick(shutter, [] {
@@ -2321,6 +2324,9 @@ void buildCamera() {
   lv_obj_set_style_border_width(thumb, 2, 0);
   lv_obj_set_style_border_color(thumb, INK, 0);
   lv_obj_set_style_border_opa(thumb, LV_OPA_70, 0);
+  lv_obj_set_style_outline_width(thumb, 1, 0);
+  lv_obj_set_style_outline_color(thumb, VOID_, 0);
+  lv_obj_set_style_outline_opa(thumb, 140, 0);
   lv_obj_align(thumb, LV_ALIGN_BOTTOM_LEFT, 26, -ABOVE_HOME - 10);
   onClick(thumb, [] { show(Screen::Photos); });
   flash = plain(s);
@@ -3868,9 +3874,9 @@ void initDeviceUi() {
   for (auto &b : drawBuffers)
     b = (uint16_t *)heap_caps_malloc(W * DISPLAY_CHUNK_ROWS * 2, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
   for (int y = 0; y < H; ++y) {
-    // Viewfinder shading: none above the bottom 110 px, then easing to ~33% brightness.
-    const int t = y - (H - 110);
-    scrimRow[y] = t <= 0 ? 255 : (uint8_t)(255 - (170 * min(t * 100 / 60, 100)) / 100);
+    // No shading baked into the viewfinder: it showed as a seam across the picture. The
+    // controls carry their own dark outline instead, so they read on any scene.
+    scrimRow[y] = 255;
   }
   Serial.printf("DISPLAY lcd=%d touch=%d spi=%uMHz\n", lcd, touchAvailable(), spiMhz);
   if (!framebuffer || !captureScreen || !liveBuf[1] || !liveBuf[2] || !livePixels || !photoPixels || !galleryPixels ||
