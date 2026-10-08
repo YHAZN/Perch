@@ -102,6 +102,7 @@ uint32_t savePhoto(const uint8_t *jpeg, size_t length, const uint16_t *thumb) {
     LittleFS.remove(path("/photos", oldest, ".jpg"));
     LittleFS.remove(path("/photos", oldest, ".thm"));
     LittleFS.remove(path("/photos", oldest, ".scr"));
+    LittleFS.remove(path("/photos", oldest, ".gfu"));
   }
   const uint32_t id = nextId();
   if (!writeFile(path("/photos", id, ".thm"), reinterpret_cast<const uint8_t *>(thumb), THUMB_BYTES)) return 0;
@@ -160,6 +161,28 @@ bool loadPhotoScreen(uint32_t id, uint8_t *&jpeg, size_t &length) {
     length = 0;
   }
   return ok;
+}
+
+// Where a photo was uploaded for the AI (Gemini Files API), so a chat does not upload it again:
+// "/photos/<id>.gfu" = uri, then "<expires> <keyTag>" (keyTag tells keys apart; not the key).
+bool photoUriSave(uint32_t id, const String &uri, uint32_t expires, uint32_t keyTag) {
+  if (!mounted) return false;
+  const String body = uri + "\n" + expires + " " + keyTag;
+  return writeFile(path("/photos", id, ".gfu"), reinterpret_cast<const uint8_t *>(body.c_str()), body.length());
+}
+bool photoUriLoad(uint32_t id, String &uri, uint32_t &expires, uint32_t &keyTag) {
+  if (!mounted) return false;
+  File f = LittleFS.open(path("/photos", id, ".gfu"), "r");
+  if (!f) return false;
+  uri = f.readStringUntil('\n');
+  expires = f.parseInt();
+  keyTag = (uint32_t)strtoul(f.readString().c_str(), nullptr, 10);
+  f.close();
+  uri.trim();
+  return uri.length() > 0;
+}
+void photoUriForget(uint32_t id) {
+  if (mounted) LittleFS.remove(path("/photos", id, ".gfu"));
 }
 
 // Chats: "/chats/<id>.json", written whole each time it changes (they are small text).
@@ -328,6 +351,7 @@ bool deletePhoto(uint32_t id) {
     if (queued[i].photoId == id) return false;
   LittleFS.remove(path("/photos", id, ".thm"));
   LittleFS.remove(path("/photos", id, ".scr"));
+  LittleFS.remove(path("/photos", id, ".gfu"));
   return LittleFS.remove(path("/photos", id, ".jpg"));
 }
 

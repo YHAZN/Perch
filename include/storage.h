@@ -66,3 +66,8 @@ bool chatSave(uint32_t id, const String &json);
 bool chatLoad(uint32_t id, String &json);
 int chatList(uint32_t *ids, int max);
 bool chatDelete(uint32_t id);
+
+// Where a photo was uploaded for the AI (Gemini Files API keeps files 48 h).
+bool photoUriSave(uint32_t id, const String &uri, uint32_t expires, uint32_t keyTag);
+bool photoUriLoad(uint32_t id, String &uri, uint32_t &expires, uint32_t &keyTag);
+void photoUriForget(uint32_t id);

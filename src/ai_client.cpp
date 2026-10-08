@@ -11,6 +11,7 @@
 #include <Preferences.h>
 #include <vector>
 #include "ai_root_certs.h"
+#include "storage.h"
 
 const AiModel GEMINI_MODELS[] = {
     {"gemini-3.8-flash", "Gemini 3.8 Flash", "Newest. Small free daily limit"},
@@ -84,6 +85,11 @@ const char *TASK_PAGES =
 const char *TASK_VOICE =
     "The attached audio is the user's spoken question about the photos. Answer that question. "
     "If the audio is unclear, say what you could not hear.";
+// A conversation's standing instructions (system message); the turns carry the chat itself.
+const char *CHAT_SYSTEM =
+    "You are Perch, the assistant on a small camera device with a 240x284 screen. "
+    "The user may attach photos of problems, pages, screens or objects: read them carefully. "
+    "Earlier photos and messages in this conversation are context; answer the newest message.\n";
 const char *TRANSCRIBE_PROMPT =
     "Transcribe this audio exactly as spoken. Reply with only the words, no commentary. "
     "If nothing intelligible was said, reply with an empty line.";
@@ -336,7 +342,10 @@ struct Job {
   size_t lengths[AI_MAX_PAGES] = {0};
   int pages = 0;
   String question;
-  String history;  // earlier questions and answers in this conversation
+  String history;             // earlier questions and answers in this conversation
+  std::vector<AiTurn> turns;  // a conversation (Ask): sent as real turns
+  uint32_t photoIds[AI_MAX_PAGES] = {0};
+  String fileUris[AI_MAX_PAGES];  // Gemini Files API links for photos already uploaded
   uint8_t *wav = nullptr;
   size_t wavLength = 0;
   String result;
@@ -346,6 +355,8 @@ struct Job {
       free(jpegs[i]);
       jpegs[i] = nullptr;
       lengths[i] = 0;
+      photoIds[i] = 0;
+      fileUris[i] = "";
     }
     pages = 0;
     free(wav);
@@ -354,11 +365,149 @@ struct Job {
     options.key = "";
     question = "";
     history = "";
+    turns.clear();
   }
 };
 
+// A conversation as real turns: system instructions, then user/model messages, each with its
+// own photos (a Files API link when uploaded, else inline). Consecutive turns of the same
+// role were merged by the caller.
+void addImage(const Job &j, int i, Body &body) {
+  if (j.options.gemini) {
+    if (j.fileUris[i].length()) {
+      body.add(String(",{\"file_data\":{\"mime_type\":\"image/jpeg\",\"file_uri\":\"") + j.fileUris[i] + "\"}}");
+    } else {
+      body.add(",{\"inline_data\":{\"mime_type\":\"image/jpeg\",\"data\":\"");
+      body.blob(j.jpegs[i], j.lengths[i]);
+      body.add("\"}}");
+    }
+  } else {
+    body.add(",{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/jpeg;base64,");
+    body.blob(j.jpegs[i], j.lengths[i]);
+    body.add("\",\"detail\":\"high\"}}");
+  }
+}
+void buildChatBody(const Job &j, Body &body) {
+  const String system = jsonEscape(String(CHAT_SYSTEM) + FORMAT);
+  const bool voice = j.options.gemini && j.wav && j.wavLength;
+  int image = 0;
+  if (j.options.gemini) {
+    body.add(String("{\"systemInstruction\":{\"parts\":[{\"text\":\"") + system + "\"}]},\"contents\":[");
+    for (size_t t = 0; t < j.turns.size(); ++t) {
+      const AiTurn &turn = j.turns[t];
+      String text = turn.text;
+      if (text.isEmpty()) text = turn.user ? (turn.images ? "(photo)" : "(spoken question)") : "(no answer)";
+      body.add(String(t ? "," : "") + "{\"role\":\"" + (turn.user ? "user" : "model") + "\",\"parts\":[{\"text\":\"" +
+               jsonEscape(text) + "\"}");
+      for (int k = 0; k < turn.images && image < j.pages; ++k) addImage(j, image++, body);
+      if (voice && t == j.turns.size() - 1) {
+        body.add(",{\"inline_data\":{\"mime_type\":\"audio/wav\",\"data\":\"");
+        body.blob(j.wav, j.wavLength);
+        body.add("\"}}");
+      }
+      body.add("]}");
+    }
+    body.add(String("],\"generationConfig\":{\"maxOutputTokens\":8192,\"thinkingConfig\":{\"thinkingLevel\":\"") +
+             j.options.effort + "\"}}}");
+  } else {
+    body.add(String("{\"model\":\"") + j.options.model + "\",\"reasoning_effort\":\"" + j.options.effort +
+             "\",\"max_completion_tokens\":8000,\"stream\":true,\"messages\":[{\"role\":\"system\",\"content\":\"" +
+             system + "\"}");
+    for (const AiTurn &turn : j.turns) {
+      String text = turn.text;
+      if (text.isEmpty()) text = turn.user ? (turn.images ? "(photo)" : "(spoken question)") : "(no answer)";
+      if (turn.user) {
+        body.add(String(",{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"") + jsonEscape(text) + "\"}");
+        for (int k = 0; k < turn.images && image < j.pages; ++k) addImage(j, image++, body);
+        body.add("]}");
+      } else {
+        body.add(String(",{\"role\":\"assistant\",\"content\":\"") + jsonEscape(text) + "\"}");
+      }
+    }
+    body.add("]}");
+  }
+}
+
+// Gemini Files API: upload a photo once (resumable start, then upload+finalize) and get its
+// link. Free; files are kept 48 hours. Later turns send the link instead of the photo.
+uint32_t keyTag(const String &key) {
+  uint32_t h = 2166136261u;
+  for (size_t i = 0; i < key.length(); ++i) {
+    h ^= (uint8_t)key[i];
+    h *= 16777619u;
+  }
+  return h;
+}
+bool geminiUpload(const String &key, const uint8_t *data, size_t length, String &uri) {
+  String uploadUrl;
+  {
+    WiFiClientSecure client;
+    client.setCACert(AI_ROOT_CERTS);
+    client.setHandshakeTimeout(12);
+    HTTPClient http;
+    http.setConnectTimeout(12000);
+    http.setTimeout(20000);
+    static const char *keep[] = {"x-goog-upload-url"};
+    http.collectHeaders(keep, 1);
+    if (!http.begin(client, "https://generativelanguage.googleapis.com/upload/v1beta/files")) return false;
+    http.addHeader("x-goog-api-key", key);
+    http.addHeader("X-Goog-Upload-Protocol", "resumable");
+    http.addHeader("X-Goog-Upload-Command", "start");
+    http.addHeader("X-Goog-Upload-Header-Content-Length", String(length));
+    http.addHeader("X-Goog-Upload-Header-Content-Type", "image/jpeg");
+    http.addHeader("Content-Type", "application/json");
+    const int status = http.POST("{\"file\":{\"display_name\":\"perch-photo\"}}");
+    uploadUrl = http.header("x-goog-upload-url");
+    http.end();
+    Serial.printf("AI_UPLOAD start %d\n", status);
+    if (status != 200 || !uploadUrl.startsWith("https://")) return false;
+  }
+  WiFiClientSecure client;
+  client.setCACert(AI_ROOT_CERTS);
+  client.setHandshakeTimeout(12);
+  HTTPClient http;
+  http.setConnectTimeout(12000);
+  http.setTimeout(65000);
+  if (!http.begin(client, uploadUrl)) return false;
+  http.addHeader("X-Goog-Upload-Offset", "0");
+  http.addHeader("X-Goog-Upload-Command", "upload, finalize");
+  const uint32_t t = millis();
+  const int status = http.POST((uint8_t *)data, length);
+  const String reply = status > 0 ? http.getString() : String("");
+  http.end();
+  JsonDocument doc;
+  if (status != 200 || deserializeJson(doc, reply)) return false;
+  uri = (const char *)(doc["file"]["uri"] | "");
+  Serial.printf("AI_UPLOAD %u bytes in %lums: %s\n", (unsigned)length, (unsigned long)(millis() - t),
+                uri.length() ? "ok" : "no link");
+  return uri.length() > 0;
+}
+// Give each photo a Files API link: reuse a saved one (same key, not expired) or upload now.
+void attachFiles(Job &j) {
+  const time_t now = time(nullptr);
+  if (now < 1700000000) return;  // expiry needs the clock
+  const uint32_t tag = keyTag(j.options.key);
+  for (int i = 0; i < j.pages && !cancelled; ++i) {
+    if (!j.photoIds[i]) continue;
+    String uri;
+    uint32_t expires = 0, savedTag = 0;
+    if (photoUriLoad(j.photoIds[i], uri, expires, savedTag) && savedTag == tag && (time_t)expires > now + 600) {
+      j.fileUris[i] = uri;
+      continue;
+    }
+    if (geminiUpload(j.options.key, j.jpegs[i], j.lengths[i], uri)) {
+      j.fileUris[i] = uri;
+      photoUriSave(j.photoIds[i], uri, (uint32_t)now + 47 * 3600, tag);
+    }
+  }
+}
+
 // The request bodies. Shared by real requests and the dry run.
 void buildAnswerBody(const Job &j, Body &body) {
+  if (!j.turns.empty()) {
+    buildChatBody(j, body);
+    return;
+  }
   const bool voice = j.options.gemini && j.wav && j.wavLength;
   String task = voice ? TASK_VOICE
                       : (j.pages > 1    ? TASK_PAGES
@@ -467,6 +616,7 @@ bool request(Job &j) {
     payload = multipartWav(j.wav, j.wavLength, "gpt-transcribe", boundary, total);
     contentType = String("multipart/form-data; boundary=") + boundary;
   } else {
+    if (j.kind == Kind::Answer && gemini && !j.turns.empty()) attachFiles(j);
     Body body;
     if (j.kind == Kind::Transcribe) buildGeminiTranscribeBody(j, body);
     else buildAnswerBody(j, body);
@@ -509,6 +659,7 @@ bool request(Job &j) {
   bool dailyLimit = false;
   int retryAfterS = 0;
   bool resent = false;
+  bool inlineRetry = false;
   String errorBody;
   while (tries < MAX_TRIES && !cancelled) {
     if (tries) {
@@ -551,6 +702,28 @@ bool request(Job &j) {
     flat.replace("\n", " ");
     flat.replace("  ", " ");
     Serial.printf("AI_HTTP %d %s\n", status, flat.c_str());
+    if ((status == 400 || status == 403 || status == 404) && gemini && !inlineRetry) {
+      bool usedLinks = false;
+      for (int i = 0; i < j.pages; ++i)
+        if (j.fileUris[i].length()) {
+          usedLinks = true;
+          photoUriForget(j.photoIds[i]);
+          j.fileUris[i] = "";
+        }
+      if (usedLinks) {
+        inlineRetry = true;
+        Body body;
+        buildAnswerBody(j, body);
+        uint8_t *inlinePayload = body.build(total);
+        if (inlinePayload) {
+          free(payload);
+          payload = inlinePayload;
+          waitMs = 0;
+          Serial.println("AI_RETRY photos inline");
+          continue;
+        }
+      }
+    }
     if (status == 429) {
       dailyLimit = errorBody.indexOf("PerDay") >= 0;
       const int at = errorBody.indexOf("\"retryDelay\"");
@@ -792,6 +965,37 @@ bool aiStart(const AiOptions &options, const uint8_t *const *jpegs, const size_t
   return launch();
 }
 
+bool aiChat(const AiOptions &options, const AiTurn *turns, int turnCount, const uint8_t *const *jpegs,
+            const size_t *lengths, const uint32_t *photoIds, int images, const uint8_t *wav, size_t wavLength) {
+  if (state != AiState::Idle || turnCount < 1 || images < 0 || images > AI_MAX_PAGES) return false;
+  if (!job) job = new Job();
+  job->release();
+  job->kind = Kind::Answer;
+  job->options = options;
+  job->result = "";
+  job->ok = false;
+  for (int i = 0; i < turnCount; ++i) job->turns.push_back(turns[i]);
+  for (int i = 0; i < images; ++i) {
+    job->jpegs[i] = copyOf(jpegs[i], lengths[i]);
+    if (!job->jpegs[i]) {
+      job->release();
+      return false;
+    }
+    job->lengths[i] = lengths[i];
+    job->photoIds[i] = photoIds ? photoIds[i] : 0;
+  }
+  job->pages = images;
+  if (wav && wavLength) {
+    job->wav = copyOf(wav, wavLength);
+    if (!job->wav) {
+      job->release();
+      return false;
+    }
+    job->wavLength = wavLength;
+  }
+  return launch();
+}
+
 bool aiTranscribe(const AiOptions &options, const uint8_t *wav, size_t wavLength) {
   if (state != AiState::Idle || !wav || !wavLength) return false;
   if (!job) job = new Job();
@@ -984,4 +1188,45 @@ void aiShrinkTest(const uint8_t *jpeg, size_t len) {
   Serial.printf("SHRINK %s %u -> %u bytes in %lums\n", ok ? "ok" : "failed", (unsigned)len, (unsigned)outLen,
                 (unsigned long)(millis() - t));
   free(out);
+}
+
+// Developer: a three-turn conversation (one photo by link, one inline), built and validated
+// without sending.
+void aiDryRunChat(const AiOptions &options) {
+  static const uint8_t fakeJpeg[] = {0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0xFF, 0xD9};
+  Job j;
+  j.options = options;
+  AiTurn a;
+  a.text = "What is on this page?";
+  a.images = 1;
+  AiTurn b;
+  b.user = false;
+  b.text = "Answer: a quiz on runtime\nSteps:\n1. ...";
+  AiTurn c;
+  c.text = "Solve question 2";
+  c.images = 1;
+  j.turns = {a, b, c};
+  j.pages = 2;
+  for (int i = 0; i < 2; ++i) {
+    j.jpegs[i] = (uint8_t *)fakeJpeg;
+    j.lengths[i] = sizeof fakeJpeg;
+  }
+  if (options.gemini) j.fileUris[0] = "https://generativelanguage.googleapis.com/v1beta/files/example";
+  Body body;
+  buildAnswerBody(j, body);
+  size_t total = 0;
+  uint8_t *buf = body.build(total);
+  for (int i = 0; i < AI_MAX_PAGES; ++i) j.jpegs[i] = nullptr;
+  if (!buf) {
+    Serial.println("DRYRUN build failed");
+    return;
+  }
+  JsonDocument doc;
+  const DeserializationError err = deserializeJson(doc, (const char *)buf, total);
+  String shape;
+  serializeJson(doc, shape);
+  free(buf);
+  Serial.printf("DRYRUN chat %s json %s, %u bytes\n", options.gemini ? "gemini" : "gpt", err ? err.c_str() : "valid",
+                (unsigned)total);
+  Serial.printf("DRYRUN %s\n", shape.substring(0, 1800).c_str());
 }

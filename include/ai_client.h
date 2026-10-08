@@ -35,6 +35,19 @@ constexpr int AI_MAX_PAGES = 3;
 // `history` is earlier questions and answers of the same conversation (plain text, short).
 bool aiStart(const AiOptions &options, const uint8_t *const *jpegs, const size_t *lengths, int pages,
              const String &question, const String &history, const uint8_t *wav = nullptr, size_t wavLength = 0);
+// One message of a conversation. `images` = how many of the images passed to aiChat belong to
+// this turn, in order. Merge consecutive turns of the same role before calling.
+struct AiTurn {
+  bool user = true;
+  String text;
+  int images = 0;
+};
+// A conversation (Ask): sent as real user/model turns with standing instructions. With Gemini,
+// photos are uploaded once (Files API, kept 48 h) and referred to by link afterwards; if a
+// link is refused they are sent inline. `photoIds` (optional) identify photos for that reuse.
+bool aiChat(const AiOptions &options, const AiTurn *turns, int turnCount, const uint8_t *const *jpegs,
+            const size_t *lengths, const uint32_t *photoIds, int images, const uint8_t *wav = nullptr,
+            size_t wavLength = 0);
 // Speech to text for the hold-to-talk button: OpenAI gpt-transcribe for GPT, Gemini otherwise.
 // The words arrive through aiPoll like an answer.
 bool aiTranscribe(const AiOptions &options, const uint8_t *wav, size_t wavLength);
@@ -61,3 +74,4 @@ int aiRequestsToday(bool gemini);
 // The answer so far while it streams in; returns a version that changes with every piece.
 uint32_t aiPartial(String &text);
 void aiShrinkTest(const uint8_t *jpeg, size_t len);
+void aiDryRunChat(const AiOptions &options);

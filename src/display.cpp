@@ -97,6 +97,17 @@ void displayDraw(int x1, int y1, int x2, int y2, const uint16_t *pixels) {
 
 bool touchAvailable() { return touchFound; }
 
+// The last raw touch readings (for checking how the panel reads near its edges: 'J').
+int rawX[16], rawY[16], rawCount = 0;
+int touchRecent(int *xs, int *ys, int max) {
+  const int n = min(max, min(rawCount, 16));
+  for (int i = 0; i < n; ++i) {
+    const int k = (rawCount - n + i) % 16;
+    xs[i] = rawX[k];
+    ys[i] = rawY[k];
+  }
+  return n;
+}
 bool touchRead(int &x, int &y) {
   if (!touchFound) return false;
   Wire.beginTransmission(TOUCH_ADDR);
@@ -108,5 +119,18 @@ bool touchRead(int &x, int &y) {
   if ((fingers & 0x0F) == 0) return false;
   x = ((xh & 0x0F) << 8) | xl;
   y = ((yh & 0x0F) << 8) | yl;
-  return x < W && y < 284;
+  static int lastX = -1, lastY = -1;
+  if (x != lastX || y != lastY) {
+    rawX[rawCount % 16] = x;
+    rawY[rawCount % 16] = y;
+    ++rawCount;
+    lastX = x;
+    lastY = y;
+  }
+  // Near the rounded edges the panel can report a little past the screen: that is still a
+  // finger on the glass, so clamp it rather than dropping the touch.
+  if (x >= W + 40 || y >= 284 + 40) return false;
+  x = min(x, W - 1);
+  y = min(y, 283);
+  return true;
 }

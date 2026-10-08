@@ -101,10 +101,11 @@ void readTouch(lv_indev_t *, lv_indev_data_t *data) {
       if (edge == Edge::Control) releaseControl(max(0, lastY - downY), speed);
       if (edge == Edge::Back) releaseBack(max(0, lastX - downX), speedX);
     } else if (edge != Edge::None) {
-      // A tap that started on an edge: deliver it to the app (back arrow, edge buttons).
+      // A tap that started on an edge: deliver it to the app (back arrow, edge buttons). A tap
+      // in the home strip is for the control just above it (the panel reads low at the edge).
       tapPending = 2;
       tapX = downX;
-      tapY = downY;
+      tapY = edge == Edge::Home ? HOME_ZONE - 6 : downY;
     }
     edge = Edge::None;
     committed = false;

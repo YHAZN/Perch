@@ -13,5 +13,7 @@ bool displayBegin(uint32_t spiHz, void (*onDrawDone)());
 void displayDraw(int x1, int y1, int x2, int y2, const uint16_t *pixels);
 void displayBrightness(uint8_t level);
 bool touchAvailable();
+// Developer: the most recent distinct raw touch readings, oldest first.
+int touchRecent(int *xs, int *ys, int max);
 // Returns true while a finger is down; x/y are screen coordinates.
 bool touchRead(int &x, int &y);

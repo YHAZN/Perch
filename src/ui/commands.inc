@@ -99,6 +99,13 @@ void handleDeviceButton(char command) {
     if (jpegBytes) aiShrinkTest(savedJpeg, jpegBytes);
     return;
   }
+  if (command == '>') {
+    // Developer: ">text" sends a chat message (with any attached photos).
+    String words = Serial.readStringUntil('\n');
+    launch(Screen::Ask);
+    sendMessage(words);
+    return;
+  }
   if (command == '#') {
     // Developer: "#<sha256 hex>|<base64 signature>" checks a release signature on the device.
     const String arg = Serial.readStringUntil('\n');
@@ -130,6 +137,10 @@ void handleDeviceButton(char command) {
     const String arg = Serial.readStringUntil('\n');
     AiOptions o = aiOptions(arg.length() == 0 || arg[0] != 'o');
     o.key = "";
+    if (arg.indexOf('c') >= 0) {
+      aiDryRunChat(o);
+      return;
+    }
     const bool transcribe = arg.indexOf('t') >= 0;
     aiDryRun(o, transcribe ? 0 : max(1, (int)arg.substring(1).toInt()),
              transcribe ? "" : "What is the answer to question 2?", transcribe);
@@ -316,6 +327,9 @@ void handleDeviceButton(char command) {
         delay(50);
       }
       Serial.printf("TOUCH pressed %d/30\n", pressedCount);
+      int xs[16], ys[16];
+      const int n = touchRecent(xs, ys, 16);
+      for (int i = 0; i < n; ++i) Serial.printf("TOUCH recent %d,%d\n", xs[i], ys[i]);
       break;
     }
     case 'S': {  // developer: a sample exchange in the chat, for layout checks (not sent anywhere)

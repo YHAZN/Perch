@@ -14,6 +14,7 @@ struct ChatMsg {
 };
 std::vector<ChatMsg> chat;
 uint32_t chatId = 0;
+uint32_t requestChatId = 0;       // the chat the running request belongs to (it may not be on screen)
 std::vector<uint32_t> attachIds;  // photos for the next message
 int attachAwaiting = 0;           // photos taken for the chat that are still being saved
 uint8_t *chatWav = nullptr;       // a spoken question kept until it is sent
@@ -102,8 +103,10 @@ bool loadChat(uint32_t id) {
     for (uint32_t p : o["p"].as<JsonArray>()) m.photos.push_back(p);
     chat.push_back(m);
   }
-  // An answer that was being written when the device restarted is gone; say so.
-  if (!chat.empty() && !chat.back().user && chat.back().text.isEmpty()) {
+  // An answer that was being written when the device restarted is gone; say so. (If it is
+  // still on its way, the reply will fill it in.)
+  const bool live = aiBusy() && pending == Pending::Answer && requestChatId == id;
+  if (!live && !chat.empty() && !chat.back().user && chat.back().text.isEmpty()) {
     chat.back().text = "This answer was interrupted.";
     chat.back().failed = true;
   }
@@ -166,7 +169,30 @@ lv_obj_t *drawMessage(const ChatMsg &m, int index) {
   lv_obj_set_style_pad_hor(box, 20, 0);
   lv_obj_set_style_pad_row(box, 12, 0);
   if (m.text.isEmpty()) {
-    text(box, "Thinking...", F_BODY, MIST);
+    // Typing bubble: three dots pulse in turn until the first words arrive.
+    lv_obj_t *bubble = plain(box);
+    lv_obj_set_size(bubble, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_color(bubble, GRAPHITE, 0);
+    lv_obj_set_style_bg_opa(bubble, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(bubble, 16, 0);
+    lv_obj_set_style_pad_hor(bubble, 14, 0);
+    lv_obj_set_style_pad_ver(bubble, 12, 0);
+    lv_obj_set_flex_flow(bubble, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(bubble, 6, 0);
+    for (int i = 0; i < 3; ++i) {
+      lv_obj_t *dot = circle(bubble, 8, MIST, 0, MIST, LV_OPA_COVER);
+      lv_anim_t a;
+      lv_anim_init(&a);
+      lv_anim_set_var(&a, dot);
+      lv_anim_set_values(&a, 70, 255);
+      lv_anim_set_duration(&a, 380);
+      lv_anim_set_playback_duration(&a, 380);
+      lv_anim_set_delay(&a, i * 180);
+      lv_anim_set_repeat_delay(&a, 300);
+      lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
+      lv_anim_set_exec_cb(&a, [](void *o, int32_t v) { lv_obj_set_style_bg_opa((lv_obj_t *)o, v, 0); });
+      lv_anim_start(&a);
+    }
   } else if (m.failed) {
     lv_obj_t *l = text(box, m.text.c_str(), F_SMALL, MIST);
     lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
@@ -238,7 +264,7 @@ void rebuildChat() {
 // Composer state: Send when there is something to send, Stop while answering, else the mic.
 void refreshChat() {
   if (!chatScroll) return;
-  const bool answering = aiBusy() && pending == Pending::Answer;
+  const bool answering = aiBusy() && pending == Pending::Answer && requestChatId == chatId;
   const bool something = draft.length() || !attachIds.empty();
   hide(chatEmpty, !chat.empty() || !attachIds.empty() || attachAwaiting);
   hide(attachRow, attachIds.empty() && !attachAwaiting);
@@ -299,40 +325,69 @@ void dispatchChat() {
     return;
   }
   if (aiBusy()) return;
-  // Photos: every photo in this chat, oldest first; the newest AI_MAX_PAGES travel.
+  // The conversation as turns, as chat apps send it to a stateless API: every message again,
+  // newest last. Only the newest AI_MAX_PAGES photos travel (older ones become "(photo)").
+  // Failed replies are left out; same-role neighbours are merged (the API wants alternation).
   std::vector<uint32_t> photos;
   for (const ChatMsg &m : chat)
     for (uint32_t id : m.photos) photos.push_back(id);
-  if (photos.size() > AI_MAX_PAGES) photos.erase(photos.begin(), photos.end() - AI_MAX_PAGES);
+  const int skip = max(0, (int)photos.size() - AI_MAX_PAGES);  // photos too old to attach
+  std::vector<AiTurn> turns;
+  std::vector<uint32_t> sent;
+  int seen = 0;
+  const int from = max(0, (int)chat.size() - 12);  // the last 12 messages are plenty of context
+  for (int i = 0; i < (int)chat.size(); ++i) {
+    const ChatMsg &m = chat[i];
+    int attached = 0;
+    String note;
+    for (uint32_t id : m.photos) {
+      if (seen++ >= skip) {
+        sent.push_back(id);
+        ++attached;
+      } else note += "(earlier photo) ";
+    }
+    if (i < from && !attached) continue;
+    if (!m.user && (m.failed || m.text.isEmpty())) continue;
+    String t = note + m.text;
+    t.trim();
+    if (!turns.empty() && turns.back().user == m.user) {
+      turns.back().text += (turns.back().text.length() && t.length() ? "\n" : "") + t;
+      turns.back().images += attached;
+    } else {
+      AiTurn turn;
+      turn.user = m.user;
+      turn.text = t;
+      turn.images = attached;
+      turns.push_back(turn);
+    }
+  }
+  if (turns.empty() || !turns.back().user) return;
   const uint8_t *jpegs[AI_MAX_PAGES];
   size_t lengths[AI_MAX_PAGES];
+  uint32_t ids[AI_MAX_PAGES];
   uint8_t *loaded[AI_MAX_PAGES] = {nullptr};
   int pages = 0;
-  for (uint32_t id : photos) {
+  for (uint32_t id : sent) {
     uint8_t *j = nullptr;
     size_t l = 0;
-    if (loadPhoto(id, j, l)) {
+    if (pages < AI_MAX_PAGES && loadPhoto(id, j, l)) {
       loaded[pages] = j;
       jpegs[pages] = j;
       lengths[pages] = l;
+      ids[pages] = id;
       ++pages;
-    }
-  }
-  // Context: the earlier messages of this chat (the last six, answers trimmed).
-  String history;
-  const int last = chat.size() - 1;
-  for (int i = max(0, last - 6); i < last; ++i) {
-    const ChatMsg &m = chat[i];
-    if (!m.user && m.failed) continue;
-    String t = m.text.length() ? m.text : m.voice ? String("(spoken question)") : String("(photo)");
-    if (t.length() > 700) t = t.substring(0, 700) + "...";
-    history += (m.user ? "User: " : "Assistant: ") + t + "\n";
+    } else
+      for (AiTurn &turn : turns)
+        if (turn.images) {
+          --turn.images;
+          break;
+        }  // a deleted photo
   }
   AiOptions options = aiOptions(useGemini);
   pauseBluetooth();  // Bluetooth leaves too little memory for HTTPS; it comes back after
   const bool voice = q.voice && chatWav && useGemini;
-  const bool started =
-      aiStart(options, jpegs, lengths, pages, q.text, history, voice ? chatWav : nullptr, voice ? chatWavLen : 0);
+  const bool started = aiChat(options, turns.data(), turns.size(), jpegs, lengths, ids, pages,
+                              voice ? chatWav : nullptr, voice ? chatWavLen : 0);
   options.key = "";
   for (uint8_t *l : loaded) free(l);
   if (!started) {
@@ -346,25 +401,50 @@ void dispatchChat() {
   ChatMsg reply;
   reply.user = false;
   chat.push_back(reply);
+  saveChat();
+  requestChatId = chatId;
   assistantLive = drawMessage(chat.back(), chat.size() - 1);
   refreshChat();
   scrollChatToEnd(true);
 }
 // The answer so far (streaming), the final answer, or why it failed.
 void chatPartial(const String &text) {
-  if (!assistantLive) return;
+  if (!assistantLive || requestChatId != chatId) return;
   const bool atEnd = lv_obj_get_scroll_bottom(chatScroll) < 40;
   renderInto(assistantLive, text);
   if (atEnd) scrollChatToEnd(false);
 }
+// A reply for a chat that is not on screen goes into that chat's saved file.
+void finishInFile(uint32_t id, bool ok, const String &result) {
+  String json;
+  JsonDocument doc;
+  if (!chatLoad(id, json) || deserializeJson(doc, json)) return;
+  JsonArray list = doc["m"].as<JsonArray>();
+  if (list.size() == 0) return;
+  JsonObject last = list[list.size() - 1];
+  if ((bool)(last["u"] | true)) return;
+  last["t"] = result;
+  if (!ok) last["f"] = 1;
+  String out;
+  serializeJson(doc, out);
+  chatSave(id, out);
+}
 void chatFinished(bool ok, const String &result) {
+  free(chatWav);
+  chatWav = nullptr;
+  chatWavLen = 0;
+  if (requestChatId && requestChatId != chatId) {
+    finishInFile(requestChatId, ok, result);
+    toast(ok ? "Answer ready in another chat" : "A request in another chat failed");
+    requestChatId = 0;
+    refreshChat();
+    return;
+  }
+  requestChatId = 0;
   if (chat.empty() || chat.back().user) return;
   ChatMsg &reply = chat.back();
   reply.text = result;
   reply.failed = !ok;
-  free(chatWav);
-  chatWav = nullptr;
-  chatWavLen = 0;
   if (assistantLive) {
     lv_obj_t *old = assistantLive;
     assistantLive = nullptr;
@@ -377,13 +457,19 @@ void chatFinished(bool ok, const String &result) {
   refreshChat();
 }
 void chatCancelled() {
+  if (requestChatId && requestChatId != chatId) {
+    finishInFile(requestChatId, false, "Stopped.");
+    requestChatId = 0;
+    return;
+  }
+  requestChatId = 0;
   if (!chat.empty() && !chat.back().user && chat.back().text.isEmpty()) chat.pop_back();
+  saveChat();
   rebuildChat();
 }
 
 // ---------- actions ----------
 void newChat() {
-  if (aiBusy() && pending == Pending::Answer) aiCancel();
   chat.clear();
   chatId = 0;
   attachIds.clear();
@@ -494,7 +580,8 @@ void buildChat(lv_obj_t *s) {
     toast("New chat");
   });
 
-  const int composerY = H - ABOVE_HOME - 46;
+  // Clear of the rounded bottom corners and the home strip, where the panel reads least well.
+  const int composerY = H - ABOVE_HOME - 56;
   chatScroll = plain(s);
   lv_obj_set_pos(chatScroll, 0, 58);
   lv_obj_set_size(chatScroll, W, composerY - 58 - 54);
@@ -520,22 +607,23 @@ void buildChat(lv_obj_t *s) {
 
   // Composer: + | message box | mic, send or stop.
   lv_obj_t *plus = circle(s, 44, INK, 0, GRAPHITE, LV_OPA_COVER);
-  lv_obj_set_pos(plus, 10, composerY);
+  lv_obj_set_pos(plus, 14, composerY);
+  lv_obj_set_ext_click_area(plus, 8);
   lv_obj_set_style_opa(plus, LV_OPA_60, LV_STATE_PRESSED);
   lv_obj_center(text(plus, LV_SYMBOL_PLUS, F_BODY, INK));
   onClick(plus, [] { lv_obj_remove_flag(plusSheet, LV_OBJ_FLAG_HIDDEN); });
   lv_obj_t *field = pressedFeedback(plain(s));
-  lv_obj_set_size(field, W - 10 - 44 - 8 - 8 - 44 - 10, 44);
-  lv_obj_set_pos(field, 62, composerY);
+  lv_obj_set_size(field, W - 14 - 44 - 6 - 6 - 44 - 14, 44);
+  lv_obj_set_pos(field, 64, composerY);
   lv_obj_set_style_radius(field, 22, 0);
   lv_obj_set_style_bg_color(field, GRAPHITE, 0);
   lv_obj_set_style_bg_opa(field, LV_OPA_COVER, 0);
   composerText = text(field, "Message", F_BODY, MIST);
   lv_label_set_long_mode(composerText, LV_LABEL_LONG_DOT);
-  lv_obj_set_size(composerText, W - 10 - 44 - 8 - 8 - 44 - 10 - 28, 20);  // one line
+  lv_obj_set_size(composerText, W - 14 - 44 - 6 - 6 - 44 - 14 - 28, 20);  // one line
   lv_obj_align(composerText, LV_ALIGN_LEFT_MID, 14, 0);
   onClick(field, typeQuestion);
-  const int right = W - 10 - 44;
+  const int right = W - 14 - 44;
   micBtn = circle(s, 44, INK, 0, GRAPHITE, LV_OPA_COVER);
   lv_obj_set_pos(micBtn, right, composerY);
   lv_obj_set_style_bg_color(micBtn, LENS, LV_STATE_PRESSED);
@@ -555,6 +643,7 @@ void buildChat(lv_obj_t *s) {
     lv_obj_align(cradle, LV_ALIGN_CENTER, 0, 0);
   }
   lv_obj_add_flag(micBtn, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_set_ext_click_area(micBtn, 8);
   lv_obj_add_event_cb(
       micBtn,
       [](lv_event_t *) {
@@ -585,6 +674,7 @@ void buildChat(lv_obj_t *s) {
   lv_obj_set_style_opa(sendBtn, LV_OPA_60, LV_STATE_PRESSED);
   lv_obj_center(text(sendBtn, LV_SYMBOL_UP, F_BODY, VOID_));
   onClick(sendBtn, [] { sendMessage(draft); });
+  lv_obj_set_ext_click_area(sendBtn, 8);
   stopBtn = circle(s, 44, VOID_, 0, INK, LV_OPA_COVER);
   lv_obj_set_pos(stopBtn, right, composerY);
   {
@@ -596,6 +686,7 @@ void buildChat(lv_obj_t *s) {
     lv_obj_center(sq);
   }
   onClick(stopBtn, [] { aiCancel(); });
+  lv_obj_set_ext_click_area(stopBtn, 8);
 
   // "+": take a photo now, or choose from Photos.
   plusSheet = plain(s);
@@ -738,15 +829,18 @@ void refreshChats() {
     lv_obj_set_size(one, W - 40, 20);
     lv_obj_set_pos(one, 20, 8);
     const String when = ago(doc["when"] | 0);
-    text(r, (String(doc["m"].as<JsonArray>().size()) + " messages" + (when.length() ? ", " + when : "")).c_str(),
-         F_SMALL, MIST);
+    const bool answering = aiBusy() && pending == Pending::Answer && requestChatId == ids[i];
+    text(r,
+         answering
+             ? "Answering..."
+             : (String(doc["m"].as<JsonArray>().size()) + " messages" + (when.length() ? ", " + when : "")).c_str(),
+         F_SMALL, answering ? LENS : MIST);
     lv_obj_set_pos(lv_obj_get_child(r, 1), 20, 32);
     lv_obj_add_flag(r, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(
         r,
         [](lv_event_t *e) {
           const uint32_t id = (uint32_t)(uintptr_t)lv_event_get_user_data(e);
-          if (aiBusy() && pending == Pending::Answer) aiCancel();
           if (loadChat(id)) {
             rebuildChat();
             goBack();
