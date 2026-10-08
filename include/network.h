@@ -28,3 +28,6 @@ void networkScanStart();
 // -1 while scanning, else the number of results (strongest first, duplicates removed).
 int networkScanResults(ScanResult *out, int max);
 void networkPauseRetries(bool paused);
+// Move to a stronger access point of the same network when the signal is weak.
+// Call often; `allowed` = nothing is uploading and the Wi-Fi list is not open.
+void networkRoam(bool allowed);

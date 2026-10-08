@@ -53,6 +53,10 @@ void networkBegin() {
   WiFi.persistent(false);
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
+  // A school or office network has many access points with one name. By default the ESP32
+  // joins the first it hears; scan every channel and join the strongest instead.
+  WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
+  WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
   // A development build's test network is copied into the saved list once, so a later
   // release build (which has none built in) still joins it.
   if (PERCH_BUILD_NETWORK && WIFI_TEST_SSID[0] && strcmp(WIFI_TEST_SSID, "your-network") != 0 &&
@@ -126,6 +130,50 @@ bool networkIsSaved(const String &ssid) {
 }
 
 void networkPauseRetries(bool p) { paused = p; }
+
+// Roaming: while the signal stays weak and nothing is uploading, look (in the background)
+// for a stronger access point with the same name and move to it, as phones do.
+void networkRoam(bool allowed) {
+  static unsigned long lastCheck = 0;
+  static bool scanning = false;
+  if (WiFi.status() != WL_CONNECTED) {
+    scanning = false;
+    return;
+  }
+  if (!scanning) {
+    if (!allowed || WiFi.RSSI() > -72 || millis() - lastCheck < 120000) return;
+    lastCheck = millis();
+    WiFi.scanDelete();
+    if (WiFi.scanNetworks(true, false, false, 300) == WIFI_SCAN_FAILED) return;
+    scanning = true;
+    return;
+  }
+  const int n = WiFi.scanComplete();
+  if (n == WIFI_SCAN_RUNNING) return;
+  scanning = false;
+  if (n <= 0) return;
+  const String ssid = WiFi.SSID();
+  const int now = WiFi.RSSI();
+  int best = -1;
+  for (int i = 0; i < n; ++i)
+    if (WiFi.SSID(i) == ssid && (best < 0 || WiFi.RSSI(i) > WiFi.RSSI(best))) best = i;
+  if (best >= 0 && WiFi.RSSI(best) >= now + 8 && memcmp(WiFi.BSSID(best), WiFi.BSSID(), 6) != 0) {
+    String password;
+    for (const Candidate &c : candidates())
+      if (c.ssid == ssid) password = c.password;
+    uint8_t bssid[6];
+    memcpy(bssid, WiFi.BSSID(best), 6);
+    const int channel = WiFi.channel(best);
+    Serial.printf("WIFI roam %d -> %d dBm (channel %d)\n", now, WiFi.RSSI(best), channel);
+    WiFi.scanDelete();
+    WiFi.disconnect();
+    if (password.length()) WiFi.begin(ssid.c_str(), password.c_str(), channel, bssid);
+    else WiFi.begin(ssid.c_str(), nullptr, channel, bssid);
+    lastAttempt = millis();
+    return;
+  }
+  WiFi.scanDelete();
+}
 
 void networkScanStart() {
   if (!radioOn) {

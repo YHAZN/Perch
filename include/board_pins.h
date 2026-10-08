@@ -16,5 +16,3 @@ constexpr int PIN_SD_CS = 21;    // internal, also the user LED
 // When wired on D3 (GPIO4), TP_RST moves off D3 (see docs/PINS.md, "Battery").
 constexpr int PIN_BATTERY = -1;
 constexpr float BATTERY_DIVIDER = 2.0f;
-// The XIAO's BOOT button (GPIO0): only a strapping pin at reset; a normal button after.
-constexpr int PIN_BUTTON = 0;
