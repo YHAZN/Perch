@@ -15,6 +15,8 @@
 #include "ai_client.h"
 #include "audio.h"
 #include "battery.h"
+#include "updater.h"
+#include "version.h"
 #include "camera.h"
 #include "clock.h"
 #include "board_pins.h"
@@ -178,7 +180,7 @@ lv_obj_t *wifiList, *wifiStatus, *passwordTitle, *passwordField, *keyboard;
 String joiningSsid;
 bool scanShown = false;
 unsigned long scanStartedAt = 0;
-lv_obj_t *modelValue, *wifiValue, *brightSlider, *storageValue, *storageSub;
+lv_obj_t *modelValue, *wifiValue, *brightSlider, *storageValue, *storageSub, *softwareSub;
 lv_obj_t *modelCheck[2], *modelSub[2];
 lv_obj_t *noticeText;
 // Ask: pages and "what you said"

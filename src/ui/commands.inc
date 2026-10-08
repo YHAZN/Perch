@@ -95,6 +95,23 @@ void handleDeviceButton(char command) {
     xSemaphoreGive(camLock);
     return;
   }
+  if (command == '=') {
+    // Developer: "=<https manifest url>" sets where updates come from ("=" alone clears it).
+    String url = Serial.readStringUntil('\n');
+    url.trim();
+    if (url == "?") {
+      pauseBluetooth();
+      Serial.printf("UPDATE check %s\n", updaterCheck() ? "started" : "not started");
+      return;
+    }
+    if (url.length() && !url.startsWith("https://")) {
+      Serial.println("UPDATE url must be https");
+      return;
+    }
+    updaterSetUrl(url);
+    Serial.printf("UPDATE url %s\n", url.length() ? "saved" : "cleared");
+    return;
+  }
   if (command == '%') {
     // Developer: build a request without sending it. "%g2" Gemini 2 pages, "%o1" GPT,
     // "%ot" / "%gt" speech-to-text. Uses the saved model and effort; never the key.

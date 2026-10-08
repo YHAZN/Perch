@@ -94,7 +94,8 @@ void deviceTick() {
     lv_obj_add_flag(busy, LV_OBJ_FLAG_HIDDEN);
     if (waiting && current == Screen::Ask) notice(result, Screen::Ask);
   }
-  if (btPaused && !aiBusy()) resumeBluetooth();
+  if (btPaused && !aiBusy() && updaterState() != UpdateState::Checking && updaterState() != UpdateState::Installing)
+    resumeBluetooth();
   zoomTick();
   static bool btStarted = false;  // start a few seconds after boot, once the UI is up
   if (!btStarted && now > 4000) {

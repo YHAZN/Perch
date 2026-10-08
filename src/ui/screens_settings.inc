@@ -56,10 +56,47 @@ void buildSettings() {
         toast(removed ? "Forgot the last hour" : "Nothing from the last hour");
       },
       LV_EVENT_LONG_PRESSED, nullptr);
-  lv_obj_t *about = row(s, 394, "About", nullptr, 64);
+  // Software: version and updates. Tap to check; then to install; then to restart.
+  lv_obj_t *about = row(s, 394, "Software", nullptr, 64);
   lv_obj_align(lv_obj_get_child(about, 0), LV_ALIGN_TOP_LEFT, 22, 12);
-  lv_obj_t *version = text(about, "Perch 0.5, built " __DATE__, F_SMALL, MIST);
-  lv_obj_set_pos(version, 22, 36);
+  softwareSub = text(about, "", F_SMALL, MIST);
+  lv_obj_set_pos(softwareSub, 22, 36);
+  onClick(about, [] {
+    switch (updaterState()) {
+      case UpdateState::Checking: toast("Checking for updates"); return;
+      case UpdateState::Installing: toast((String("Installing ") + updaterProgress() + "%").c_str()); return;
+      case UpdateState::Ready:
+        confirm(
+            "Restart to finish the update?", "Restart",
+            [](uint32_t) {
+              delay(200);
+              ESP.restart();
+            },
+            0);
+        return;
+      case UpdateState::Available:
+        confirm((String("Install Perch ") + updaterAvailableVersion() + "?").c_str(), "Install",
+                [](uint32_t) {
+                  pauseBluetooth();  // the download needs the memory Bluetooth holds
+                  updaterInstall();
+                  refreshDynamic();
+                },
+                0);
+        return;
+      default:
+        if (updaterUrl().isEmpty()) {
+          toast("Updates are not set up yet");
+          return;
+        }
+        if (!networkConnected()) {
+          toast("Updates need Wi-Fi");
+          return;
+        }
+        pauseBluetooth();
+        updaterCheck();
+        refreshDynamic();
+    }
+  });
   lv_obj_t *spacer = plain(s);
   lv_obj_set_size(spacer, 1, 1);
   lv_obj_set_pos(spacer, 0, 514);

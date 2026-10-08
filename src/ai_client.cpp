@@ -8,7 +8,6 @@
 #include <time.h>
 #include <memory>
 #include <vector>
-#include "wifi_secrets.h"
 #include "ai_root_certs.h"
 
 const AiModel GEMINI_MODELS[] = {

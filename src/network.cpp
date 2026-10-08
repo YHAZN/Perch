@@ -3,7 +3,16 @@
 #include <WiFi.h>
 #include <algorithm>
 #include <vector>
+// Development builds may carry a test network in include/wifi_secrets.h (never committed).
+// Release builds (-DPERCH_RELEASE) carry none: networks live only on the device.
+#if !defined(PERCH_RELEASE) && __has_include("wifi_secrets.h")
 #include "wifi_secrets.h"
+#define PERCH_BUILD_NETWORK 1
+#else
+#define PERCH_BUILD_NETWORK 0
+static const char WIFI_TEST_SSID[] = "";
+static const char WIFI_TEST_PASSWORD[] = "";
+#endif
 
 namespace {
 const char *GUEST_SSID = "guest";
@@ -23,7 +32,6 @@ std::vector<Candidate> candidates() {
     const String ssid = store.getString(("s" + String(i)).c_str(), "");
     if (ssid.length()) list.push_back({ssid, store.getString(("p" + String(i)).c_str(), "")});
   }
-  if (strcmp(WIFI_TEST_SSID, "your-network") != 0) list.push_back({WIFI_TEST_SSID, WIFI_TEST_PASSWORD});
   list.push_back({GUEST_SSID, ""});
   return list;
 }
@@ -45,6 +53,11 @@ void networkBegin() {
   WiFi.persistent(false);
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
+  // A development build's test network is copied into the saved list once, so a later
+  // release build (which has none built in) still joins it.
+  if (PERCH_BUILD_NETWORK && WIFI_TEST_SSID[0] && strcmp(WIFI_TEST_SSID, "your-network") != 0 &&
+      !networkIsSaved(WIFI_TEST_SSID))
+    networkSave(WIFI_TEST_SSID, WIFI_TEST_PASSWORD);
   joinNext();
 }
 

@@ -518,6 +518,21 @@ void refreshDynamic() {
                         : secs < 60 ? (String(secs) + " s").c_str()
                                     : (String(secs / 60) + " min").c_str());
   }
+  {
+    String line = String("Perch ") + PERCH_VERSION + ", built " + __DATE__;
+    switch (updaterState()) {
+      case UpdateState::Checking: line = "Checking for updates..."; break;
+      case UpdateState::UpToDate: line = String("Perch ") + PERCH_VERSION + " is up to date"; break;
+      case UpdateState::Available:
+        line = String("Perch ") + updaterAvailableVersion() + " available: tap to install";
+        break;
+      case UpdateState::Installing: line = String("Installing ") + updaterProgress() + "%..."; break;
+      case UpdateState::Ready: line = "Installed: tap to restart"; break;
+      case UpdateState::Failed: line = updaterError(); break;
+      default: break;
+    }
+    setText(softwareSub, line.c_str());
+  }
   setText(storageValue, freeKbCache ? (String(freeKbCache) + " KB free").c_str() : "");
   setText(storageSub, (String(photoCount) + " photos, " + answerCount + " answers on the device").c_str());
   setText(remoteStatus, !remoteStarted()    ? ""

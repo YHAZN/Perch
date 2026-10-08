@@ -3,7 +3,16 @@
 #include <esp_system.h>
 #include <esp_camera.h>
 #include <WiFi.h>
+// Development builds may carry a test network in include/wifi_secrets.h (never committed).
+// Release builds (-DPERCH_RELEASE) carry none: networks live only on the device.
+#if !defined(PERCH_RELEASE) && __has_include("wifi_secrets.h")
 #include "wifi_secrets.h"
+#define PERCH_BUILD_NETWORK 1
+#else
+#define PERCH_BUILD_NETWORK 0
+static const char WIFI_TEST_SSID[] = "";
+static const char WIFI_TEST_PASSWORD[] = "";
+#endif
 #include "device_ui.h"
 #include "ai_client.h"
 #include "clock.h"
