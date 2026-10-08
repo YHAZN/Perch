@@ -124,7 +124,7 @@ lv_obj_t *viewfinder, *thumb, *flash, *shutter, *cameraOffLabel;
 lv_obj_t *askPhoto, *askEmpty, *askHint, *askPill, *askButtonLabel, *askOffline, *busy, *busyRing, *busyLabel,
     *askSheet;
 lv_obj_t *answerScroll, *answerPhoto, *answerFlow, *answerMeta;
-lv_obj_t *photosImage, *photosEmpty, *photoCounter;
+lv_obj_t *photosImage, *photosEmpty, *photoCounter, *photoPrev, *photoNext, *photoDelete;
 lv_obj_t *historyList, *historyEmpty, *askScroll, *askHero;
 lv_obj_t *remoteStatus, *remoteSlides, *remoteMediaPanel, *remoteModeLabel[2];
 bool remoteMediaMode = false;
@@ -149,9 +149,10 @@ lv_obj_t *modelValue, *wifiValue, *brightSlider, *storageValue, *storageSub;
 lv_obj_t *modelCheck[2], *modelSub[2];
 lv_obj_t *noticeText;
 // Ask: pages and "what you said"
-lv_obj_t *pageBar, *pageChip, *addPageBtn, *pageBanner;
+lv_obj_t *pageBar, *pageChip, *addPageBtn, *newPhotoBtn, *pageBanner, *micBtn;
 lv_obj_t *heardSheet, *heardLabel;
-bool pageCamera = false;  // the camera was opened by "+ Page"; return to Ask after the shot
+bool pageCamera = false;  // the camera was opened from Ask ("New photo" / "+ Page"); return after the shot
+void newPhoto();
 void showHeard(const String &words);
 void addPage();
 int pageCount();
@@ -1259,11 +1260,12 @@ void refreshDynamic() {
   hide(askEmpty, photo);
   hide(askHint, !photo || !online);
   const int pages = pageCount();
-  setText(askButtonLabel, !online     ? "Ask when online"
-                          : !photo    ? "Capture and ask"
-                          : pages > 1 ? (String("Ask about ") + pages + " pages").c_str()
-                                      : "Ask about this");
-  hide(pageBar, !photo);
+  setText(askButtonLabel, !photo      ? "Take a photo"
+                          : !online   ? "Ask later"
+                          : pages > 1 ? (String("Ask: ") + pages + " pages").c_str()
+                                      : "Ask");
+  hide(micBtn, !photo);
+  hide(addPageBtn, !photo);
   hide(pageChip, pages < 2);
   if (pages > 1) setText(lv_obj_get_child(pageChip, 0), (String(pages) + " pages  " LV_SYMBOL_CLOSE).c_str());
   hide(pageBanner, !pageCamera);
@@ -1676,6 +1678,17 @@ void showHeard(const String &words) {
   lv_obj_remove_flag(heardSheet, LV_OBJ_FLAG_HIDDEN);
   show(Screen::Ask);
 }
+// "New photo": open the camera; the shot becomes the question's photo and Ask comes back.
+void newPhoto() {
+  if (cameraOff) {
+    toast("Camera is off. Turn it on in Control Center");
+    return;
+  }
+  appendingPage = false;
+  pageCamera = true;
+  setText(pageBanner, "New photo for Ask");
+  show(Screen::Camera);
+}
 // "+ Page": open the camera to photograph the next page of the same question.
 void addPage() {
   if (cameraOff) {
@@ -1683,7 +1696,7 @@ void addPage() {
     return;
   }
   if (!jpegBytes) {
-    show(Screen::Camera);
+    newPhoto();
     return;
   }
   waitForSave();
@@ -1766,6 +1779,8 @@ void showPhoto(int index) {
   const int next = constrain(index, 0, photoCount - 1);
   const int direction = next > photoIndex ? 1 : next < photoIndex ? -1 : 0;
   photoIndex = next;
+  hide(photoPrev, photoIndex == 0);
+  hide(photoNext, photoIndex >= photoCount - 1);
   if (loadPhotoInto(photoIds[photoIndex], galleryPixels)) {
     lv_image_cache_drop(&galleryDsc);
     lv_obj_invalidate(photosImage);
@@ -1921,7 +1936,11 @@ void onEnter(Screen s) {
     pageCamera = false;
     appendingPage = false;
   }
-  if (s == Screen::Model) aiScreenSignature = "";
+  if (s == Screen::Model) {
+    aiScreenSignature = "";
+    lv_obj_scroll_to_y(lv_obj_get_child(layer(Screen::Model), 1), 0, LV_ANIM_OFF);
+  }
+  if (s == Screen::Settings) lv_obj_scroll_to_y(layer(Screen::Settings), 0, LV_ANIM_OFF);
   if (s == Screen::Photos) {
     hide(photosImage, photoCount == 0);
     hide(photosEmpty, photoCount != 0);
@@ -2004,39 +2023,32 @@ void buildFace() {
       LV_EVENT_GESTURE, nullptr);
 }
 
-// Icons shrink toward the rounded edges of the screen, like watchOS.
-// Sizes are set once from the position (no per-frame transforms, which are expensive).
-void fisheye() {
-  for (lv_obj_t *icon : icons) {
-    const float cx = lv_obj_get_x(icon) + lv_obj_get_width(icon) / 2.0f;
-    const float cy = lv_obj_get_y(icon) + lv_obj_get_height(icon) / 2.0f;
-    const float d = sqrtf(powf((cx - 120) / 120, 2) + powf((cy - 142) / 142, 2));
-    const int size = (int)(62 * constrain(1.25f - d * 0.55f, 0.7f, 1.0f));
-    lv_obj_set_size(icon, size, size);
-    lv_obj_set_pos(icon, (int)cx - size / 2, (int)cy - size / 2);
-  }
-}
+// App grid: every icon has its name under it. No hidden labels, no guessing.
 void appIcon(lv_obj_t *parent, int x, int y, const char *name, lv_color_t bg, void (*open)(),
              void (*glyph)(lv_obj_t *)) {
-  lv_obj_t *b = circle(parent, 62, bg, 0, bg, LV_OPA_COVER);
-  lv_obj_set_pos(b, x - 31, y - 31);
-  lv_obj_set_style_transform_pivot_x(b, 31, 0);
-  lv_obj_set_style_transform_pivot_y(b, 31, 0);
+  lv_obj_t *col = plain(parent);
+  lv_obj_set_size(col, 76, 82);
+  lv_obj_set_pos(col, x - 38, y - 29);
+  lv_obj_t *b = circle(col, 58, bg, 0, bg, LV_OPA_COVER);
+  lv_obj_align(b, LV_ALIGN_TOP_MID, 0, 0);
   lv_obj_set_style_opa(b, LV_OPA_70, LV_STATE_PRESSED);
   glyph(b);
-  onClick(b, open);
-  icons.push_back(b);
-  // The name shows at the top only while a finger is on the icon (no labels under icons).
+  lv_obj_t *label = text(col, name, F_SMALL, INK);
+  lv_obj_align(label, LV_ALIGN_BOTTOM_MID, 0, 0);
+  // The whole column (icon and name) is the button.
+  onClick(col, open);
   lv_obj_add_event_cb(
-      b,
+      col,
       [](lv_event_t *e) {
-        lv_label_set_text(iconName, (const char *)lv_event_get_user_data(e));
-        lv_obj_remove_flag(iconName, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_state(lv_obj_get_child((lv_obj_t *)lv_event_get_target(e), 0), LV_STATE_PRESSED, true);
       },
-      LV_EVENT_PRESSED, (void *)name);
-  auto clear = [](lv_event_t *) { lv_obj_add_flag(iconName, LV_OBJ_FLAG_HIDDEN); };
-  lv_obj_add_event_cb(b, clear, LV_EVENT_RELEASED, nullptr);
-  lv_obj_add_event_cb(b, clear, LV_EVENT_PRESS_LOST, nullptr);
+      LV_EVENT_PRESSED, nullptr);
+  auto clear = [](lv_event_t *e) {
+    lv_obj_set_state(lv_obj_get_child((lv_obj_t *)lv_event_get_target(e), 0), LV_STATE_PRESSED, false);
+  };
+  lv_obj_add_event_cb(col, clear, LV_EVENT_RELEASED, nullptr);
+  lv_obj_add_event_cb(col, clear, LV_EVENT_PRESS_LOST, nullptr);
+  icons.push_back(col);
 }
 void glyphCamera(lv_obj_t *b) {
   lv_obj_t *body = plain(b);
@@ -2064,32 +2076,23 @@ void planned(const char *name) {
 }
 void buildApps() {
   lv_obj_t *s = scr[(int)Screen::Apps] = screenBase();
-  lv_obj_add_flag(s, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_set_scroll_dir(s, LV_DIR_VER);
-  lv_obj_set_scrollbar_mode(s, LV_SCROLLBAR_MODE_OFF);
-  // Honeycomb rows (design/index.html): 3, 2 offset, then planned apps.
-  appIcon(s, 50, 62, "Camera", ICON_BG, [] { show(Screen::Camera); }, glyphCamera);
-  appIcon(s, 120, 62, "Ask", LENS, [] { show(Screen::Ask); }, glyphAsk);
+  // Two rows of three, the main app first.
+  appIcon(s, 46, 66, "Ask", LENS, [] { show(Screen::Ask); }, glyphAsk);
+  appIcon(s, 120, 66, "Camera", ICON_BG, [] { show(Screen::Camera); }, glyphCamera);
   appIcon(
-      s, 190, 62, "Photos", ICON_BG, [] { show(Screen::Photos); },
+      s, 194, 66, "Photos", ICON_BG, [] { show(Screen::Photos); },
       [](lv_obj_t *b) { glyphSymbol(b, LV_SYMBOL_IMAGE, INK); });
   appIcon(
-      s, 85, 128, "Remote", ICON_BG, [] { show(Screen::Remote); },
+      s, 46, 164, "Remote", ICON_BG, [] { show(Screen::Remote); },
       [](lv_obj_t *b) { glyphSymbol(b, LV_SYMBOL_KEYBOARD, INK); });
   appIcon(
-      s, 155, 128, "Settings", ICON_BG, [] { show(Screen::Settings); },
-      [](lv_obj_t *b) { glyphSymbol(b, LV_SYMBOL_SETTINGS, INK); });
-  appIcon(
-      s, 120, 194, "Gestures", ICON_BG, [] { show(Screen::Gestures); },
+      s, 120, 164, "Gestures", ICON_BG, [] { show(Screen::Gestures); },
       [](lv_obj_t *b) { glyphSymbol(b, LV_SYMBOL_EYE_OPEN, INK); });
-  lv_obj_t *spacer = plain(s);  // room to scroll, as more apps arrive
-  lv_obj_set_size(spacer, 1, 1);
-  lv_obj_set_pos(spacer, 0, 330);
-  iconName = text(s, "", F_SMALL, INK);
-  lv_obj_align(iconName, LV_ALIGN_TOP_MID, 0, 10);
+  appIcon(
+      s, 194, 164, "Settings", ICON_BG, [] { show(Screen::Settings); },
+      [](lv_obj_t *b) { glyphSymbol(b, LV_SYMBOL_SETTINGS, INK); });
+  iconName = text(s, "", F_SMALL, INK);  // kept for older code paths; unused
   lv_obj_add_flag(iconName, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_update_layout(s);
-  fisheye();
 }
 
 void buildCamera() {
@@ -2154,7 +2157,7 @@ void buildAsk() {
   lv_image_set_src(askPhoto, &photoDsc);
   askEmpty = text(hero, "No photo yet.", F_BODY, MIST);
   lv_obj_align(askEmpty, LV_ALIGN_CENTER, 0, -30);
-  scrimBottom(hero, 120);
+  scrimBottom(hero, 160);  // dark enough under the hint and the buttons on any photo
   askOffline = text(hero, "Offline", F_SMALL, INK);
   lv_obj_align(askOffline, LV_ALIGN_TOP_MID, 0, 26);
   // Pages: "+ Page" photographs another page for the same question; the chip shows how
@@ -2164,7 +2167,10 @@ void buildAsk() {
   lv_obj_set_flex_flow(pageBar, LV_FLEX_FLOW_ROW);
   lv_obj_set_style_pad_column(pageBar, 8, 0);
   lv_obj_align(pageBar, LV_ALIGN_TOP_RIGHT, -12, 30);
-  pageChip = chip(pageBar, "");
+  newPhotoBtn = chip(pageBar, "New photo");
+  onClick(newPhotoBtn, newPhoto);
+  pageChip = chip(hero, "");
+  lv_obj_align(pageChip, LV_ALIGN_TOP_RIGHT, -12, 74);
   lv_obj_add_flag(pageChip, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_event_cb(
       pageChip,
@@ -2176,42 +2182,69 @@ void buildAsk() {
       LV_EVENT_CLICKED, nullptr);
   addPageBtn = chip(pageBar, "+ Page");
   onClick(addPageBtn, addPage);
-  askHint = text(hero, "Hold the button to ask by voice", F_SMALL, MIST);
-  lv_obj_align(askHint, LV_ALIGN_BOTTOM_MID, 0, -ABOVE_HOME - 56);
+  askHint = text(hero, "Hold the mic to ask out loud", F_SMALL, MIST);
+  lv_obj_align(askHint, LV_ALIGN_BOTTOM_MID, 0, -ABOVE_HOME - 58);
   historyList = plain(askScroll);
   lv_obj_set_size(historyList, W, LV_SIZE_CONTENT);
   lv_obj_set_flex_flow(historyList, LV_FLEX_FLOW_COLUMN);
+  // Bottom: the main action, and a separate mic you hold while you speak.
   askPill = pressedFeedback(plain(hero));
-  lv_obj_set_size(askPill, 200, 46);
-  lv_obj_align(askPill, LV_ALIGN_BOTTOM_MID, 0, -ABOVE_HOME);
-  lv_obj_set_style_radius(askPill, 23, 0);
+  lv_obj_set_size(askPill, 152, 48);
+  lv_obj_align(askPill, LV_ALIGN_BOTTOM_LEFT, 16, -ABOVE_HOME);
+  lv_obj_set_style_radius(askPill, 24, 0);
   lv_obj_set_style_bg_color(askPill, GRAPHITE, 0);
-  lv_obj_set_style_bg_opa(askPill, 230, 0);
-  lv_obj_t *ring = circle(askPill, 28, LENS, 3, VOID_, LV_OPA_TRANSP);
-  lv_obj_align(ring, LV_ALIGN_LEFT_MID, 9, 0);
+  lv_obj_set_style_bg_opa(askPill, 235, 0);
+  lv_obj_t *ring = circle(askPill, 26, LENS, 3, VOID_, LV_OPA_TRANSP);
+  lv_obj_align(ring, LV_ALIGN_LEFT_MID, 11, 0);
   askButtonLabel = text(askPill, "", F_BODY, INK);
   lv_obj_align(askButtonLabel, LV_ALIGN_LEFT_MID, 46, 0);
-  // Tap: ask about the photo. Hold: speak the question, release to ask.
-  lv_obj_add_flag(askPill, LV_OBJ_FLAG_CLICKABLE);
+  onClick(askPill, [] {
+    if (micRecording()) return;
+    if (jpegBytes) startAsk();
+    else newPhoto();
+  });
+  micBtn = circle(hero, 48, INK, 0, GRAPHITE, 235);
+  lv_obj_align(micBtn, LV_ALIGN_BOTTOM_RIGHT, -16, -ABOVE_HOME);
+  lv_obj_set_style_bg_color(micBtn, LENS, LV_STATE_PRESSED);
+  {
+    // Microphone glyph: capsule, cradle, stem.
+    lv_obj_t *cap = plain(micBtn);
+    lv_obj_set_size(cap, 12, 20);
+    lv_obj_set_style_radius(cap, 6, 0);
+    lv_obj_set_style_bg_color(cap, INK, 0);
+    lv_obj_set_style_bg_opa(cap, LV_OPA_COVER, 0);
+    lv_obj_align(cap, LV_ALIGN_CENTER, 0, -4);
+    lv_obj_t *cradle = plain(micBtn);
+    lv_obj_set_size(cradle, 20, 14);
+    lv_obj_set_style_radius(cradle, 10, 0);
+    lv_obj_set_style_border_width(cradle, 2, 0);
+    lv_obj_set_style_border_color(cradle, INK, 0);
+    lv_obj_set_style_border_side(cradle, LV_BORDER_SIDE_BOTTOM, 0);
+    lv_obj_align(cradle, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_t *stem = plain(micBtn);
+    lv_obj_set_size(stem, 2, 5);
+    lv_obj_set_style_bg_color(stem, INK, 0);
+    lv_obj_set_style_bg_opa(stem, LV_OPA_COVER, 0);
+    lv_obj_align(stem, LV_ALIGN_CENTER, 0, 10);
+  }
+  lv_obj_add_flag(micBtn, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_set_ext_click_area(micBtn, 6);
+  // Press starts listening at once; release writes down what was said.
   lv_obj_add_event_cb(
-      askPill,
+      micBtn,
       [](lv_event_t *) {
-        if (micRecording()) return;
-        if (jpegBytes) startAsk();
-        else captureAndAsk();
-      },
-      LV_EVENT_SHORT_CLICKED, nullptr);
-  lv_obj_add_event_cb(
-      askPill,
-      [](lv_event_t *) {
-        if (!jpegBytes || !lv_obj_has_flag(busy, LV_OBJ_FLAG_HIDDEN)) return;
+        if (!jpegBytes) {
+          toast("Take a photo first");
+          return;
+        }
+        if (!lv_obj_has_flag(busy, LV_OBJ_FLAG_HIDDEN) || micRecording()) return;
         if (!micStart()) {
           toast("Microphone unavailable");
           return;
         }
         lv_obj_remove_flag(listenOverlay, LV_OBJ_FLAG_HIDDEN);
       },
-      LV_EVENT_LONG_PRESSED, nullptr);
+      LV_EVENT_PRESSED, nullptr);
   auto release = [](lv_event_t *) {
     if (!micRecording()) return;
     micStop();
@@ -2219,21 +2252,13 @@ void buildAsk() {
     size_t len = 0;
     const uint8_t *wav = micWav(len);
     if (micSeconds() < 0.6f) {
-      toast("Hold and speak, then let go");
+      toast("Hold the mic while you speak");
       return;
     }
     startListenBack(wav, len);
   };
-  lv_obj_add_event_cb(askPill, release, LV_EVENT_RELEASED, nullptr);
-  lv_obj_add_event_cb(askPill, release, LV_EVENT_PRESS_LOST, nullptr);
-  // Long-press the photo: new photo, then ask. Replaces the tiny corner icon of the old UI.
-  lv_obj_add_flag(askHero, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_add_event_cb(
-      askHero,
-      [](lv_event_t *) {
-        if (lv_obj_has_flag(busy, LV_OBJ_FLAG_HIDDEN) && !cameraOff) lv_obj_remove_flag(askSheet, LV_OBJ_FLAG_HIDDEN);
-      },
-      LV_EVENT_LONG_PRESSED, nullptr);
+  lv_obj_add_event_cb(micBtn, release, LV_EVENT_RELEASED, nullptr);
+  lv_obj_add_event_cb(micBtn, release, LV_EVENT_PRESS_LOST, nullptr);
 
   askSheet = plain(s);
   lv_obj_set_size(askSheet, 220, 96);
@@ -2356,6 +2381,43 @@ void buildAnswer() {
   lv_obj_set_style_margin_top(answerMeta, 8, 0);
 }
 
+void deleteShownPhoto() {
+  if (!photoCount) return;
+  confirm(
+      "Delete this photo?", "Delete photo",
+      [](uint32_t id) {
+        if (!deletePhoto(id)) {
+          toast("Waiting to be asked: kept");
+          return;
+        }
+        const bool wasLatest = id == latestPhotoId;
+        refreshPhotos();
+        if (wasLatest) {
+          free(savedJpeg);
+          savedJpeg = nullptr;
+          jpegBytes = jpegCapacity = 0;
+          latestPhotoId = 0;
+          contextIds.clear();
+          restoreLatestPhoto();
+        }
+        cardSignature = "";
+        freeKbStale = true;
+        refreshDynamic();
+        hide(photosImage, photoCount == 0);
+        hide(photosEmpty, photoCount != 0);
+        if (photoCount) showPhoto(min(photoIndex, photoCount - 1));
+        toast("Deleted");
+      },
+      photoIds[photoIndex]);
+}
+lv_obj_t *roundButton(lv_obj_t *parent, const char *symbol, void (*fn)()) {
+  lv_obj_t *b = circle(parent, 46, INK, 0, GRAPHITE, 230);
+  lv_obj_set_style_opa(b, LV_OPA_60, LV_STATE_PRESSED);
+  glyphSymbol(b, symbol, INK);
+  onClick(b, fn);
+  lv_obj_set_ext_click_area(b, 4);
+  return b;
+}
 void buildPhotos() {
   lv_obj_t *s = scr[(int)Screen::Photos] = screenBase();
   photosImage = lv_image_create(s);
@@ -2372,39 +2434,17 @@ void buildPhotos() {
       },
       LV_EVENT_GESTURE, nullptr);
   lv_obj_add_event_cb(photosImage, [](lv_event_t *) { showPhoto(photoIndex); }, LV_EVENT_SHORT_CLICKED, nullptr);
-  lv_obj_add_event_cb(
-      photosImage,
-      [](lv_event_t *) {
-        if (!photoCount) return;
-        confirm(
-            "Delete this photo?", "Delete photo",
-            [](uint32_t id) {
-              if (!deletePhoto(id)) {
-                toast("Waiting to be asked: kept");
-                return;
-              }
-              const bool wasLatest = id == latestPhotoId;
-              refreshPhotos();
-              if (wasLatest) {
-                free(savedJpeg);
-                savedJpeg = nullptr;
-                jpegBytes = jpegCapacity = 0;
-                latestPhotoId = 0;
-                restoreLatestPhoto();
-              }
-              cardSignature = "";
-              freeKbStale = true;
-              refreshDynamic();
-              hide(photosImage, photoCount == 0);
-              hide(photosEmpty, photoCount != 0);
-              if (photoCount) showPhoto(min(photoIndex, photoCount - 1));
-              toast("Deleted");
-            },
-            photoIds[photoIndex]);
-      },
-      LV_EVENT_LONG_PRESSED, nullptr);
+  lv_obj_add_event_cb(photosImage, [](lv_event_t *) { deleteShownPhoto(); }, LV_EVENT_LONG_PRESSED, nullptr);
   photoCounter = text(s, "", F_SMALL, INK);
-  lv_obj_align(photoCounter, LV_ALIGN_TOP_MID, 0, 14);
+  lv_obj_align(photoCounter, LV_ALIGN_TOP_MID, 0, 18);
+  // Visible controls (swiping works too): newer, delete, older.
+  photoPrev = roundButton(s, LV_SYMBOL_LEFT, [] { showPhoto(photoIndex - 1); });
+  lv_obj_align(photoPrev, LV_ALIGN_BOTTOM_LEFT, 18, -ABOVE_HOME);
+  photoNext = roundButton(s, LV_SYMBOL_RIGHT, [] { showPhoto(photoIndex + 1); });
+  lv_obj_align(photoNext, LV_ALIGN_BOTTOM_RIGHT, -18, -ABOVE_HOME);
+  photoDelete = pill(s, "Delete", 100);
+  lv_obj_align(photoDelete, LV_ALIGN_BOTTOM_MID, 0, -ABOVE_HOME);
+  onClick(photoDelete, deleteShownPhoto);
   photosEmpty = plain(s);
   lv_obj_set_size(photosEmpty, W, H);
   lv_obj_align(text(photosEmpty, "No photos yet.", F_BODY, MIST), LV_ALIGN_CENTER, 0, -30);
@@ -2869,12 +2909,13 @@ void buildSettings() {
         toast(removed ? "Forgot the last hour" : "Nothing from the last hour");
       },
       LV_EVENT_LONG_PRESSED, nullptr);
-  lv_obj_t *about = row(s, 342, "About", nullptr, 52);
-  lv_obj_t *version = text(about, "Version 0.4, built " __DATE__, F_SMALL, MIST);
-  lv_obj_align(version, LV_ALIGN_RIGHT_MID, -20, 0);
+  lv_obj_t *about = row(s, 342, "About", nullptr, 64);
+  lv_obj_align(lv_obj_get_child(about, 0), LV_ALIGN_TOP_LEFT, 22, 12);
+  lv_obj_t *version = text(about, "Perch 0.5, built " __DATE__, F_SMALL, MIST);
+  lv_obj_set_pos(version, 22, 36);
   lv_obj_t *spacer = plain(s);
   lv_obj_set_size(spacer, 1, 1);
-  lv_obj_set_pos(spacer, 0, 450);
+  lv_obj_set_pos(spacer, 0, 462);
 }
 
 // AI settings: which provider answers, and for each provider its model and effort.
@@ -3479,7 +3520,7 @@ void initDeviceUi() {
   onClick(backButton, [] { goBack(); });
   lv_obj_add_flag(backButton, LV_OBJ_FLAG_HIDDEN);
   // First run only: how to move around. Three gestures cover everything.
-  if (!settings.getBool("guide-seen2", false)) {
+  if (!settings.getBool("guide-seen3", false)) {
     lv_obj_t *guide = plain(lv_layer_top());
     lv_obj_set_size(guide, W, H);
     lv_obj_set_style_bg_color(guide, VOID_, 0);
@@ -3490,8 +3531,8 @@ void initDeviceUi() {
     lv_obj_align(col, LV_ALIGN_TOP_MID, 0, 30);
     lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(col, 14, 0);
-    const char *lines[][2] = {{LV_SYMBOL_UP "  Swipe up", "on the clock: apps"},
-                              {LV_SYMBOL_UP "  Up from the bottom", "home, from anywhere"},
+    const char *lines[][2] = {{LV_SYMBOL_UP "  Up from the bottom", "apps, or back home"},
+                              {LV_SYMBOL_DOWN "  Down from the top", "Control Center"},
                               {LV_SYMBOL_RIGHT "  Right from the left", "back one step"}};
     for (auto &line : lines) {
       lv_obj_t *a = text(col, line[0], F_BODY, INK);
@@ -3505,7 +3546,7 @@ void initDeviceUi() {
     lv_obj_add_event_cb(
         ok,
         [](lv_event_t *e) {
-          settings.putBool("guide-seen2", true);
+          settings.putBool("guide-seen3", true);
           lv_obj_delete(lv_obj_get_parent((lv_obj_t *)lv_event_get_target(e)));
         },
         LV_EVENT_CLICKED, nullptr);
@@ -4040,7 +4081,7 @@ void deviceTick() {
     else if (forPage) {
       pageCamera = false;
       show(Screen::Ask);
-      toast((String("Page ") + pageCount() + " added. Tap Ask").c_str());
+      if (pageCount() > 1) toast((String("Page ") + pageCount() + " added. Tap Ask").c_str());
     }
   }
   if (savedPhotoId && savedPhotoId != latestPhotoId) {
