@@ -92,6 +92,12 @@ bool cameraOff = false;
 // uploads failed). It comes back by itself and a paired computer reconnects.
 bool bluetoothOn = false;
 bool btPaused = false;
+// Screen sleep: dim 10 s before, then backlight off and camera off. The first touch only wakes.
+const uint16_t SLEEP_CHOICES[] = {30, 60, 120, 0};  // seconds; 0 = never
+uint8_t sleepChoice = 1;
+unsigned long lastActivity = 0;
+bool screenAsleep = false, screenDim = false, swallowTouch = false;
+lv_obj_t *sleepValue = nullptr;
 uint8_t brightnessPct = 100;  // 5..100, continuous (Control Center and Settings sliders)
 uint8_t spiMhz = 10;
 unsigned long sequence = 0;
@@ -183,6 +189,7 @@ bool pageCamera = false;  // the camera was opened from Ask ("New photo" / "+ Pa
 void newPhoto();
 void pauseBluetooth();
 void setBluetooth(bool on);
+void wakeScreen();
 void showHeard(const String &words);
 void addPage();
 int pageCount();
@@ -1394,6 +1401,12 @@ void refreshDynamic() {
   }
   if (keyCache < 0) keyCache = (settings.isKey("gemini-key") ? 1 : 0) | (settings.isKey("gpt-key") ? 2 : 0);
   if (current == Screen::Model) refreshAiScreen();
+  {
+    const uint16_t secs = SLEEP_CHOICES[sleepChoice];
+    setText(sleepValue, !secs       ? "Never"
+                        : secs < 60 ? (String(secs) + " s").c_str()
+                                    : (String(secs / 60) + " min").c_str());
+  }
   setText(storageValue, freeKbCache ? (String(freeKbCache) + " KB free").c_str() : "");
   setText(storageSub, (String(photoCount) + " photos, " + answerCount + " answers on the device").c_str());
   setText(remoteStatus, !remoteStarted()    ? ""
@@ -1885,6 +1898,18 @@ void setModel(bool gemini) {
   useGemini = gemini;
   settings.putBool("gemini", useGemini);
   refreshDynamic();
+}
+void wakeScreen() {
+  if (screenAsleep) Serial.println("SCREEN wake");
+  screenAsleep = false;
+  screenDim = false;
+  lastActivity = millis();
+  displayBrightness(brightnessPct * 255 / 100);
+}
+void sleepScreen() {
+  screenAsleep = true;
+  displayBrightness(0);
+  Serial.println("SCREEN sleep");
 }
 // Brightness follows the finger; it is saved when the finger lifts (flash wears on writes).
 void setBrightness(int pct, bool save) {
@@ -3273,12 +3298,18 @@ void buildSettings() {
   brightSlider = brightnessSlider(bright, 104, 22);
   lv_obj_align(brightSlider, LV_ALIGN_RIGHT_MID, -20, 0);
   lv_obj_remove_flag(bright, LV_OBJ_FLAG_CLICKABLE);  // the row itself does nothing; the slider does
-  lv_obj_t *storage = row(s, 214, "Storage", &storageValue, 64);
+  lv_obj_t *sleepRow = row(s, 214, "Screen off", &sleepValue);
+  onClick(sleepRow, [] {
+    sleepChoice = (sleepChoice + 1) % (sizeof(SLEEP_CHOICES) / sizeof(SLEEP_CHOICES[0]));
+    settings.putUChar("sleep", sleepChoice);
+    refreshDynamic();
+  });
+  lv_obj_t *storage = row(s, 266, "Storage", &storageValue, 64);
   lv_obj_align(lv_obj_get_child(storage, 0), LV_ALIGN_TOP_LEFT, 22, 12);
   lv_obj_align(storageValue, LV_ALIGN_TOP_RIGHT, -20, 12);
   storageSub = text(storage, "", F_SMALL, MIST);
   lv_obj_set_pos(storageSub, 22, 36);
-  lv_obj_t *forget = row(s, 278, "Forget last hour", nullptr, 64);
+  lv_obj_t *forget = row(s, 330, "Forget last hour", nullptr, 64);
   lv_obj_align(lv_obj_get_child(forget, 0), LV_ALIGN_TOP_LEFT, 22, 12);
   lv_obj_t *forgetSub = text(forget, "Hold to delete answers and photos", F_SMALL, MIST);
   lv_obj_set_pos(forgetSub, 22, 36);
@@ -3310,13 +3341,13 @@ void buildSettings() {
         toast(removed ? "Forgot the last hour" : "Nothing from the last hour");
       },
       LV_EVENT_LONG_PRESSED, nullptr);
-  lv_obj_t *about = row(s, 342, "About", nullptr, 64);
+  lv_obj_t *about = row(s, 394, "About", nullptr, 64);
   lv_obj_align(lv_obj_get_child(about, 0), LV_ALIGN_TOP_LEFT, 22, 12);
   lv_obj_t *version = text(about, "Perch 0.5, built " __DATE__, F_SMALL, MIST);
   lv_obj_set_pos(version, 22, 36);
   lv_obj_t *spacer = plain(s);
   lv_obj_set_size(spacer, 1, 1);
-  lv_obj_set_pos(spacer, 0, 462);
+  lv_obj_set_pos(spacer, 0, 514);
 }
 
 // AI settings: which provider answers, and for each provider its model and effort.
@@ -3603,6 +3634,18 @@ void readTouch(lv_indev_t *, lv_indev_data_t *data) {
   static bool passThrough = false;  // candidate rejected: this touch belongs to the app
   static int tapPending = 0;        // 2 = report a press at (tapX, tapY), 1 = then a release
   static int tapX = 0, tapY = 0;
+  if (pressed) {
+    lastActivity = millis();
+    if (screenAsleep) {
+      wakeScreen();
+      swallowTouch = true;
+    } else if (screenDim) wakeScreen();
+  }
+  if (swallowTouch) {  // the touch that woke the screen does nothing else
+    if (!pressed) swallowTouch = false;
+    data->state = LV_INDEV_STATE_RELEASED;
+    return;
+  }
   if (tapPending && !pressed) {
     data->point.x = tapX;
     data->point.y = tapY;
@@ -3846,6 +3889,7 @@ void initDeviceUi() {
   useGemini = settings.getBool("gemini", true);
   bluetoothOn = settings.getBool("bt-on", false);
   confirmWords = settings.getBool("words-first", true);
+  sleepChoice = settings.getUChar("sleep", 1) % (sizeof(SLEEP_CHOICES) / sizeof(SLEEP_CHOICES[0]));
   batteryBegin();
   geminiModel = constrain(settings.getUChar("gm-model", 0), 0, GEMINI_MODEL_COUNT - 1);
   geminiEffort = constrain(settings.getUChar("gm-effort", 0), 0, AI_EFFORT_COUNT - 1);
@@ -4459,6 +4503,23 @@ void handleDeviceButton(char command) {
 void deviceTick() {
   if (!framebuffer) return;
   const unsigned long now = millis();
+  {
+    // Never sleep while something is happening; the USB mirror counts as use.
+    if (aiBusy() || micRecording() || captureRequested || captureProcessing ||
+        (lastSerialMs && now - lastSerialMs < 2000) || !lastActivity)
+      lastActivity = now;
+    const unsigned long after = SLEEP_CHOICES[sleepChoice] * 1000UL;
+    if (after && !screenAsleep) {
+      const unsigned long idle = now - lastActivity;
+      if (idle > after) sleepScreen();
+      else if (idle + 10000 > after && !screenDim) {
+        screenDim = true;
+        displayBrightness(max(8, brightnessPct * 255 / 100 / 4));
+      }
+    } else if (screenAsleep && now - lastActivity < 500) {
+      wakeScreen();  // something happened (an answer, the mirror)
+    }
+  }
   // Collect finished requests even if the user has moved to another app.
   String result;
   const AiState ai = aiPoll(result);
@@ -4527,6 +4588,7 @@ void deviceTick() {
     lv_obj_add_flag(busy, LV_OBJ_FLAG_HIDDEN);
     refreshDynamic();
     if (waiting && current == Screen::Ask && id) showAnswer(id);
+    if (screenAsleep || screenDim) wakeScreen();
   } else if (ai == AiState::Failed) {
     pending = Pending::None;
     const bool waiting = !lv_obj_has_flag(busy, LV_OBJ_FLAG_HIDDEN);
@@ -4614,7 +4676,7 @@ void deviceTick() {
   // Live viewfinder: the camera task converts frames; the UI shows the newest one.
   static unsigned long lastFpsReport = 0;
   static uint32_t shown = 0, convertedAtReport = 0;
-  const bool wantsCamera = current == Screen::Camera || current == Screen::Gestures;
+  const bool wantsCamera = (current == Screen::Camera || current == Screen::Gestures) && !screenAsleep;
   gestureActive = current == Screen::Gestures && !ccOpen;
   if (current == Screen::Gestures) renderGestures();
   if (wantsCamera && !cameraOff && !ccOpen && now - lastSerialMs > 3000) {
