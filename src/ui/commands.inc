@@ -270,10 +270,7 @@ void handleDeviceButton(char command) {
     case 'C': launch(Screen::Camera); break;
     case 'A': launch(Screen::Ask); break;
     case 'p': launch(Screen::Photos); break;
-    case 'H':
-      launch(Screen::Ask);
-      if (answerCount) lv_obj_scroll_to_y(askScroll, H - ASK_PEEK - 30, LV_ANIM_OFF);
-      break;
+    case 'H': launch(Screen::Chats); break;
     case 'R': launch(Screen::Remote); break;
     case 'W': launch(Screen::Wifi); break;
     case 'I': {  // developer: internet check (no AI). 204 = real internet; anything else = sign-in page
@@ -321,24 +318,19 @@ void handleDeviceButton(char command) {
       Serial.printf("TOUCH pressed %d/30\n", pressedCount);
       break;
     }
-    case 'S': {  // developer: a clearly labelled sample answer, for layout checks (delete it after)
-      static uint16_t *th = (uint16_t *)ps_malloc(THUMB * THUMB * 2);
-      const bool haveThumb = latestPhotoId && th && loadPhotoThumb(latestPhotoId, th);
-      saveAnswer(
-          "Q1: c. O(n^2)\n"
-          "1. **.get(i)** on a LinkedList walks i nodes: O(n)\n"
-          "2. The loop calls it n times: n * O(n) = O(n^2)\n\n"
-          "**Q2:** b. 2n\n"
-          "1. The loop runs while i < data.size() * 2\n"
-          "2. So foo is called 2n times\n\n"
-          "Question 3: x = 1 or x = -4\n"
-          "(x + 4)(x - 1) = 0\n\n"
-          "Sample written on the device for a layout check, not by a model.",
-          true, latestPhotoId, clockKnown() ? (uint32_t)time(nullptr) : 0, haveThumb ? th : nullptr);
-      loadLatestAnswer();
-      cardSignature = "";
-      refreshDynamic();
+    case 'S': {  // developer: a sample exchange in the chat, for layout checks (not sent anywhere)
+      ChatMsg q;
+      q.text = "Sample question for a layout check";
+      chat.push_back(q);
+      ChatMsg a;
+      a.user = false;
+      a.text =
+          "Q1: c. O(n^2)\n1. **.get(i)** on a LinkedList walks i nodes: O(n)\n2. The loop calls it n times\n\n"
+          "Q2: b. 2n\n1. The loop runs while i < data.size() * 2\n\n"
+          "Sample written on the device, not by a model.";
+      chat.push_back(a);
       launch(Screen::Ask);
+      rebuildChat();
       break;
     }
     case 'E': launch(Screen::Gestures); break;
@@ -390,11 +382,18 @@ void handleDeviceButton(char command) {
       if (takePhoto(problem)) show(Screen::Photos);
       else notice(problem, Screen::Camera);
       break;
-    case 'q':
-      show(Screen::Ask);
-      startAsk();
+    case 'q':  // developer: send the message box; an empty chat gets the newest photo attached
+      launch(Screen::Ask);
+      if (chat.empty() && attachIds.empty()) {
+        refreshPhotos();
+        if (photoCount) attachIds.push_back(photoIds[0]);
+      }
+      sendMessage(draft);
       break;
-    case 'Q': captureAndAsk(); break;
+    case 'Q':
+      launch(Screen::Ask);
+      chatTakePhoto();
+      break;
     case 'x': cancelAsk(); break;
     case 'X': show(noticeReturn); break;
     case 'P': setModel(!useGemini); break;

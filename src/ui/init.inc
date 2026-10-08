@@ -87,6 +87,8 @@ void initDeviceUi() {
   buildApps();
   buildCamera();
   buildAsk();
+  buildChats();
+  buildPicker();
   buildAnswer();
   buildPhotos();
   buildHistory();

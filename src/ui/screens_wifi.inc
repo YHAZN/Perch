@@ -237,13 +237,15 @@ void buildPassword() {
         if (textMode == TextMode::Question) {
           String q = typed;
           q.trim();
-          if (q.isEmpty()) {
-            toast("Type a question, or hold Talk");
+          if (q.isEmpty() && attachIds.empty()) {
+            toast("Type a message, or hold Talk");
             return;
           }
           lv_textarea_set_text(passwordField, "");
+          textMode = TextMode::Password;  // so returning to Ask does not read the field again
+          draft = q;
           goBack();
-          startAsk(q);
+          sendMessage(draft);
           return;
         }
         if (typed.length() < 8) {

@@ -25,7 +25,6 @@ void deviceTick() {
   const AiState ai = aiPoll(result);
   if ((ai == AiState::Done || ai == AiState::Failed) && pending == Pending::Transcribe) {
     pending = Pending::None;
-    lv_obj_add_flag(busy, LV_OBJ_FLAG_HIDDEN);
     if (dictating) {
       dictating = false;
       if (ai == AiState::Failed) toast("Could not hear that. Try again");
@@ -34,13 +33,14 @@ void deviceTick() {
         if (current.length() && !current.endsWith(" ")) lv_textarea_add_text(passwordField, " ");
         lv_textarea_add_text(passwordField, result.c_str());
       }
-    } else if (ai == AiState::Failed) notice(result, Screen::Ask);
-    else if (sendAfterTranscribe) {
-      sendAfterTranscribe = false;
-      startAsk(result);
-    } else showHeard(result);
+    } else {
+      chatHeard(ai == AiState::Done, result);
+    }
   } else if (ai == AiState::Cancelled && pending == Pending::Transcribe) {
     pending = Pending::None;
+  } else if (ai == AiState::Cancelled && pending == Pending::Answer) {
+    pending = Pending::None;
+    chatCancelled();
   } else if (ai == AiState::Done && queueInFlight) {
     // A queued question came back.
     static uint16_t *qth = (uint16_t *)ps_malloc(THUMB * THUMB * 2);
@@ -68,45 +68,25 @@ void deviceTick() {
     if (current == Screen::Ask) rebuildHistory();
   } else if (ai == AiState::Done) {
     pending = Pending::None;
-    if (pendingPhotoId == UINT32_MAX) pendingPhotoId = latestPhotoId;
+    // Kept for the clock card too: the newest answer, with the chat's newest photo.
     static uint16_t *th = (uint16_t *)ps_malloc(THUMB * THUMB * 2);  // PSRAM: internal RAM is for Wi-Fi/TLS
     const bool haveThumb = pendingPhotoId && th && loadPhotoThumb(pendingPhotoId, th);
     const uint32_t when = clockKnown() ? (uint32_t)time(nullptr) : 0;
-    const uint32_t id = saveAnswer(result, pendingGemini, pendingPhotoId, when, haveThumb ? th : nullptr);
-    if (!id) Serial.println("STORAGE_ERROR Answer not saved");
-    if (id) {
-      sessionAnswers.push_back(id);
-      sessionQuestions.push_back(pendingQuestion);
-      while (sessionAnswers.size() > 6) {
-        sessionAnswers.erase(sessionAnswers.begin());
-        sessionQuestions.erase(sessionQuestions.begin());
-      }
-      chatFresh = false;
-    }
+    if (!saveAnswer(result, pendingGemini, pendingPhotoId, when, haveThumb ? th : nullptr))
+      Serial.println("STORAGE_ERROR Answer not saved");
     loadLatestAnswer();
-    const bool waiting = !lv_obj_has_flag(busy, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(busy, LV_OBJ_FLAG_HIDDEN);
+    chatFinished(true, result);
     refreshDynamic();
-    // Replace the streamed text with the saved answer (photo and source line included).
-    if (id && ((waiting && current == Screen::Ask) || (streaming && current == Screen::Answer))) {
-      const int32_t y = lv_obj_get_scroll_y(answerScroll);
-      const bool wasStreaming = streaming && current == Screen::Answer;
-      showAnswer(id);
-      if (wasStreaming) lv_obj_scroll_to_y(answerScroll, y, LV_ANIM_OFF);
-    }
-    streaming = false;
     if (screenAsleep || screenDim) wakeScreen();
   } else if (ai == AiState::Failed) {
     pending = Pending::None;
-    streaming = false;
-    const bool waiting = !lv_obj_has_flag(busy, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(busy, LV_OBJ_FLAG_HIDDEN);
-    if (waiting && current == Screen::Ask) notice(result, Screen::Ask);
+    chatFinished(false, result);
   }
   if (btPaused && !aiBusy() && updaterState() != UpdateState::Checking && updaterState() != UpdateState::Installing)
     resumeBluetooth();
   zoomTick();
   {
+    // The answer grows in the chat as it streams in.
     static uint32_t seen = 0;
     static unsigned long drawnAt = 0;
     if (pending == Pending::Answer && aiBusy()) {
@@ -115,15 +95,14 @@ void deviceTick() {
       if (v != seen && partial.length() && now - drawnAt > 350) {
         seen = v;
         drawnAt = now;
-        const bool waiting = !lv_obj_has_flag(busy, LV_OBJ_FLAG_HIDDEN);
-        if (waiting && current == Screen::Ask) {
-          lv_obj_add_flag(busy, LV_OBJ_FLAG_HIDDEN);
-          streaming = true;
-          showStreaming(partial, true);
-        } else if (streaming && current == Screen::Answer) {
-          showStreaming(partial, false);
-        }
+        chatPartial(partial);
       }
+    }
+    // A message written without Wi-Fi goes out when Wi-Fi is back.
+    static unsigned long retryAt = 0;
+    if (!aiBusy() && !chat.empty() && chat.back().user && chat.back().pending && networkConnected() && now > retryAt) {
+      retryAt = now + 10000;
+      dispatchChat();
     }
   }
   static bool btStarted = false;  // start a few seconds after boot, once the UI is up
@@ -133,17 +112,17 @@ void deviceTick() {
   }
   if (captureReady && !captureRequested) {
     String problem;
-    const bool forPage = pageCamera;
+    const bool forChat = pageCamera;
     if (!acceptCapture(problem)) notice(problem, current == Screen::Camera ? Screen::Camera : Screen::Face);
-    else if (forPage) {
+    else if (forChat) {
       pageCamera = false;
-      show(Screen::Ask);
-      if (pageCount() > 1) toast((String("Page ") + pageCount() + " added. Tap Ask").c_str());
+      chatPhotoTaken();  // back to the chat; attached once saved
     }
   }
   if (savedPhotoId && savedPhotoId != latestPhotoId) {
     latestPhotoId = savedPhotoId;
     refreshPhotos();
+    chatPhotoSaved(savedPhotoId);
     if (queueWhenSaved) {
       queueWhenSaved = false;
       queueAdd(latestPhotoId, useGemini, clockKnown() ? (uint32_t)time(nullptr) : 0);

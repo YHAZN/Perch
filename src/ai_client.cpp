@@ -360,7 +360,13 @@ struct Job {
 // The request bodies. Shared by real requests and the dry run.
 void buildAnswerBody(const Job &j, Body &body) {
   const bool voice = j.options.gemini && j.wav && j.wavLength;
-  String task = voice ? TASK_VOICE : (j.pages > 1 ? TASK_PAGES : TASK_ONE);
+  String task = voice ? TASK_VOICE
+                      : (j.pages > 1    ? TASK_PAGES
+                         : j.pages == 1 ? TASK_ONE
+                                        : "Answer the user's question.");
+  if (voice && j.pages == 0)
+    task =
+        "The attached audio is the user's spoken question. Answer it. If it is unclear, say what you could not hear.";
   if (j.history.length())
     task += String("\nEarlier in this conversation (context only, do not repeat it):\n") + j.history + "\n";
   if (j.question.length()) task += String(" The user's question now: \"") + j.question + "\". Answer that question.";
@@ -756,7 +762,7 @@ bool aiBusy() { return state != AiState::Idle; }
 
 bool aiStart(const AiOptions &options, const uint8_t *const *jpegs, const size_t *lengths, int pages,
              const String &question, const String &history, const uint8_t *wav, size_t wavLength) {
-  if (state != AiState::Idle || pages < 1 || pages > AI_MAX_PAGES) return false;
+  if (state != AiState::Idle || pages < 0 || pages > AI_MAX_PAGES) return false;
   if (!job) job = new Job();
   job->release();
   job->kind = Kind::Answer;

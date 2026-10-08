@@ -234,16 +234,6 @@ bool acceptCapture(String &problem) {
     return false;
   }
   if (captureOut.blurry) toast("Blurry. Hold still and try again");
-  // "+ Page" keeps the previous photo as context; any other photo starts a new question.
-  // A new photo joins the conversation; the previous one becomes context. After "New chat"
-  // the next photo starts clean.
-  const uint32_t previous = captureOut.previousPhoto ? captureOut.previousPhoto : latestPhotoId;
-  if (!chatFresh && previous && jpegBytes) {
-    contextIds.push_back(previous);
-    while ((int)contextIds.size() > AI_MAX_PAGES - 1) contextIds.erase(contextIds.begin());
-  }
-  chatFresh = false;
-  appendingPage = false;
   free(savedJpeg);
   savedJpeg = captureOut.jpeg;
   jpegBytes = jpegCapacity = captureOut.len;
@@ -277,115 +267,6 @@ AiOptions aiOptions(bool gemini) {
   o.effort = AI_EFFORTS[constrain(gemini ? geminiEffort : gptEffort, 0, AI_EFFORT_COUNT - 1)];
   return o;
 }
-int pageCount() { return jpegBytes ? (int)contextIds.size() + 1 : 0; }
-void startAsk(const String &question = "", const uint8_t *wav = nullptr, size_t wavLength = 0) {
-  if (!jpegBytes) {
-    notice("Take a photo first.", Screen::Ask);
-    return;
-  }
-  if (wav && !useGemini) {
-    toast("Voice needs Gemini. Asking about the photo");
-    wav = nullptr;
-    wavLength = 0;
-  }
-  if (!networkConnected()) {
-    // Badge mode: keep the question and answer it when Wi-Fi returns.
-    if (photoSavePending) {
-      queueWhenSaved = true;
-    } else if (latestPhotoId) {
-      const uint32_t q = queueAdd(latestPhotoId, useGemini, clockKnown() ? (uint32_t)time(nullptr) : 0);
-      if (q && wav) queueSaveAudio(q, wav, wavLength);
-      refreshQueue();
-    }
-    toast("Saved. It will ask when Wi-Fi is back");
-    historyDirty = true;
-    rebuildHistory();
-    return;
-  }
-  if (aiBusy()) {
-    notice("The previous request is still finishing. Try again in a moment.", Screen::Ask);
-    return;
-  }
-  // Earlier pages come from flash; the newest is the photo in memory.
-  const uint8_t *jpegs[AI_MAX_PAGES];
-  size_t lengths[AI_MAX_PAGES];
-  uint8_t *loaded[AI_MAX_PAGES] = {nullptr};
-  int pages = 0;
-  for (uint32_t id : contextIds) {
-    uint8_t *j = nullptr;
-    size_t l = 0;
-    if (pages < AI_MAX_PAGES - 1 && loadPhoto(id, j, l)) {
-      loaded[pages] = j;
-      jpegs[pages] = j;
-      lengths[pages] = l;
-      ++pages;
-    }
-  }
-  jpegs[pages] = savedJpeg;
-  lengths[pages] = jpegBytes;
-  ++pages;
-  // Earlier questions and answers of this chat (the last three, trimmed) travel as context.
-  String history;
-  const int from = max(0, (int)sessionAnswers.size() - 3);
-  for (int i = from; i < (int)sessionAnswers.size(); ++i) {
-    String body;
-    AnswerInfo info;
-    if (!loadAnswer(sessionAnswers[i], body, info)) continue;
-    if (body.length() > 700) body = body.substring(0, 700) + "...";
-    history += "Q: " + (sessionQuestions[i].length() ? sessionQuestions[i] : String("(about the photo)")) +
-               "\nA: " + body + "\n";
-  }
-  pendingQuestion = question;
-  AiOptions options = aiOptions(useGemini);
-  pauseBluetooth();  // Bluetooth leaves too little memory for HTTPS; it comes back after
-  const bool started = aiStart(options, jpegs, lengths, pages, question, history, wav, wavLength);
-  options.key = "";
-  for (uint8_t *l : loaded) free(l);
-  if (!started) {
-    notice("Could not start the request. Not enough memory.", Screen::Ask);
-    return;
-  }
-  pending = Pending::Answer;
-  pendingGemini = useGemini;
-  pendingPhotoId = photoSavePending ? UINT32_MAX : latestPhotoId;
-  const String who = useGemini ? "Gemini" : "GPT";
-  lv_label_set_text(busyLabel, (pages > 1                  ? "Asking " + who + " about " + pages + " pages"
-                                : question.length() || wav ? "Asking " + who + " your question"
-                                                           : "Asking " + who)
-                                   .c_str());
-  lv_obj_remove_flag(busy, LV_OBJ_FLAG_HIDDEN);
-  show(Screen::Ask);
-}
-// Hold-to-talk released: write down what was said, show it, and let the user send it.
-// Offline there is nothing to transcribe with; the recording is kept with the question.
-void startListenBack(const uint8_t *wav, size_t length) {
-  if (!networkConnected()) {
-    startAsk("", wav, length);
-    return;
-  }
-  // Preview off: Gemini takes the recording with the photo in one request; GPT cannot hear
-  // audio, so its words are written down first and sent without stopping.
-  if (!confirmWords && useGemini) {
-    startAsk("", wav, length);
-    return;
-  }
-  sendAfterTranscribe = !confirmWords;
-  if (aiBusy()) {
-    notice("The previous request is still finishing. Try again in a moment.", Screen::Ask);
-    return;
-  }
-  AiOptions options = aiOptions(useGemini);
-  pauseBluetooth();
-  const bool started = aiTranscribe(options, wav, length);
-  options.key = "";
-  if (!started) {
-    notice("Could not start. Not enough memory.", Screen::Ask);
-    return;
-  }
-  pending = Pending::Transcribe;
-  lv_label_set_text(busyLabel, "Writing down what you said");
-  lv_obj_remove_flag(busy, LV_OBJ_FLAG_HIDDEN);
-}
 // Wait for the previous photo to reach flash: its id is what a new page links back to.
 void waitForSave() {
   const unsigned long start = millis();
@@ -394,66 +275,12 @@ void waitForSave() {
     delay(10);
   }
 }
-void typeQuestion() {
-  if (!jpegBytes) {
-    toast("Take a photo first");
-    return;
-  }
-  textMode = TextMode::Question;
-  setText(passwordTitle, "Your question");
-  lv_textarea_set_password_mode(passwordField, false);
-  lv_textarea_set_one_line(passwordField, true);
-  lv_textarea_set_placeholder_text(passwordField, "Type, or hold Talk");
-  hide(passwordEye, true);
-  lv_obj_set_width(passwordField, W - 28);
-  lv_textarea_set_text(passwordField, "");
-  show(Screen::Password);
-}
-void showHeard(const String &words) {
-  heardText = words;
-  setText(heardLabel, words.c_str());
-  lv_obj_remove_flag(heardSheet, LV_OBJ_FLAG_HIDDEN);
-  show(Screen::Ask);
-}
-// "+": open the camera; the shot joins this chat and Ask comes back.
-void addPage() {
-  if (cameraOff) {
-    toast("Camera is off. Turn it on in Control Center");
-    return;
-  }
-  pageCamera = true;
-  setText(pageBanner, jpegBytes ? "Add a photo to this chat" : "Photo for Ask");
-  show(Screen::Camera);
-}
-void newPhoto() { addPage(); }
-void newChat() {
-  contextIds.clear();
-  sessionAnswers.clear();
-  sessionQuestions.clear();
-  chatFresh = true;
-  refreshDynamic();
-  toast("New chat");
-}
 void refreshQueue() {
   queuedCount = queueList(queued, 16);
   historyDirty = true;
 }
-void captureAndAsk() {
-  String problem;
-  show(Screen::Ask);
-  lv_label_set_text(busyLabel, "Taking photo");
-  lv_obj_remove_flag(busy, LV_OBJ_FLAG_HIDDEN);
-  const bool ok = takePhoto(problem);
-  lv_obj_add_flag(busy, LV_OBJ_FLAG_HIDDEN);
-  if (!ok) {
-    notice(problem, Screen::Ask);
-    return;
-  }
-  startAsk();
-}
 void cancelAsk() {
   aiCancel();
-  lv_obj_add_flag(busy, LV_OBJ_FLAG_HIDDEN);
   refreshDynamic();
 }
 void setModel(bool gemini) {
@@ -563,135 +390,7 @@ void showPhoto(int index) {
   lv_anim_set_exec_cb(&a, [](void *o, int32_t v) { lv_obj_set_style_opa((lv_obj_t *)o, v, 0); });
   lv_anim_start(&a);
 }
-void rebuildHistory() {
-  if (!historyDirty) return;
-  historyDirty = false;
-  // Rows are rebuilt below; the queue list must be current.
-  queuedCount = queueList(queued, 16);
-  lv_obj_clean(historyList);
-  // With earlier answers, the question screen ends a little short so the list peeks in.
-  lv_obj_set_height(askHero, answerCount || queuedCount ? H - ASK_PEEK : H);
-  // Questions waiting for Wi-Fi come first: tap a failed one to try again.
-  for (int i = queuedCount - 1; i >= 0; --i) {
-    lv_obj_t *r = pressedFeedback(plain(historyList));
-    lv_obj_set_size(r, W, 56);
-    static uint16_t *qthumbs = (uint16_t *)ps_malloc(4 * THUMB * THUMB * 2);  // PSRAM, not internal RAM
-    static lv_image_dsc_t qdsc[4];
-    int textX = 18;
-    uint16_t *qthumb = qthumbs ? qthumbs + i * THUMB * THUMB : nullptr;
-    if (i < 4 && qthumb && loadPhotoThumb(queued[i].photoId, qthumb)) {
-      lv_image_cache_drop(&qdsc[i]);
-      setupImage(qdsc[i], qthumb, THUMB, THUMB);
-      lv_obj_t *img = lv_image_create(r);
-      lv_image_set_src(img, &qdsc[i]);
-      lv_obj_set_size(img, 40, 40);
-      lv_image_set_scale(img, 256 * 40 / THUMB);
-      lv_image_set_inner_align(img, LV_IMAGE_ALIGN_CENTER);
-      lv_obj_set_style_radius(img, 8, 0);
-      lv_obj_set_style_clip_corner(img, true, 0);
-      lv_obj_set_style_image_opa(img, LV_OPA_60, 0);
-      lv_obj_align(img, LV_ALIGN_LEFT_MID, 18, 0);
-      textX = 70;
-    }
-    const bool inFlight = queued[i].id == queueInFlight;
-    lv_obj_t *one = text(r,
-                         queued[i].failed ? "Could not ask"
-                         : inFlight       ? "Asking now"
-                                          : "Waiting for Wi-Fi",
-                         F_BODY, queued[i].failed ? INK : MIST);
-    lv_obj_set_pos(one, textX, 9);
-    lv_obj_t *two = text(r,
-                         queued[i].failed   ? "Tap to try again"
-                         : queued[i].gemini ? "Gemini"
-                                            : "GPT",
-                         F_SMALL, queued[i].failed ? LENS : MIST);
-    lv_obj_set_pos(two, textX, 33);
-    // Hold a waiting question to remove it (nothing is sent).
-    lv_obj_add_flag(r, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(
-        r,
-        [](lv_event_t *e) {
-          const uint32_t id = (uint32_t)(uintptr_t)lv_event_get_user_data(e);
-          if (id == queueInFlight) return;
-          queueRemove(id);
-          refreshQueue();
-          rebuildHistory();
-          toast("Removed");
-        },
-        LV_EVENT_LONG_PRESSED, (void *)(uintptr_t)queued[i].id);
-    if (queued[i].failed) {
-      lv_obj_add_event_cb(
-          r,
-          [](lv_event_t *e) {
-            queueSetFailed((uint32_t)(uintptr_t)lv_event_get_user_data(e), false);
-            queueRetryAt = 0;
-            refreshQueue();
-            rebuildHistory();
-            toast(networkConnected() ? "Trying again" : "Will try when Wi-Fi is back");
-          },
-          LV_EVENT_CLICKED, (void *)(uintptr_t)queued[i].id);
-    }
-  }
-  lv_obj_t *t = text(historyList, answerCount ? "Earlier" : "", F_SMALL, MIST);
-  lv_obj_set_style_margin_left(t, 22, 0);
-  lv_obj_set_style_margin_top(t, 6, 0);
-  lv_obj_set_style_margin_bottom(t, 4, 0);
-  for (int i = 0; i < answerCount; ++i) {
-    String body;
-    AnswerInfo info;
-    if (!loadAnswer(answerIds[i], body, info)) continue;
-    lv_obj_t *r = pressedFeedback(plain(historyList));
-    lv_obj_set_size(r, W, 56);
-    lv_obj_set_style_border_side(r, LV_BORDER_SIDE_TOP, 0);
-    lv_obj_set_style_border_width(r, i ? 1 : 0, 0);
-    lv_obj_set_style_border_color(r, LINE, 0);
-    uint16_t *th = historyThumbs + i * THUMB * THUMB;
-    int textX = 18;
-    if (loadAnswerThumb(answerIds[i], th)) {
-      lv_image_cache_drop(&historyDsc[i]);
-      setupImage(historyDsc[i], th, THUMB, THUMB);
-      lv_obj_t *img = lv_image_create(r);
-      lv_image_set_src(img, &historyDsc[i]);
-      lv_obj_set_size(img, 40, 40);
-      lv_image_set_scale(img, 256 * 40 / THUMB);
-      lv_image_set_inner_align(img, LV_IMAGE_ALIGN_CENTER);
-      lv_obj_set_style_radius(img, 8, 0);
-      lv_obj_set_style_clip_corner(img, true, 0);
-      lv_obj_align(img, LV_ALIGN_LEFT_MID, 18, 0);
-      textX = 70;
-    }
-    lv_obj_t *one = text(r, answerHeadline(body).c_str(), F_BODY, INK);
-    lv_label_set_long_mode(one, LV_LABEL_LONG_DOT);
-    lv_obj_set_size(one, W - textX - 16, 20);
-    lv_obj_set_pos(one, textX, 9);
-    String meta = String(info.gemini ? "Gemini" : "GPT");
-    const String when = ago(info.when);
-    if (when.length()) meta += ", " + when;
-    lv_obj_t *two = text(r, meta.c_str(), F_SMALL, MIST);
-    lv_obj_set_pos(two, textX, 33);
-    lv_obj_add_flag(r, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(
-        r, [](lv_event_t *e) { showAnswer((uint32_t)(uintptr_t)lv_event_get_user_data(e)); }, LV_EVENT_SHORT_CLICKED,
-        (void *)(uintptr_t)answerIds[i]);
-    lv_obj_add_event_cb(
-        r,
-        [](lv_event_t *e) {
-          confirm(
-              "Delete this answer?", "Delete answer",
-              [](uint32_t id) {
-                deleteAnswer(id);
-                freeKbStale = true;
-                loadLatestAnswer();
-                cardSignature = "";
-                refreshDynamic();
-                rebuildHistory();
-                toast("Deleted");
-              },
-              (uint32_t)(uintptr_t)lv_event_get_user_data(e));
-        },
-        LV_EVENT_LONG_PRESSED, (void *)(uintptr_t)answerIds[i]);
-  }
-}
+void rebuildHistory() {}
 void onEnter(Screen s) {
   // Bluetooth only runs inside the apps that use it: it costs ~100 KB of RAM HTTPS needs.
   if (s != Screen::Camera && pageCamera && !captureRequested && !captureReady) {
@@ -710,7 +409,12 @@ void onEnter(Screen s) {
     hide(photosEmpty, photoCount != 0);
     showPhoto(0);
   } else if (s == Screen::Ask) {
-    rebuildHistory();
+    if (textMode == TextMode::Question) draft = lv_textarea_get_text(passwordField);  // back from the keyboard
+    refreshChat();
+  } else if (s == Screen::Chats) {
+    refreshChats();
+  } else if (s == Screen::Picker) {
+    refreshPicker();
   } else if (s == Screen::Remote) {
     if (!bluetoothOn) {
       setBluetooth(true);

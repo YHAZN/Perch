@@ -482,24 +482,11 @@ void refreshDynamic() {
       if (!lv_color_eq(lv_obj_get_style_text_color(faceBattery, 0), c)) lv_obj_set_style_text_color(faceBattery, c, 0);
     }
   }
-  hide(askOffline, online || !lv_obj_has_flag(busy, LV_OBJ_FLAG_HIDDEN));
   renderCard();
-  // Ask: offline is stated on the button itself, not hidden.
   const bool photo = jpegBytes > 0;
   hide(thumb, !photo || cameraOff);
-  hide(askPhoto, !photo);
-  hide(askEmpty, photo);
-  const int pages = pageCount();
-  setText(askButtonLabel, !photo ? "Photo" : "Ask");
-  hide(micBtn, !photo);
-  hide(typeBtn, !photo);
-  hide(plusBtn, !photo);
-  hide(newChatBtn, !photo || (sessionAnswers.empty() && contextIds.empty()));
-  hide(plusBadge, pages < 2);
-  if (pages > 1) setText(lv_obj_get_child(plusBadge, 0), String(pages).c_str());
   hide(pageBanner, !pageCamera);
-  const lv_opa_t pillOpa = online ? LV_OPA_COVER : LV_OPA_60;
-  if (lv_obj_get_style_opa(askPill, 0) != pillOpa) lv_obj_set_style_opa(askPill, pillOpa, 0);
+  refreshChat();
   // Camera privacy
   hide(viewfinder, cameraOff);
   hide(shutter, cameraOff);

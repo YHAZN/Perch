@@ -69,6 +69,7 @@ bool storageBegin() {
     LittleFS.mkdir("/photos");
     LittleFS.mkdir("/answers");
     LittleFS.mkdir("/queue");
+    LittleFS.mkdir("/chats");
     // Move the single answer kept by the previous firmware into the history.
     File old = LittleFS.open("/answer.txt", "r");
     if (old) {
@@ -160,6 +161,34 @@ bool loadPhotoScreen(uint32_t id, uint8_t *&jpeg, size_t &length) {
   }
   return ok;
 }
+
+// Chats: "/chats/<id>.json", written whole each time it changes (they are small text).
+uint32_t chatNewId() { return mounted ? nextId() : 0; }
+bool chatSave(uint32_t id, const String &json) {
+  if (!mounted || !id) return false;
+  std::vector<uint32_t> existing = ids("/chats", ".json");
+  while ((int)existing.size() >= CHAT_KEEP && std::find(existing.begin(), existing.end(), id) == existing.end()) {
+    LittleFS.remove(path("/chats", existing.back(), ".json"));
+    existing.pop_back();
+  }
+  return writeFile(path("/chats", id, ".json"), reinterpret_cast<const uint8_t *>(json.c_str()), json.length());
+}
+bool chatLoad(uint32_t id, String &json) {
+  if (!mounted) return false;
+  File f = LittleFS.open(path("/chats", id, ".json"), "r");
+  if (!f) return false;
+  json = f.readString();
+  f.close();
+  return true;
+}
+int chatList(uint32_t *out, int max) {
+  if (!mounted) return 0;
+  const std::vector<uint32_t> all = ids("/chats", ".json");
+  const int n = std::min<int>(max, all.size());
+  for (int i = 0; i < n; ++i) out[i] = all[i];
+  return n;
+}
+bool chatDelete(uint32_t id) { return mounted && LittleFS.remove(path("/chats", id, ".json")); }
 
 // Answer file: "gemini|gpt <photoId> <when>\n" then the answer text.
 uint32_t saveAnswer(const String &text, bool gemini, uint32_t photoId, uint32_t when, const uint16_t *thumb) {

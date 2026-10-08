@@ -134,6 +134,8 @@ const char *screenName() {
     case Screen::Wifi: return "wifi";
     case Screen::Gestures: return "gestures";
     case Screen::Password: return "password";
+    case Screen::Chats: return "chats";
+    case Screen::Picker: return "picker";
     case Screen::Settings: return "status";
     case Screen::Model: return "model";
     default: return "error";

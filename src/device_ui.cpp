@@ -12,6 +12,7 @@
 #include <Preferences.h>
 #include <time.h>
 #include <vector>
+#include <ArduinoJson.h>
 #include "ai_client.h"
 #include "audio.h"
 #include "battery.h"
@@ -63,6 +64,8 @@ enum class Screen {
   Wifi,
   Password,
   Gestures,
+  Chats,
+  Picker,
   Count
 };
 Screen current = Screen::Face;
@@ -190,6 +193,13 @@ lv_obj_t *pageBar, *plusBtn, *plusBadge, *newChatBtn, *pageBanner, *micBtn;
 lv_obj_t *heardSheet, *heardLabel;
 bool pageCamera = false;  // the camera was opened from Ask ("New photo" / "+ Page"); return after the shot
 void newPhoto();
+void refreshChat();
+void refreshChats();
+void refreshPicker();
+lv_obj_t *title(lv_obj_t *s, const char *value);
+String draft;  // the chat's message box (src/ui/chat.inc)
+void chatPhotoTaken();
+void chatPhotoSaved(uint32_t id);
 void pauseBluetooth();
 void setBluetooth(bool on);
 void wakeScreen();
@@ -221,6 +231,7 @@ int downX = 0, downY = 0, lastX = 0, lastY = 0;
 #include "ui/navigation.inc"
 #include "ui/answers.inc"
 #include "ui/flows.inc"
+#include "ui/chat.inc"
 #include "ui/screens_main.inc"
 #include "ui/screens_wifi.inc"
 #include "ui/screens_tools.inc"

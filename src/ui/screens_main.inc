@@ -197,159 +197,15 @@ void buildCamera() {
   lv_obj_remove_flag(flash, LV_OBJ_FLAG_CLICKABLE);
 }
 
-// One app for asking and for what you asked before: the question is the first screen,
-// earlier answers continue below it (scroll down).
+// Ask: a chat (src/ui/chat.inc), plus the listening overlay shared by the mic button.
 void buildAsk() {
   lv_obj_t *s = scr[(int)Screen::Ask] = screenBase();
-  askScroll = plain(s);
-  lv_obj_set_size(askScroll, W, H);
-  scrollable(askScroll);
-  lv_obj_set_flex_flow(askScroll, LV_FLEX_FLOW_COLUMN);
-  lv_obj_set_style_pad_bottom(askScroll, 56, 0);
-  askHero = plain(askScroll);
-  lv_obj_set_size(askHero, W, H);
-  lv_obj_set_style_clip_corner(askHero, false, 0);
-  lv_obj_t *hero = askHero;
-  askPhoto = lv_image_create(hero);
-  lv_image_set_src(askPhoto, &photoDsc);
-  askEmpty = text(hero, "No photo yet.", F_BODY, MIST);
-  lv_obj_align(askEmpty, LV_ALIGN_CENTER, 0, -30);
-  scrimBottom(hero, 160);  // dark enough under the hint and the buttons on any photo
-  askOffline = text(hero, "Offline", F_SMALL, INK);
-  lv_obj_align(askOffline, LV_ALIGN_TOP_MID, 0, 26);
-  // Top right, small so the photo stays visible: new chat, and + to add a photo to this chat.
-  pageBar = plain(hero);
-  lv_obj_set_size(pageBar, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-  lv_obj_set_flex_flow(pageBar, LV_FLEX_FLOW_ROW);
-  lv_obj_set_style_pad_column(pageBar, 10, 0);
-  lv_obj_set_style_pad_all(pageBar, 4, 0);
-  lv_obj_align(pageBar, LV_ALIGN_TOP_RIGHT, -10, 24);
-  // Labelled, not an icon: it is the only way to start over, so it must be found.
-  newChatBtn = chip(pageBar, "New chat");
-  lv_obj_set_height(newChatBtn, 38);
-  lv_obj_set_style_radius(newChatBtn, 19, 0);
-  onClick(newChatBtn, newChat);
-  plusBtn = circle(pageBar, 38, INK, 0, GRAPHITE, 210);
-  lv_obj_set_style_opa(plusBtn, LV_OPA_60, LV_STATE_PRESSED);
-  lv_obj_center(text(plusBtn, LV_SYMBOL_PLUS, F_BODY, INK));
-  lv_obj_set_ext_click_area(plusBtn, 5);
-  onClick(plusBtn, addPage);
-  // Photos in this chat, when more than one.
-  plusBadge = circle(hero, 18, VOID_, 0, LENS, LV_OPA_COVER);
-  lv_obj_center(text(plusBadge, "", F_SMALL, VOID_));
-  lv_obj_align(plusBadge, LV_ALIGN_TOP_RIGHT, -8, 22);
-  lv_obj_remove_flag(plusBadge, LV_OBJ_FLAG_CLICKABLE);
-  historyList = plain(askScroll);
-  lv_obj_set_size(historyList, W, LV_SIZE_CONTENT);
-  lv_obj_set_flex_flow(historyList, LV_FLEX_FLOW_COLUMN);
-  // Bottom: the main action, and a separate mic you hold while you speak.
-  askPill = pressedFeedback(plain(hero));
-  lv_obj_set_size(askPill, 106, 48);
-  lv_obj_align(askPill, LV_ALIGN_BOTTOM_LEFT, 12, -ABOVE_HOME);
-  lv_obj_set_style_radius(askPill, 24, 0);
-  lv_obj_set_style_bg_color(askPill, GRAPHITE, 0);
-  lv_obj_set_style_bg_opa(askPill, 235, 0);
-  lv_obj_t *ring = circle(askPill, 26, LENS, 3, VOID_, LV_OPA_TRANSP);
-  lv_obj_align(ring, LV_ALIGN_LEFT_MID, 11, 0);
-  askButtonLabel = text(askPill, "", F_BODY, INK);
-  lv_obj_align(askButtonLabel, LV_ALIGN_LEFT_MID, 46, 0);
-  onClick(askPill, [] {
-    if (micRecording()) return;
-    if (jpegBytes) startAsk();
-    else newPhoto();
-  });
-  typeBtn = circle(hero, 48, INK, 0, GRAPHITE, 235);
-  lv_obj_align(typeBtn, LV_ALIGN_BOTTOM_RIGHT, -66, -ABOVE_HOME);
-  lv_obj_set_style_opa(typeBtn, LV_OPA_60, LV_STATE_PRESSED);
-  glyphSymbol(typeBtn, LV_SYMBOL_KEYBOARD, INK);
-  lv_obj_set_style_text_font(lv_obj_get_child(typeBtn, 0), F_BODY, 0);
-  lv_obj_set_ext_click_area(typeBtn, 4);
-  onClick(typeBtn, typeQuestion);
-  micBtn = circle(hero, 48, INK, 0, GRAPHITE, 235);
-  lv_obj_align(micBtn, LV_ALIGN_BOTTOM_RIGHT, -12, -ABOVE_HOME);
-  lv_obj_set_style_bg_color(micBtn, LENS, LV_STATE_PRESSED);
-  {
-    // Microphone glyph: capsule, cradle, stem.
-    lv_obj_t *cap = plain(micBtn);
-    lv_obj_set_size(cap, 12, 20);
-    lv_obj_set_style_radius(cap, 6, 0);
-    lv_obj_set_style_bg_color(cap, INK, 0);
-    lv_obj_set_style_bg_opa(cap, LV_OPA_COVER, 0);
-    lv_obj_align(cap, LV_ALIGN_CENTER, 0, -4);
-    lv_obj_t *cradle = plain(micBtn);
-    lv_obj_set_size(cradle, 20, 14);
-    lv_obj_set_style_radius(cradle, 10, 0);
-    lv_obj_set_style_border_width(cradle, 2, 0);
-    lv_obj_set_style_border_color(cradle, INK, 0);
-    lv_obj_set_style_border_side(cradle, LV_BORDER_SIDE_BOTTOM, 0);
-    lv_obj_align(cradle, LV_ALIGN_CENTER, 0, 0);
-    lv_obj_t *stem = plain(micBtn);
-    lv_obj_set_size(stem, 2, 5);
-    lv_obj_set_style_bg_color(stem, INK, 0);
-    lv_obj_set_style_bg_opa(stem, LV_OPA_COVER, 0);
-    lv_obj_align(stem, LV_ALIGN_CENTER, 0, 10);
-  }
-  lv_obj_add_flag(micBtn, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_set_ext_click_area(micBtn, 6);
-  // Press starts listening at once; release writes down what was said.
-  lv_obj_add_event_cb(
-      micBtn,
-      [](lv_event_t *) {
-        if (!jpegBytes) {
-          toast("Take a photo first");
-          return;
-        }
-        if (!lv_obj_has_flag(busy, LV_OBJ_FLAG_HIDDEN) || micRecording()) return;
-        if (!micStart()) {
-          toast("Microphone unavailable");
-          return;
-        }
-        lv_obj_remove_flag(listenOverlay, LV_OBJ_FLAG_HIDDEN);
-      },
-      LV_EVENT_PRESSED, nullptr);
-  auto release = [](lv_event_t *) {
-    if (!micRecording()) return;
-    micStop();
-    lv_obj_add_flag(listenOverlay, LV_OBJ_FLAG_HIDDEN);
-    size_t len = 0;
-    const uint8_t *wav = micWav(len);
-    if (micSeconds() < 0.6f) {
-      toast("Hold the mic while you speak");
-      return;
-    }
-    startListenBack(wav, len);
-  };
-  lv_obj_add_event_cb(micBtn, release, LV_EVENT_RELEASED, nullptr);
-  lv_obj_add_event_cb(micBtn, release, LV_EVENT_PRESS_LOST, nullptr);
-
-  askSheet = plain(s);
-  lv_obj_set_size(askSheet, 220, 96);
-  lv_obj_align(askSheet, LV_ALIGN_BOTTOM_MID, 0, -ABOVE_HOME + 4);
-  lv_obj_set_style_radius(askSheet, 22, 0);
-  lv_obj_set_style_bg_color(askSheet, GRAPHITE, 0);
-  lv_obj_set_style_bg_opa(askSheet, 245, 0);
-  lv_obj_add_flag(askSheet, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_t *newPhoto = pressedFeedback(plain(askSheet));
-  lv_obj_set_size(newPhoto, 220, 48);
-  lv_obj_center(text(newPhoto, "Take new photo and ask", F_BODY, INK));
-  onClick(newPhoto, [] {
-    lv_obj_add_flag(askSheet, LV_OBJ_FLAG_HIDDEN);
-    captureAndAsk();
-  });
-  lv_obj_t *keep = pressedFeedback(plain(askSheet));
-  lv_obj_set_size(keep, 220, 48);
-  lv_obj_set_pos(keep, 0, 48);
-  lv_obj_set_style_border_side(keep, LV_BORDER_SIDE_TOP, 0);
-  lv_obj_set_style_border_width(keep, 1, 0);
-  lv_obj_set_style_border_color(keep, LINE, 0);
-  lv_obj_center(text(keep, "Keep this photo", F_BODY, INK));
-  onClick(keep, [] { lv_obj_add_flag(askSheet, LV_OBJ_FLAG_HIDDEN); });
-
-  // Listening: the amber ring follows your voice. Release the button to ask.
+  buildChat(s);
+  // Listening: the amber ring follows your voice. Let go to stop.
   listenOverlay = plain(s);
   lv_obj_set_size(listenOverlay, W, H);
   lv_obj_set_style_bg_color(listenOverlay, VOID_, 0);
-  lv_obj_set_style_bg_opa(listenOverlay, 170, 0);
+  lv_obj_set_style_bg_opa(listenOverlay, 200, 0);
   lv_obj_add_flag(listenOverlay, LV_OBJ_FLAG_HIDDEN);
   lv_obj_remove_flag(listenOverlay, LV_OBJ_FLAG_CLICKABLE);
   listenRing = circle(listenOverlay, 56, LENS, 3, LENS, LV_OPA_20);
@@ -358,65 +214,9 @@ void buildAsk() {
   lv_obj_align(listenLabel, LV_ALIGN_CENTER, 0, 20);
   listenTime = text(listenOverlay, "Let go when you are done", F_SMALL, MIST);
   lv_obj_align(listenTime, LV_ALIGN_CENTER, 0, 44);
-
-  // What you said: shown before anything is asked, so a mishearing is caught first.
-  heardSheet = plain(s);
-  lv_obj_set_size(heardSheet, W, H);
-  lv_obj_set_style_bg_color(heardSheet, VOID_, 0);
-  lv_obj_set_style_bg_opa(heardSheet, 240, 0);
-  lv_obj_add_flag(heardSheet, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_add_flag(heardSheet, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_t *said = text(heardSheet, "YOU SAID", F_SMALL, MIST);
-  lv_obj_set_pos(said, 22, 30);
-  lv_obj_t *heardBox = plain(heardSheet);
-  lv_obj_set_size(heardBox, W - 44, H - 52 - ABOVE_HOME - 58);
-  lv_obj_set_pos(heardBox, 22, 52);
-  scrollable(heardBox);
-  heardLabel = text(heardBox, "", F_LARGE, INK);
-  lv_obj_set_width(heardLabel, W - 44);
-  lv_label_set_long_mode(heardLabel, LV_LABEL_LONG_WRAP);
-  lv_obj_set_style_text_line_space(heardLabel, 4, 0);
-  lv_obj_t *again = pill(heardSheet, "Again", 96);
-  lv_obj_align(again, LV_ALIGN_BOTTOM_LEFT, 18, -ABOVE_HOME);
-  onClick(again, [] {
-    lv_obj_add_flag(heardSheet, LV_OBJ_FLAG_HIDDEN);
-    toast("Hold the button and speak");
-  });
-  lv_obj_t *send = pill(heardSheet, "Ask", 110);
-  lv_obj_set_style_bg_color(send, LENS, 0);
-  lv_obj_set_style_text_color(lv_obj_get_child(send, 0), VOID_, 0);
-  lv_obj_align(send, LV_ALIGN_BOTTOM_RIGHT, -18, -ABOVE_HOME);
-  onClick(send, [] {
-    lv_obj_add_flag(heardSheet, LV_OBJ_FLAG_HIDDEN);
-    startAsk(heardText);
-  });
-
-  // Thinking state: calm breathing ring, honest label, always cancellable.
+  // Kept hidden for older code paths that still check it.
   busy = plain(s);
-  lv_obj_set_size(busy, W, H);
-  lv_obj_set_style_bg_color(busy, VOID_, 0);
-  lv_obj_set_style_bg_opa(busy, 160, 0);
-  lv_obj_add_flag(busy, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_flag(busy, LV_OBJ_FLAG_HIDDEN);
-  busyRing = circle(busy, 64, LENS, 3, VOID_, LV_OPA_TRANSP);
-  lv_obj_align(busyRing, LV_ALIGN_CENTER, 0, -36);
-  lv_anim_t a;
-  lv_anim_init(&a);
-  lv_anim_set_var(&a, busyRing);
-  lv_anim_set_values(&a, 64, 50);
-  lv_anim_set_duration(&a, 800);
-  lv_anim_set_playback_duration(&a, 800);
-  lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
-  lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
-  lv_anim_set_exec_cb(&a, [](void *o, int32_t v) { lv_obj_set_size((lv_obj_t *)o, v, v); });
-  lv_anim_start(&a);
-  busyLabel = text(busy, "", F_BODY, INK);
-  lv_obj_align(busyLabel, LV_ALIGN_CENTER, 0, 24);
-  lv_obj_t *cancel = pressedFeedback(plain(busy));
-  lv_obj_set_size(cancel, 140, 44);
-  lv_obj_align(cancel, LV_ALIGN_BOTTOM_MID, 0, -ABOVE_HOME);
-  lv_obj_center(text(cancel, "Cancel", F_BODY, MIST));
-  onClick(cancel, cancelAsk);
 }
 
 void buildAnswer() {

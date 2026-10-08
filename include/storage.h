@@ -58,3 +58,11 @@ bool deletePhoto(uint32_t id);
 bool deleteAnswer(uint32_t id);
 
 size_t storageFreeBytes();
+
+// Chats (Ask app conversations): one JSON file each, newest first, the last CHAT_KEEP kept.
+constexpr int CHAT_KEEP = 12;
+uint32_t chatNewId();
+bool chatSave(uint32_t id, const String &json);
+bool chatLoad(uint32_t id, String &json);
+int chatList(uint32_t *ids, int max);
+bool chatDelete(uint32_t id);
