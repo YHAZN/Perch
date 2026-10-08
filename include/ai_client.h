@@ -56,3 +56,5 @@ void aiUploadTest(size_t bytes);
 void aiKeyCheck(const String &key);
 // The UI reports when flash is busy (photo still saving); requests wait for it.
 void aiSetFlashBusy(bool (*busy)());
+// Requests sent to a provider today (UTC day), retries included.
+int aiRequestsToday(bool gemini);

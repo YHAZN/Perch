@@ -462,6 +462,7 @@ void setModel(bool gemini) {
   refreshDynamic();
 }
 void wakeScreen() {
+  if (getCpuFrequencyMhz() != 240) setCpuFrequencyMhz(240);
   if (screenAsleep) Serial.println("SCREEN wake");
   screenAsleep = false;
   screenDim = false;
@@ -471,6 +472,8 @@ void wakeScreen() {
 void sleepScreen() {
   screenAsleep = true;
   displayBrightness(0);
+  // Nothing to draw: run the processor at 80 MHz (the lowest Wi-Fi allows) until woken.
+  setCpuFrequencyMhz(80);
   Serial.println("SCREEN sleep");
 }
 // Brightness follows the finger; it is saved when the finger lifts (flash wears on writes).

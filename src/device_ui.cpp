@@ -197,7 +197,7 @@ void addPage();
 int pageCount();
 void refreshAiScreen();
 // AI settings screen
-lv_obj_t *aiUseCheck[2], *aiUseSub[2], *wordsCheck, *wordsSub;
+lv_obj_t *aiUseCheck[2], *aiUseSub[2], *wordsCheck, *wordsSub, *aiUsageLabel;
 lv_obj_t *gemModelCheck[8], *gptModelCheck[8];
 lv_obj_t *effortSeg[2][AI_EFFORT_COUNT];
 String aiScreenSignature;

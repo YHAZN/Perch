@@ -5,15 +5,18 @@
 #include <Update.h>
 #include <WiFiClientSecure.h>
 #include <mbedtls/sha256.h>
+#include <mbedtls/pk.h>
+#include <mbedtls/base64.h>
 #include <memory>
 #include "update_root_certs.h"
+#include "update_public_key.h"
 #include "version.h"
 
 namespace {
 Preferences store;
 volatile UpdateState state = UpdateState::Idle;
 volatile int progress = 0;
-String available, imageUrl, imageSha, error;
+String available, imageUrl, imageSha, imageSig, error;
 size_t imageSize = 0;
 
 // GET with redirects followed by hand: GitHub release links redirect twice, the second time
@@ -69,6 +72,7 @@ void checkTask(void *) {
   available = (const char *)doc["version"];
   imageUrl = (const char *)doc["url"];
   imageSha = doc["sha256"] | "";
+  imageSig = doc["signature"] | "";
   imageSize = doc["size"] | 0;
   imageSha.toLowerCase();
   Serial.printf("UPDATE newest %s, this %s\n", available.c_str(), PERCH_VERSION);
@@ -76,9 +80,28 @@ void checkTask(void *) {
   vTaskDelete(nullptr);
 }
 
+// The image's SHA-256 must carry a valid ECDSA P-256 signature from the release key.
+bool signatureValid(const uint8_t digest[32]) {
+  uint8_t sig[160];
+  size_t sigLen = 0;
+  if (mbedtls_base64_decode(sig, sizeof sig, &sigLen, (const uint8_t *)imageSig.c_str(), imageSig.length()) != 0)
+    return false;
+  mbedtls_pk_context pk;
+  mbedtls_pk_init(&pk);
+  bool ok = mbedtls_pk_parse_public_key(&pk, (const uint8_t *)UPDATE_PUBLIC_KEY, strlen(UPDATE_PUBLIC_KEY) + 1) == 0 &&
+            mbedtls_pk_verify(&pk, MBEDTLS_MD_SHA256, digest, 32, sig, sigLen) == 0;
+  mbedtls_pk_free(&pk);
+  return ok;
+}
+
 void installTask(void *) {
   if (imageSha.length() != 64) {
     fail("The update has no checksum; not installing.");
+    vTaskDelete(nullptr);
+    return;
+  }
+  if (imageSig.isEmpty()) {
+    fail("The update is not signed; not installing.");
     vTaskDelete(nullptr);
     return;
   }
@@ -135,6 +158,12 @@ void installTask(void *) {
     vTaskDelete(nullptr);
     return;
   }
+  if (!signatureValid(digest)) {
+    Update.abort();
+    fail("The update is not signed by Perch. Nothing changed.");
+    vTaskDelete(nullptr);
+    return;
+  }
   if (!Update.end(true)) {
     fail(String("Could not finish the update: ") + Update.errorString());
     vTaskDelete(nullptr);
@@ -175,6 +204,14 @@ UpdateState updaterState() { return state; }
 String updaterAvailableVersion() { return available; }
 int updaterProgress() { return progress; }
 String updaterError() { return error; }
+
+bool updaterVerify(const String &shaHex, const String &signature) {
+  if (shaHex.length() != 64) return false;
+  uint8_t digest[32];
+  for (int i = 0; i < 32; ++i) digest[i] = (uint8_t)strtol(shaHex.substring(i * 2, i * 2 + 2).c_str(), nullptr, 16);
+  imageSig = signature;
+  return signatureValid(digest);
+}
 
 bool versionNewer(const String &a, const String &b) {
   int pa[3] = {0, 0, 0}, pb[3] = {0, 0, 0};

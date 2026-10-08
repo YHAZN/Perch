@@ -3,7 +3,8 @@
 Usage: python tools/make_release.py <github-owner>/<repo>
   1. builds the release firmware (no Wi-Fi test network compiled in)
   2. refuses to continue if tools/check_release.py finds a secret in it
-  3. writes dist/perch-<version>.bin and dist/perch.json (version, url, size, sha256)
+  3. signs it with keys/perch-update-private.pem (never committed; back it up)
+  4. writes dist/perch-<version>.bin and dist/perch.json (version, url, size, sha256, signature)
 Then create a GitHub release tagged v<version> and attach both files. Devices whose update
 address is https://github.com/<owner>/<repo>/releases/latest/download/perch.json will offer it.
 """
@@ -32,11 +33,35 @@ dist.mkdir(exist_ok=True)
 name = f'perch-{version}.bin'
 shutil.copy(image, dist / name)
 data = image.read_bytes()
+# Sign the image (ECDSA P-256 over SHA-256) with the private release key; devices verify it.
+key = ROOT / 'keys' / 'perch-update-private.pem'
+if not key.exists():
+    raise SystemExit('No release key in keys/: cannot sign. Restore your backup of perch-update-private.pem.')
+sig_file = dist / 'perch.sig'
+subprocess.run(['openssl', 'dgst', '-sha256', '-sign', str(key), '-out', str(sig_file), str(image)], check=True)
+subprocess.run(
+    [
+        'openssl',
+        'dgst',
+        '-sha256',
+        '-verify',
+        str(ROOT / 'keys' / 'perch-update-public.pem'),
+        '-signature',
+        str(sig_file),
+        str(image),
+    ],
+    check=True,
+)
+import base64
+
+signature = base64.b64encode(sig_file.read_bytes()).decode()
+sig_file.unlink()
 manifest = {
     'version': version,
     'url': f'https://github.com/{repo}/releases/download/v{version}/{name}',
     'size': len(data),
     'sha256': hashlib.sha256(data).hexdigest(),
+    'signature': signature,
 }
 (dist / 'perch.json').write_text(json.dumps(manifest, indent=2) + '\n')
 print(json.dumps(manifest, indent=2))

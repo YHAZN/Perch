@@ -8,6 +8,7 @@ void initDeviceUi() {
   confirmWords = settings.getBool("words-first", true);
   sleepChoice = settings.getUChar("sleep", 1) % (sizeof(SLEEP_CHOICES) / sizeof(SLEEP_CHOICES[0]));
   batteryBegin();
+  pinMode(PIN_BUTTON, INPUT_PULLUP);
   updaterBegin();
   geminiModel = constrain(settings.getUChar("gm-model", 0), 0, GEMINI_MODEL_COUNT - 1);
   geminiEffort = constrain(settings.getUChar("gm-effort", 0), 0, AI_EFFORT_COUNT - 1);

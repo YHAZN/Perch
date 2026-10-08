@@ -7,6 +7,7 @@
 #include <mbedtls/platform.h>
 #include <time.h>
 #include <memory>
+#include <Preferences.h>
 #include <vector>
 #include "ai_root_certs.h"
 
@@ -34,6 +35,7 @@ volatile bool cancelled = false;
 // Set by the UI: true while a photo is still being written to flash. Flash writes stall
 // the cache Wi-Fi runs from, and an upload started meanwhile failed mid-send.
 bool (*flashBusy)() = nullptr;
+void countRequest(bool gemini);
 
 class BoundedResponse : public Stream {
  public:
@@ -429,6 +431,7 @@ bool request(Job &j) {
                   j.kind == Kind::Transcribe ? "transcribe" : j.options.effort.c_str(), (unsigned)total,
                   heap_caps_get_free_size(MALLOC_CAP_INTERNAL), heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
     const uint32_t sendStart = millis();
+    countRequest(gemini);
     status = http.POST(payload, total);
     Serial.printf("AI_STATUS %d after %lu ms\n", status, (unsigned long)(millis() - sendStart));
     if (status == 200) break;
@@ -541,6 +544,20 @@ bool request(Job &j) {
   if (answer.length() > ANSWER_LIMIT) answer = answer.substring(0, ANSWER_LIMIT);
   if (cutOff || answer.length() >= ANSWER_LIMIT) answer += "\n\n[Answer cut off]";
   return true;
+}
+
+// Requests sent today, per provider (every attempt counts: limits count attempts too).
+Preferences usage;
+void countRequest(bool gemini) {
+  const time_t now = time(nullptr);
+  const int day = now > 1700000000 ? (int)(now / 86400) : 0;
+  if (usage.getInt("day", -1) != day) {
+    usage.putInt("day", day);
+    usage.putUShort("g", 0);
+    usage.putUShort("o", 0);
+  }
+  const char *key = gemini ? "g" : "o";
+  usage.putUShort(key, usage.getUShort(key, 0) + 1);
 }
 
 // Request slot shared between the UI loop and the worker task.
@@ -753,7 +770,16 @@ static void *tlsCalloc(size_t count, size_t size) {
   if (!p) p = heap_caps_calloc(count, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   return p;
 }
-void aiBegin() { mbedtls_platform_set_calloc_free(tlsCalloc, free); }
+void aiBegin() {
+  mbedtls_platform_set_calloc_free(tlsCalloc, free);
+  usage.begin("perch-usage", false);
+}
+int aiRequestsToday(bool gemini) {
+  const time_t now = time(nullptr);
+  const int day = now > 1700000000 ? (int)(now / 86400) : 0;
+  if (usage.getInt("day", -1) != day) return 0;
+  return usage.getUShort(gemini ? "g" : "o", 0);
+}
 
 // Developer: is the saved Gemini key valid, and can it see the model? A GET of the model's
 // details is free (no content is generated).

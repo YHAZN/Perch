@@ -1,7 +1,52 @@
 // Part of device_ui.cpp (included there, one translation unit). The main loop step: AI results, camera, sleep, queue.
+// The physical button: press = wake / open Camera / take the photo; hold = ask out loud.
+void buttonTick(unsigned long now) {
+  static bool was = false, holding = false;
+  static unsigned long downAt = 0;
+  const bool down = digitalRead(PIN_BUTTON) == LOW;
+  if (down && !was) {
+    downAt = now;
+    holding = false;
+    lastActivity = now;
+  }
+  if (down && !holding && now - downAt > 600) {
+    holding = true;
+    if (screenAsleep) wakeScreen();
+    if (!jpegBytes) {
+      toast("Take a photo first");
+    } else if (!micRecording() && lv_obj_has_flag(busy, LV_OBJ_FLAG_HIDDEN) && micStart()) {
+      show(Screen::Ask);
+      lv_obj_remove_flag(listenOverlay, LV_OBJ_FLAG_HIDDEN);
+    }
+  }
+  if (!down && was && now - downAt > 30) {
+    if (holding) {
+      if (micRecording()) {
+        micStop();
+        lv_obj_add_flag(listenOverlay, LV_OBJ_FLAG_HIDDEN);
+        size_t len = 0;
+        const uint8_t *wav = micWav(len);
+        if (micSeconds() < 0.6f) toast("Hold the button while you speak");
+        else startListenBack(wav, len);
+      }
+    } else if (screenAsleep) {
+      wakeScreen();
+    } else if (current == Screen::Camera && !cameraOff) {
+      String problem;
+      if (requestCapture(problem)) flashOnce();
+      else notice(problem, Screen::Camera);
+    } else if (cameraOff) {
+      toast("Camera is off. Turn it on in Control Center");
+    } else {
+      show(Screen::Camera);
+    }
+  }
+  was = down;
+}
 void deviceTick() {
   if (!framebuffer) return;
   const unsigned long now = millis();
+  buttonTick(now);
   {
     // Never sleep while something is happening; the USB mirror counts as use.
     if (aiBusy() || micRecording() || captureRequested || captureProcessing ||

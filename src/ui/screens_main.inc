@@ -224,10 +224,10 @@ void buildAsk() {
   lv_obj_set_style_pad_column(pageBar, 10, 0);
   lv_obj_set_style_pad_all(pageBar, 4, 0);
   lv_obj_align(pageBar, LV_ALIGN_TOP_RIGHT, -10, 24);
-  newChatBtn = circle(pageBar, 38, INK, 0, GRAPHITE, 210);
-  lv_obj_set_style_opa(newChatBtn, LV_OPA_60, LV_STATE_PRESSED);
-  lv_obj_center(text(newChatBtn, LV_SYMBOL_EDIT, F_BODY, INK));
-  lv_obj_set_ext_click_area(newChatBtn, 5);
+  // Labelled, not an icon: it is the only way to start over, so it must be found.
+  newChatBtn = chip(pageBar, "New chat");
+  lv_obj_set_height(newChatBtn, 38);
+  lv_obj_set_style_radius(newChatBtn, 19, 0);
   onClick(newChatBtn, newChat);
   plusBtn = circle(pageBar, 38, INK, 0, GRAPHITE, 210);
   lv_obj_set_style_opa(plusBtn, LV_OPA_60, LV_STATE_PRESSED);

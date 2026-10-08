@@ -159,13 +159,16 @@ void segmented(lv_obj_t *list, lv_obj_t **segs, lv_event_cb_t cb, int provider) 
   }
 }
 void refreshAiScreen() {
-  const String sig = String(useGemini) + geminiModel + geminiEffort + gptModel + gptEffort + keyCache + confirmWords;
+  const int usedG = aiRequestsToday(true), usedO = aiRequestsToday(false);
+  const String sig = String(useGemini) + geminiModel + geminiEffort + gptModel + gptEffort + keyCache + confirmWords +
+                     usedG + "/" + usedO;
   if (sig == aiScreenSignature) return;
   aiScreenSignature = sig;
   for (int i = 0; i < 2; ++i) {
     setText(aiUseCheck[i], (i == 0) == useGemini ? LV_SYMBOL_OK : "");
     setText(aiUseSub[i], (keyCache >> i) & 1 ? "Key saved" : "No key: add it in PC setup");
   }
+  setText(aiUsageLabel, (String("Today: ") + usedG + " Gemini, " + usedO + " GPT requests").c_str());
   setText(wordsCheck, confirmWords ? LV_SYMBOL_OK : "");
   setText(wordsSub, confirmWords ? "On: you check the words, then Ask" : "Off: your voice goes straight in");
   for (int i = 0; i < GEMINI_MODEL_COUNT; ++i) setText(gemModelCheck[i], i == geminiModel ? LV_SYMBOL_OK : "");
@@ -187,6 +190,9 @@ void buildModel() {
   scrollable(list);
   lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
   lv_obj_set_style_pad_bottom(list, 70, 0);
+  aiUsageLabel = text(list, "", F_SMALL, MIST);
+  lv_obj_set_style_margin_left(aiUsageLabel, 22, 0);
+  lv_obj_set_style_margin_top(aiUsageLabel, 4, 0);
   sectionLabel(list, "ANSWERS FROM");
   const char *providers[2] = {"Gemini", "GPT"};
   for (int i = 0; i < 2; ++i)

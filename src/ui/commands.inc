@@ -95,6 +95,14 @@ void handleDeviceButton(char command) {
     xSemaphoreGive(camLock);
     return;
   }
+  if (command == '#') {
+    // Developer: "#<sha256 hex>|<base64 signature>" checks a release signature on the device.
+    const String arg = Serial.readStringUntil('\n');
+    const int bar = arg.indexOf('|');
+    Serial.printf("SIGNATURE %s\n",
+                  bar > 0 && updaterVerify(arg.substring(0, bar), arg.substring(bar + 1)) ? "valid" : "INVALID");
+    return;
+  }
   if (command == '=') {
     // Developer: "=<https manifest url>" sets where updates come from ("=" alone clears it).
     String url = Serial.readStringUntil('\n');
