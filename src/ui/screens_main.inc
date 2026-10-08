@@ -170,9 +170,14 @@ void buildCamera() {
   lv_obj_set_style_bg_opa(shutter, 215, LV_STATE_PRESSED);
   onClick(shutter, [] {
     String problem;
-    if (requestCapture(problem)) flashOnce();
+    if (requestCapture(problem)) hide(holdStill, false);
     else notice(problem, Screen::Camera);
   });
+  // The photo is taken ~0.5 s after the press (the sensor switches to full size first).
+  holdStill = chip(s, "Hold still");
+  lv_obj_remove_flag(holdStill, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_align(holdStill, LV_ALIGN_BOTTOM_MID, 0, -ABOVE_HOME - 72);
+  lv_obj_add_flag(holdStill, LV_OBJ_FLAG_HIDDEN);
   thumb = lv_image_create(s);
   lv_image_set_src(thumb, &photoDsc);
   lv_obj_set_size(thumb, 40, 40);

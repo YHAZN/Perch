@@ -28,11 +28,14 @@ struct CaptureResult {
   uint32_t previousPhoto = 0;  // the photo saved just before this one (joins the chat as context)
 };
 // Burst-and-pick-sharpest. Sharpness = variance of a Laplacian
-// over the centre of a 1/8-scale decode, where text usually is. Below the floor even the
-// best frame is soft, and the user is told to hold still.
-constexpr int BURST = 3;
-constexpr uint32_t BLUR_FLOOR = 35;
-int lastLuma = 0;  // mean brightness of the last frame scored, 0..187
+// over the centre of a 1/8-scale decode, where text usually is. Two frames (~0.3 s apart):
+// the photo should be of the moment you pressed, so a later frame wins only when clearly
+// sharper. The variance grows with the square of brightness, so it is judged relative to
+// the frame's mean brightness: a dim but sharp photo is not called blurry.
+constexpr int BURST = 2;
+constexpr uint32_t BLUR_FLOOR = 35;  // at mean brightness 100 (of 187)
+volatile bool shutterDone = false;   // the frames are taken; the UI flashes and stops "Hold still"
+int lastLuma = 0;                    // mean brightness of the last frame scored, 0..187
 uint32_t sharpness(const uint8_t *jpeg, size_t len, int width, int height) {
   const int w = width / 8, h = height / 8;
   if ((size_t)(w * h * 2) > taskScratchCapacity) {
@@ -146,13 +149,11 @@ void captureInTask() {
       camera_fb_t *f = esp_camera_fb_get();
       if (f) esp_camera_fb_return(f);
     }
-    // Close-up pages need the lens moved; then drop the frame exposed while it was moving.
-    if (cameraFocus(2000)) {
-      camera_fb_t *f = esp_camera_fb_get();
-      if (f) esp_camera_fb_return(f);
-    }
+    // The lens was focused in the live view and is held still, so no frame is lost to it.
+    cameraFocus(0);
     vTaskDelay(1);
     uint32_t best = 0;
+    int bestLuma = 0;
     int64_t lastStamp = 0;
     for (int shot = 0; shot < BURST; ++shot) {
       camera_fb_t *frame = esp_camera_fb_get();
@@ -167,8 +168,9 @@ void captureInTask() {
                          frame->buf[1] == 0xd8 && frame->buf[frame->len - 2] == 0xff &&
                          frame->buf[frame->len - 1] == 0xd9;
       const uint32_t score = valid ? sharpness(frame->buf, frame->len, frame->width, frame->height) : 0;
-      Serial.printf("BURST %d sharpness=%lu luma=%d\n", shot, (unsigned long)score, lastLuma);
-      if (valid && (!r.jpeg || score > best)) {
+      Serial.printf("BURST %d sharpness=%lu luma=%d at %lums\n", shot, (unsigned long)score, lastLuma,
+                    (unsigned long)(millis() - t0));
+      if (valid && (!r.jpeg || score > best + best / 4)) {
         uint8_t *copy = (uint8_t *)ps_malloc(frame->len);
         if (copy) {
           memcpy(copy, frame->buf, frame->len);
@@ -176,14 +178,20 @@ void captureInTask() {
           r.jpeg = copy;
           r.len = frame->len;
           best = score;
+          bestLuma = lastLuma;
         }
       }
       esp_camera_fb_return(frame);
       vTaskDelay(1);  // each step is long; let core 0's idle task run so the watchdog stays fed
     }
+    shutterDone = true;
     cameraReport();
     if (!r.jpeg) r.problem = "No usable photo. Try again.";
-    r.blurry = r.jpeg && best < BLUR_FLOOR;
+    const int luma = max(bestLuma, 25);  // very dark frames: do not demand the impossible
+    const uint32_t fair = (uint32_t)((uint64_t)best * 10000 / (luma * luma));
+    Serial.printf("BURST kept sharpness=%lu (fair %lu, floor %lu)\n", (unsigned long)best, (unsigned long)fair,
+                  (unsigned long)BLUR_FLOOR);
+    r.blurry = r.jpeg && fair < BLUR_FLOOR;
   }
   const uint32_t t1 = millis();
   // Back to the live view (or off) right away: never leave the sensor streaming full-size
@@ -226,6 +234,7 @@ bool requestCapture(String &problem) {
     problem = "Still taking the last photo.";
     return false;
   }
+  shutterDone = false;
   captureRequested = true;
   return true;
 }

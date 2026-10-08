@@ -110,6 +110,11 @@ void deviceTick() {
     btStarted = true;
     if (bluetoothOn && !aiBusy()) remoteBegin();
   }
+  if (shutterDone) {
+    shutterDone = false;
+    hide(holdStill, true);
+    if (current == Screen::Camera) flashOnce();
+  }
   if (captureReady && !captureRequested) {
     String problem;
     const bool forChat = pageCamera;

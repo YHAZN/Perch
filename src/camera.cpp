@@ -110,7 +110,13 @@ bool cameraSetMode(CameraMode next) {
       Serial.println("CAMERA focus pause not acknowledged");  // keep lens position
     Serial.printf("CAMERA focus %s from live view (status %02X)\n", lensHeld ? "held" : "not locked", status);
   }
-  if (mode != CameraMode::Off) esp_camera_deinit();
+  if (mode != CameraMode::Off) {
+    // The Sense board wires no power-down pin, so without this the sensor stays powered and
+    // warm while "off". Software standby (0x3008 bit 6) keeps its registers and focus firmware.
+    sensor_t *s = esp_camera_sensor_get();
+    if (s && next == CameraMode::Off && s->id.PID == OV5640_PID) s->set_reg(s, 0x3008, 0x40, 0x40);
+    esp_camera_deinit();
+  }
   mode = CameraMode::Off;
   if (next == CameraMode::Off) return true;
   if (!psramFound()) return false;
@@ -146,6 +152,7 @@ bool cameraSetMode(CameraMode next) {
   }
   sensor_t *sensor = esp_camera_sensor_get();
   sensorPid = sensor->id.PID;
+  if (sensorPid == OV5640_PID) sensor->set_reg(sensor, 0x3008, 0x40, 0x00);  // wake from standby
   Serial.printf("CAMERA mode %d sensor PID 0x%04x\n", (int)next, sensor->id.PID);
   // Correct the mirrored worksheet in the sensor, so photos and preview match the scene.
   sensor->set_hmirror(sensor, !sensor->status.hmirror);

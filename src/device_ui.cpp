@@ -216,7 +216,7 @@ lv_obj_t *aiUseCheck[2], *aiUseSub[2], *wordsCheck, *wordsSub, *aiUsageLabel;
 lv_obj_t *gemModelCheck[8], *gptModelCheck[8];
 lv_obj_t *effortSeg[2][AI_EFFORT_COUNT];
 String aiScreenSignature;
-lv_obj_t *homeBar, *topBar;
+lv_obj_t *homeBar, *topBar, *holdStill;
 lv_obj_t *ccBt, *ccBtLabel, *ccWifiState, *ccBtState, *ccCameraState, *ccModelState;
 lv_obj_t *cc, *ccWifi, *ccWifiLabel, *ccBright, *ccModel, *ccModelLabel, *ccCamera, *ccCameraLabel;
 bool ccOpen = false;
