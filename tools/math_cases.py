@@ -35,7 +35,15 @@ CASES = [
     # bare LaTeX and plain-text maths
     (r'Answer: \frac{3}{4} of the total', 'Answer: ¾ of the total'),
     (r'Multiply 3 \times 4 = 12', 'Multiply 3 × 4 = 12'),
-    ('x^2 + 2x + 1 = (x+1)^2', 'x² + 2x + 1 = (x+1)²'),
+    ('x^2 + 2x + 1 = (x+1)^2', 'x² + 2x + 1 = (x + 1)²'),
+    # ASCII maths from older answers
+    ('7*(6*m+1)-1 = 42*m +7 -1', '7(6m + 1) − 1 = 42m + 7 − 1'),
+    ('1. 3*4 = 12', '1. 3 × 4 = 12'),
+    ('Total: 5*x + 2 = 17, so x = 3.', 'Total: 5x + 2 = 17, so x = 3.'),
+    ('e^(x+1) and x^-1 and 2^0.5', 'eˣ⁺¹ and x⁻¹ and 2^(0.5)'),
+    ('Released 2024-10-08 in the x-ray lab, step-by-step.', 'Released 2024-10-08 in the x-ray lab, step-by-step.'),
+    ('- item one', '- item one'),
+    ('**Bold** text and a * star', '**Bold** text and a * star'),
     ('sqrt(16) = 4, x <= 5, y != 3, a -> b', '√(16) = 4, x ≤ 5, y ≠ 3, a → b'),
     ('Already Unicode: x² + √9 = π', 'Already Unicode: x² + √9 = π'),
     ('**Answer:** 2^10 = 1024', '**Answer:** 2¹⁰ = 1024'),

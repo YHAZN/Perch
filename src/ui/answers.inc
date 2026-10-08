@@ -75,6 +75,16 @@ String answerHeadline(const String &raw) {
   return first;
 }
 // Body text that may contain **bold**: a label, or a span group when there is emphasis.
+bool looksLikeFormula(const String &t);
+// Large type for an answer that fits on one or two lines; body type when a long formula would
+// otherwise break over three or more.
+const lv_font_t *headlineFont(const String &t, int width) {
+  lv_point_t size;
+  lv_text_get_size(&size, stripMarks(t).c_str(), F_LARGE, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+  if (size.x <= width) return F_LARGE;
+  if (looksLikeFormula(stripMarks(t))) return F_BODY;  // a formula reads best unbroken
+  return size.x <= width * 2 - 20 ? F_LARGE : F_BODY;
+}
 lv_obj_t *flowText(lv_obj_t *parent, const String &line, const lv_font_t *font, lv_color_t color, int width) {
   if (line.indexOf("**") < 0) {
     lv_obj_t *l = text(parent, line.c_str(), font, color);
@@ -150,7 +160,11 @@ void heading(const String &t) {
 }
 // Mostly symbols and numbers, few words: show it as a formula.
 bool looksLikeFormula(const String &t) {
-  if (t.length() > 70 || (t.indexOf('=') < 0 && t.indexOf('^') < 0)) return false;
+  if (t.length() > 70) return false;
+  bool maths = t.indexOf('=') >= 0 || t.indexOf('^') >= 0;
+  for (const char *sym : {"√", "≤", "≥", "×", "∫", "∑", "≠", "≈", "²", "³"})
+    if (t.indexOf(sym) >= 0) maths = true;
+  if (!maths) return false;
   int words = 0, run = 0;
   for (size_t i = 0; i <= t.length(); ++i) {
     const char c = i < t.length() ? t[i] : ' ';
@@ -195,7 +209,7 @@ void renderAnswer(const String &raw) {
       lv_obj_t *label = text(answerFlow, (String("QUESTION ") + qNumber).c_str(), F_SMALL, LENS);
       lv_obj_set_style_text_letter_space(label, 1, 0);
       if (sawAnswer) lv_obj_set_style_margin_top(label, 10, 0);
-      flowText(answerFlow, qAnswer, F_LARGE, INK, W - 40);
+      flowText(answerFlow, qAnswer, headlineFont(qAnswer, W - 40), INK, W - 40);
       sawAnswer = true;
       firstBlock = false;
       continue;
@@ -207,7 +221,7 @@ void renderAnswer(const String &raw) {
       value.trim();
       lv_obj_t *label = text(answerFlow, "ANSWER", F_SMALL, LENS);
       lv_obj_set_style_text_letter_space(label, 1, 0);
-      flowText(answerFlow, value, F_LARGE, INK, W - 40);
+      flowText(answerFlow, value, headlineFont(value, W - 40), INK, W - 40);
       sawAnswer = true;
       firstBlock = false;
       continue;
@@ -252,7 +266,7 @@ void renderAnswer(const String &raw) {
     }
     // Without an "Answer:" line, a short first sentence still leads in large type.
     if (firstBlock && !sawAnswer && t.length() <= 120) {
-      flowText(answerFlow, t, F_LARGE, INK, W - 40);
+      flowText(answerFlow, t, headlineFont(t, W - 40), INK, W - 40);
       firstBlock = false;
       continue;
     }

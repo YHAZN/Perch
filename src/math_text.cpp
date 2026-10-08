@@ -642,9 +642,40 @@ struct Math {
         ++i;
         put(out, 0x2032);
       } else if (c == ' ' || c == '\n' || c == '\r' || c == '\t') ++i;  // spacing comes from the pieces
-      else if (c == '=' || c == '+' || c == '-' || c == '<' || c == '>') {
+      else if (s.compare(i, 5, "sqrt(") == 0 && (i == 0 || !isalpha((uint8_t)s[i - 1]))) {
+        i += 4;  // ASCII sqrt(x) -> √(x)
+        std::string v;
+        put(v, 0x221A);
+        emit(out, v);
+      } else if (s.compare(i, 2, "<=") == 0) {
+        i += 2;
+        op(out, 0x2264);
+      } else if (s.compare(i, 2, ">=") == 0) {
+        i += 2;
+        op(out, 0x2265);
+      } else if (s.compare(i, 2, "!=") == 0) {
+        i += 2;
+        op(out, 0x2260);
+      } else if (s.compare(i, 2, "->") == 0) {
+        i += 2;
+        op(out, 0x2192);
+      } else if (c == '=' || c == '+' || c == '-' || c == '<' || c == '>') {
         ++i;
         op(out, c == '-' ? 0x2212 : (uint8_t)c);
+      } else if (c == '*') {
+        // ASCII multiplication: 7*(x+1) -> 7(x+1), 6*m -> 6m, 3*4 -> 3 × 4, m*2 -> m·2.
+        ++i;
+        size_t j = i;
+        while (j < s.size() && s[j] == ' ') ++j;
+        const uint32_t prev = lastCode(out);
+        const char nx = j < s.size() ? s[j] : 0;
+        const bool prevDigit = prev < 0x80 && isdigit((int)prev);
+        if (prevDigit && isdigit((uint8_t)nx)) op(out, 0xD7);
+        else if (isdigit((uint8_t)nx) || nx == '.' || !prev) {
+          trimEnd(out);
+          put(out, 0xB7);
+          spaceNext = false;
+        } else trimEnd(out);  // juxtapose
       } else if (c == ',' || c == ';') {
         ++i;
         trimEnd(out);
@@ -736,6 +767,119 @@ const struct {
     {"<=>", 0x21D4}, {"<=", 0x2264}, {">=", 0x2265}, {"!=", 0x2260}, {"=/=", 0x2260},   {"+/-", 0xB1},
     {"->", 0x2192},  {"<-", 0x2190}, {"=>", 0x21D2}, {"~=", 0x2248}, {"sqrt(", 0x221A},
 };
+
+// ---------- ASCII expressions in ordinary text ----------
+// Answers written before Unicode maths was asked for (and models that still do it) contain
+// "7*(6*m+1)-1 = 42*m +7 -1". Runs of space-separated tokens made only of maths characters,
+// joined by operators, are typeset like maths: "7(6m + 1) − 1 = 42m + 7 − 1". Words, dates
+// (2024-10-08), list markers and **bold** are left alone.
+bool exprChar(char c) { return isalnum((uint8_t)c) || strchr("().^*/+-=<>!_", c); }
+bool opChar(char c) { return strchr("*/+-=<>^", c) != nullptr; }
+bool functionWord(const std::string &w) {
+  for (const char *f : {"sin", "cos", "tan", "log", "ln", "exp", "sqrt", "mod", "lim", "max", "min", "abs"})
+    if (w == f) return true;
+  return false;
+}
+// A token is an operand or operator piece, not a word: no run of two or more letters except
+// function names, and no Markdown bold.
+bool exprToken(const std::string &t) {
+  if (t.empty() || t.find("**") != std::string::npos) return false;
+  for (size_t k = 0; k < t.size();) {
+    if (!exprChar(t[k])) return false;
+    if (isalpha((uint8_t)t[k])) {
+      size_t e = k;
+      while (e < t.size() && isalpha((uint8_t)t[e])) ++e;
+      if (e - k >= 2 && !functionWord(t.substr(k, e - k))) return false;
+      k = e;
+    } else ++k;
+  }
+  return true;
+}
+bool plainExpression(const std::string &s, size_t i, size_t &end, std::string &converted) {
+  const bool lineStart = i == 0 || s[i - 1] == '\n';
+  std::vector<std::string> tokens;
+  std::string trailing;
+  size_t k = i;
+  while (k < s.size() && s[k] != '\n') {
+    size_t e = k;
+    while (e < s.size() && s[e] != ' ' && s[e] != '\n') ++e;
+    std::string t = s.substr(k, e - k);
+    std::string punct;
+    while (!t.empty() && strchr(",.;:?", t.back())) {
+      punct.insert(punct.begin(), t.back());
+      t.pop_back();
+    }
+    if (!exprToken(t)) break;
+    if (lineStart && tokens.empty() && !punct.empty() && punct[0] == '.') return false;  // "1." list marker
+    if (!tokens.empty()) {
+      // consecutive operands need an operator between them ("a 7*m" is two things)
+      const std::string &p = tokens.back();
+      if (!opChar(p.back()) && !opChar(t[0])) break;
+    }
+    tokens.push_back(t);
+    k = e;
+    if (!punct.empty()) {
+      trailing = punct;
+      break;
+    }
+    while (k < s.size() && s[k] == ' ') ++k;
+  }
+  // An expression does not end on an operator ("a * star" is prose).
+  while (!tokens.empty() && opChar(tokens.back().back())) {
+    tokens.pop_back();
+    trailing.clear();
+  }
+  if (tokens.empty()) return false;
+  std::string joined;
+  for (const std::string &t : tokens) joined += (joined.empty() ? "" : " ") + t;
+  bool strong = false, digit = false, variable = false;
+  for (size_t q = 0; q < joined.size(); ++q) {
+    const char c = joined[q];
+    if (strchr("*^=<>(", c)) strong = true;
+    if (isdigit((uint8_t)c)) digit = true;
+    if (isalpha((uint8_t)c) && (q == 0 || !isalpha((uint8_t)joined[q - 1])) &&
+        (q + 1 >= joined.size() || !isalpha((uint8_t)joined[q + 1])))
+      variable = true;
+  }
+  const bool addSub = joined.find_first_of("+-", 1) != std::string::npos;
+  if (!(digit || variable) || !(strong || (addSub && variable && digit))) return false;
+  if (tokens.size() == 1 && joined.size() < 3) return false;
+  // Plain exponents mean the whole run: 2^10, x^-1, e^(x+1) (in LaTeX ^10 would be ^1 then 0).
+  std::string tex;
+  for (size_t q = 0; q < joined.size(); ++q) {
+    tex += joined[q];
+    if (joined[q] != '^' || q + 1 >= joined.size()) continue;
+    size_t e = q + 1;
+    if (joined[e] == '(') {
+      int depth = 0;
+      for (; e < joined.size(); ++e) {
+        if (joined[e] == '(') ++depth;
+        else if (joined[e] == ')' && --depth == 0) break;
+      }
+      if (e >= joined.size()) continue;
+      tex += "{" + joined.substr(q + 2, e - q - 2) + "}";
+      q = e;
+      continue;
+    }
+    if (joined[e] == '-' || joined[e] == '+') ++e;
+    const size_t start = e;
+    if (e < joined.size() && isdigit((uint8_t)joined[e]))
+      while (e < joined.size() && (isdigit((uint8_t)joined[e]) || joined[e] == '.')) ++e;
+    else if (e < joined.size() && isalpha((uint8_t)joined[e])) ++e;
+    if (e == start) continue;
+    tex += "{" + joined.substr(q + 1, e - q - 1) + "}";
+    q = e - 1;
+  }
+  converted = Math::convert(tex) + trailing;
+  // After the expression: keep the space that separated it from what follows.
+  end = i;
+  for (size_t n = 0; n < tokens.size(); ++n) {
+    while (end < s.size() && s[end] == ' ') ++end;
+    end += tokens[n].size();
+  }
+  end += trailing.size();
+  return true;
+}
 
 }  // namespace
 
@@ -835,6 +979,15 @@ std::string mathToDisplay(const std::string &s) {
       if (i + 1 < s.size() && strchr("*_#`[]()-.!+{}|>%&$", s[i + 1])) {  // Markdown escapes
         out += s[i + 1];
         i += 2;
+        continue;
+      }
+    }
+    if ((i == 0 || s[i - 1] == ' ' || s[i - 1] == '\n') && exprChar(c)) {
+      size_t end;
+      std::string expr;
+      if (plainExpression(s, i, end, expr)) {
+        out += expr;
+        i = end;
         continue;
       }
     }

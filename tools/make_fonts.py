@@ -1,5 +1,5 @@
 """Build the display fonts: Montserrat (Latin) + DejaVu Sans (math, Greek, super/subscripts)
-+ LVGL's symbol icons, at 12, 16 and 24 px. Also writes include/glyphs.h, the sorted list of
++ LVGL's symbol icons, at 12, 14 and 20 px. Also writes include/glyphs.h, the sorted list of
 every character the fonts can draw, so the firmware knows what it may show.
 
 Needs Node (npx downloads LVGL's lv_font_conv) and the font files from the LVGL library
@@ -115,7 +115,7 @@ def ranges(rs):
 
 
 npx = 'npx.cmd' if os.name == 'nt' else 'npx'
-for size in (12, 16, 24):
+for size in (12, 14, 20):
     out = os.path.join(ROOT, 'src', 'fonts', f'perch_font_{size}.c')
     os.makedirs(os.path.dirname(out), exist_ok=True)
     cmd = [
