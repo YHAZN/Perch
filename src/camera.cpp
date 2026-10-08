@@ -8,9 +8,15 @@ namespace {
 CameraMode mode = CameraMode::Off;
 uint16_t sensorPid = 0;  // known after the first start
 OV5640 autofocus;
-int stillGainCeiling = GAINCEILING_8X;
+// Photos are hand-held: a full-size frame takes ~0.3 s to read out, and letting exposure run
+// that long (or two frames, as before) smeared every indoor photo. Exposure is capped in time
+// instead, and gain makes up the light: some grain is far easier to read than motion blur.
+int stillGainCeiling = GAINCEILING_32X;
 int stillAeLevel = 1;         // photos aim a little brighter than the sensor default
-int stillExposureFrames = 2;  // night mode may stretch exposure to this many frame times
+int stillExposureFrames = 1;  // >1 lets night mode stretch exposure over several frames
+int stillMaxExposureMs = 40;  // 1/25 s
+float stillLineUs = 150;      // one sensor line at full size; measured from the burst (frame time / VTS)
+int stillVts = 0;
 // Photo tuning (developer '7' command). -100 = leave the driver default.
 int stillDenoise = -100, stillSharpness = -100, stillHts = 0, stillSettle = 0, stillSaturation = -100;
 
@@ -148,7 +154,10 @@ bool cameraSetMode(CameraMode next) {
     // Low gain plus a longer exposure gives less noise (the purple speckle and column lines
     // get worse with gain); a burst of three then keeps the sharpest against hand shake.
     const int vts = (sensor->get_reg(sensor, 0x380E, 0xFF) << 8) | sensor->get_reg(sensor, 0x380F, 0xFF);
-    const int maxLines = vts * stillExposureFrames;
+    stillVts = vts;
+    int maxLines = vts * stillExposureFrames;
+    if (stillMaxExposureMs > 0) maxLines = min(maxLines, max(16, (int)(stillMaxExposureMs * 1000 / stillLineUs)));
+    Serial.printf("CAMERA photo exposure cap %d lines (%.0f ms)\n", maxLines, maxLines * stillLineUs / 1000);
     sensor->set_reg(sensor, 0x3A02, 0xFF, maxLines >> 8);
     sensor->set_reg(sensor, 0x3A03, 0xFF, maxLines & 0xFF);
     sensor->set_reg(sensor, 0x3A14, 0xFF, maxLines >> 8);
@@ -207,6 +216,11 @@ bool cameraFocus(uint32_t) {
 
 void cameraSetStillGain(int ceiling) { stillGainCeiling = ceiling; }
 
+void cameraNoteFrameTime(uint32_t us) {
+  // Consecutive full-size frames: frame time / lines per frame = the time of one line.
+  if (stillVts > 0 && us > 20000 && us < 2000000) stillLineUs = (float)us / stillVts;
+}
+
 void cameraReport() {
   sensor_t *s = esp_camera_sensor_get();
   if (!s) return;
@@ -231,6 +245,7 @@ bool cameraTune(const char *key, int value) {
   else if (k == "hts") stillHts = value;
   else if (k == "set") stillSettle = value;
   else if (k == "sat") stillSaturation = value;
+  else if (k == "ms") stillMaxExposureMs = value;  // 0 = no time cap (frames only)
   else return false;
   return true;
 }

@@ -20,6 +20,8 @@ bool cameraFocus(uint32_t timeoutMs);
 void cameraReport();
 // Gain ceiling used for photos (gainceiling_t value, 0 = 2x ... 6 = 128x).
 void cameraSetStillGain(int ceiling);
+// The time between two consecutive full-size frames (calibrates the photo exposure cap).
+void cameraNoteFrameTime(uint32_t us);
 // Developer: photo brightness target (-2..2) and longest exposure in frame times (1..4).
 void cameraSetStillExposure(int aeLevel, int maxFrames);
 // Developer: photo tuning, keys dn (denoise), sh (sharpness), hts (line length), set (settle frames), sat.

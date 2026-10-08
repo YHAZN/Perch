@@ -153,9 +153,16 @@ void captureInTask() {
     }
     vTaskDelay(1);
     uint32_t best = 0;
+    int64_t lastStamp = 0;
     for (int shot = 0; shot < BURST; ++shot) {
       camera_fb_t *frame = esp_camera_fb_get();
       if (!frame) continue;
+      const int64_t stamp = (int64_t)frame->timestamp.tv_sec * 1000000 + frame->timestamp.tv_usec;
+      if (lastStamp) {
+        Serial.printf("BURST frame time %lu us\n", (unsigned long)(stamp - lastStamp));
+        cameraNoteFrameTime((uint32_t)(stamp - lastStamp));
+      }
+      lastStamp = stamp;
       const bool valid = frame->format == PIXFORMAT_JPEG && frame->len >= 4 && frame->buf[0] == 0xff &&
                          frame->buf[1] == 0xd8 && frame->buf[frame->len - 2] == 0xff &&
                          frame->buf[frame->len - 1] == 0xd9;
