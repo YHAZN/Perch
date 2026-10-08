@@ -286,8 +286,22 @@ class Handler(BaseHTTPRequestHandler):
                 v = [d.get(k) for k in ('x1', 'y1', 'x2', 'y2')] + [d.get('ms', 300)]
                 if any(type(n) is not int for n in v):
                     return self.reply(400, {'error': 'Invalid drag.'})
-                return self.reply(200, exchange('!' + ','.join(str(n) for n in v) + '\n', screen=True))
+                try:
+                    result = exchange('!' + ','.join(str(n) for n in v) + '\n', screen=True)
+                except RuntimeError as error:
+                    # The drag happened; only the frame after it was cut short. Read the screen
+                    # again rather than replaying the drag.
+                    if not any(
+                        reason in str(error)
+                        for reason in ('USB payload stalled', 'Screen transfer incomplete', 'transfer ending')
+                    ):
+                        raise
+                    print('Recovering screen after drag: ' + str(error), flush=True)
+                    result = exchange('f', screen=True)
+                    result['recovered'] = True
+                return self.reply(200, result)
             except (serial.SerialException, RuntimeError, ValueError, OSError) as error:
+                print('DRAG ERROR: ' + str(error), flush=True)
                 return self.reply(503, {'error': str(error)})
         if self.path == '/api/touch':
             try:
