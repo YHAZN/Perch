@@ -436,6 +436,12 @@ void refreshDynamic() {
   if (current == Screen::Model) refreshAiScreen();
   {
     const uint16_t secs = SLEEP_CHOICES[sleepChoice];
+    if (dailyValue) {
+      const int limit = DAILY_CHOICES[dailyChoice];
+      const int used = aiRequestsToday(true) + aiRequestsToday(false);
+      setText(dailyValue, limit ? String(limit).c_str() : "Off");
+      setText(dailySub, (String(used) + (used == 1 ? " request today" : " requests today")).c_str());
+    }
     setText(sleepValue, !secs       ? "Never"
                         : secs < 60 ? (String(secs) + " s").c_str()
                                     : (String(secs / 60) + " min").c_str());

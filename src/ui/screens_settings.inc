@@ -26,7 +26,7 @@ void buildSettings() {
   lv_obj_set_pos(storageSub, 22, 36);
   lv_obj_t *forget = row(s, 330, "Forget last hour", nullptr, 64);
   lv_obj_align(lv_obj_get_child(forget, 0), LV_ALIGN_TOP_LEFT, 22, 12);
-  lv_obj_t *forgetSub = text(forget, "Hold to delete answers and photos", F_SMALL, MIST);
+  lv_obj_t *forgetSub = text(forget, "Hold: chats, answers, photos go", F_SMALL, MIST);
   lv_obj_set_pos(forgetSub, 22, 36);
   lv_obj_add_flag(forget, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_event_cb(
@@ -38,7 +38,9 @@ void buildSettings() {
           toast("Clock not set yet: nothing to match");
           return;
         }
-        const int removed = storageForgetSince(time(nullptr) - 3600);
+        const uint32_t since = (uint32_t)time(nullptr) - 3600;
+        if (aiBusy()) aiCancel();  // nothing more leaves the device from that hour
+        const int removed = storageForgetSince(since) + forgetChatsSince(since);
         freeKbStale = true;
         loadLatestAnswer();
         refreshPhotos();
@@ -97,9 +99,21 @@ void buildSettings() {
         refreshDynamic();
     }
   });
+  // Spending guard: every request counts (retries and fallbacks too); resets at midnight.
+  lv_obj_t *daily = row(s, 458, "Daily limit", &dailyValue, 64);
+  lv_obj_align(lv_obj_get_child(daily, 0), LV_ALIGN_TOP_LEFT, 22, 12);
+  lv_obj_align(dailyValue, LV_ALIGN_TOP_RIGHT, -20, 12);
+  dailySub = text(daily, "", F_SMALL, MIST);
+  lv_obj_set_pos(dailySub, 22, 36);
+  onClick(daily, [] {
+    dailyChoice = (dailyChoice + 1) % (sizeof(DAILY_CHOICES) / sizeof(DAILY_CHOICES[0]));
+    settings.putUChar("daily", dailyChoice);
+    aiSetDailyLimit(DAILY_CHOICES[dailyChoice]);
+    refreshDynamic();
+  });
   lv_obj_t *spacer = plain(s);
   lv_obj_set_size(spacer, 1, 1);
-  lv_obj_set_pos(spacer, 0, 514);
+  lv_obj_set_pos(spacer, 0, 578);
 }
 
 // AI settings: which provider answers, and for each provider its model and effort.

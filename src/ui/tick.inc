@@ -181,6 +181,15 @@ void deviceTick() {
     }
   }
   if (recordingDot) hide(recordingDot, !(aiBusy() || micRecording()));
+  {
+    // Privacy light: on while the microphone records or a request (photo, sound) is out.
+    static bool lit = false;
+    const bool on = aiBusy() || micRecording() || captureRequested;
+    if (on != lit) {
+      lit = on;
+      digitalWrite(PIN_SD_CS, on ? LOW : HIGH);
+    }
+  }
   static unsigned long lastRefresh = 0;
   if (now - lastRefresh > 1000 && !dragging && !fingerDown) {
     lastRefresh = now;

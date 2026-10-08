@@ -71,6 +71,9 @@ void aiKeyCheck(const String &key);
 void aiSetFlashBusy(bool (*busy)());
 // Requests sent to a provider today (UTC day), retries included.
 int aiRequestsToday(bool gemini);
+// Spending guard: at most this many requests a day across providers (every attempt counts,
+// retries and fallbacks included). 0 = no limit.
+void aiSetDailyLimit(int requests);
 // The answer so far while it streams in; returns a version that changes with every piece.
 uint32_t aiPartial(String &text);
 void aiShrinkTest(const uint8_t *jpeg, size_t len);

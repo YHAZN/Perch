@@ -647,6 +647,13 @@ bool request(Job &j) {
     Serial.printf("AI_SEND try %d %s %s %u bytes, internal heap %u free, largest %u\n", tries, models[model].c_str(),
                   j.kind == Kind::Transcribe ? "transcribe" : j.options.effort.c_str(), (unsigned)total,
                   heap_caps_get_free_size(MALLOC_CAP_INTERNAL), heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+    if (dailyLimit > 0 && aiRequestsToday(true) + aiRequestsToday(false) >= dailyLimit) {
+      http.end();
+      static String limitText;
+      limitText =
+          "Today's limit of " + String(dailyLimit) + " requests is used up. Change it in Settings > Daily limit.";
+      return fail(limitText.c_str());
+    }
     const uint32_t sendStart = millis();
     countRequest(gemini);
     status = http.POST(payload, total);
@@ -834,10 +841,18 @@ bool request(Job &j) {
 }
 
 // Requests sent today, per provider (every attempt counts: limits count attempts too).
+// "Today" is the local calendar day.
 Preferences usage;
-void countRequest(bool gemini) {
+int dailyLimit = 0;  // requests per day across providers; 0 = no limit (Settings)
+int usageDay() {
   const time_t now = time(nullptr);
-  const int day = now > 1700000000 ? (int)(now / 86400) : 0;
+  if (now < 1700000000) return 0;
+  struct tm t;
+  localtime_r(&now, &t);
+  return (t.tm_year + 1900) * 400 + t.tm_yday;
+}
+void countRequest(bool gemini) {
+  const int day = usageDay();
   if (usage.getInt("day", -1) != day) {
     usage.putInt("day", day);
     usage.putUShort("g", 0);
@@ -1104,9 +1119,9 @@ void aiBegin() {
   mbedtls_platform_set_calloc_free(tlsCalloc, free);
   usage.begin("perch-usage", false);
 }
+void aiSetDailyLimit(int requests) { dailyLimit = requests < 0 ? 0 : requests; }
 int aiRequestsToday(bool gemini) {
-  const time_t now = time(nullptr);
-  const int day = now > 1700000000 ? (int)(now / 86400) : 0;
+  const int day = usageDay();
   if (usage.getInt("day", -1) != day) return 0;
   return usage.getUShort(gemini ? "g" : "o", 0);
 }

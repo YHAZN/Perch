@@ -7,6 +7,12 @@ void initDeviceUi() {
   bluetoothOn = settings.getBool("bt-on", false);
   confirmWords = settings.getBool("words-first", true);
   sleepChoice = settings.getUChar("sleep", 1) % (sizeof(SLEEP_CHOICES) / sizeof(SLEEP_CHOICES[0]));
+  dailyChoice = settings.getUChar("daily", 0) % (sizeof(DAILY_CHOICES) / sizeof(DAILY_CHOICES[0]));
+  aiSetDailyLimit(DAILY_CHOICES[dailyChoice]);
+  // Privacy light: the board's orange LED (active low) is on while a photo or sound is being
+  // recorded or sent.
+  pinMode(PIN_SD_CS, OUTPUT);
+  digitalWrite(PIN_SD_CS, HIGH);
   batteryBegin();
   updaterBegin();
   geminiModel = constrain(settings.getUChar("gm-model", 0), 0, GEMINI_MODEL_COUNT - 1);

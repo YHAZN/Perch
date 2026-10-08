@@ -11,6 +11,7 @@ struct ChatMsg {
   bool pending = false;  // user: waiting for Wi-Fi
   bool failed = false;   // assistant: the request failed; `text` says why
   bool voice = false;    // user: spoken question sent as audio
+  uint32_t when = 0;     // epoch seconds when first saved; 1 = unknown (older chats)
 };
 std::vector<ChatMsg> chat;
 uint32_t chatId = 0;
@@ -72,6 +73,10 @@ String chatTitleText() {
 void saveChat() {
   if (chat.empty()) return;
   if (!chatId) chatId = chatNewId();
+  // New messages get their time when first saved ("Forget last hour" goes by it).
+  const uint32_t now = clockKnown() ? (uint32_t)time(nullptr) : 1;
+  for (ChatMsg &m : chat)
+    if (!m.when) m.when = now;
   JsonDocument doc;
   doc["title"] = chatTitleText();
   doc["when"] = clockKnown() ? (uint32_t)time(nullptr) : 0;
@@ -83,6 +88,7 @@ void saveChat() {
     if (m.pending) o["w"] = 1;
     if (m.failed) o["f"] = 1;
     if (m.voice) o["v"] = 1;
+    o["s"] = m.when;
     JsonArray p = o["p"].to<JsonArray>();
     for (uint32_t id : m.photos) p.add(id);
   }
@@ -102,6 +108,7 @@ bool loadChat(uint32_t id) {
     m.pending = o["w"] | 0;
     m.failed = o["f"] | 0;
     m.voice = o["v"] | 0;
+    m.when = o["s"] | 1;  // 1: written before message times were kept (treated as old)
     for (uint32_t p : o["p"].as<JsonArray>()) m.photos.push_back(p);
     chat.push_back(m);
   }
@@ -116,6 +123,47 @@ bool loadChat(uint32_t id) {
   attachIds.clear();
   draft = "";
   return true;
+}
+
+void rebuildChat();
+// Privacy: drop chat messages from `since` on; a chat left empty is deleted. Returns how many
+// messages went. The open chat is reloaded (or emptied).
+int forgetChatsSince(uint32_t since) {
+  uint32_t ids[CHAT_KEEP];
+  const int n = chatList(ids, CHAT_KEEP);
+  int removed = 0;
+  for (int c = 0; c < n; ++c) {
+    String json;
+    JsonDocument doc;
+    if (!chatLoad(ids[c], json) || deserializeJson(doc, json)) continue;
+    JsonArray list = doc["m"].as<JsonArray>();
+    int kept = 0, dropped = 0;
+    for (size_t k = list.size(); k-- > 0;) {
+      if ((uint32_t)(list[k]["s"] | 1) >= since) {
+        list.remove(k);
+        ++dropped;
+      } else ++kept;
+    }
+    if (!dropped) continue;
+    removed += dropped;
+    if (!kept) chatDelete(ids[c]);
+    else {
+      String out;
+      serializeJson(doc, out);
+      chatSave(ids[c], out);
+    }
+  }
+  if (removed && chatId) {
+    const uint32_t open = chatId;
+    if (!loadChat(open)) {
+      chat.clear();
+      chatId = 0;
+      attachIds.clear();
+      draft = "";
+    }
+    if (chatScroll) rebuildChat();
+  }
+  return removed;
 }
 
 // ---------- drawing ----------

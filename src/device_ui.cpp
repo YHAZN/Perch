@@ -116,6 +116,10 @@ uint8_t sleepChoice = 1;
 unsigned long lastActivity = 0;
 bool screenAsleep = false, screenDim = false, swallowTouch = false;
 lv_obj_t *sleepValue = nullptr;
+// Spending guard (Settings > Daily limit): requests a day across providers, 0 = no limit.
+const uint16_t DAILY_CHOICES[] = {0, 20, 50, 100, 200};
+uint8_t dailyChoice = 0;
+lv_obj_t *dailyValue = nullptr, *dailySub = nullptr;
 uint8_t brightnessPct = 100;  // 5..100, continuous (Control Center and Settings sliders)
 uint8_t spiMhz = 10;
 unsigned long sequence = 0;
