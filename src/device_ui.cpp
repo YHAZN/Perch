@@ -24,6 +24,14 @@
 #include "display.h"
 #include "remote.h"
 #include "storage.h"
+#include "math_text.h"
+
+// Display fonts (src/fonts, C files).
+extern "C" {
+LV_FONT_DECLARE(perch_font_12)
+LV_FONT_DECLARE(perch_font_16)
+LV_FONT_DECLARE(perch_font_24)
+}
 
 namespace {
 constexpr int W = 240, H = 284;
@@ -47,9 +55,10 @@ constexpr int BACK_ZONE = 24;
 
 // Design tokens (design/index.html :root)
 lv_color_t VOID_, GRAPHITE, ICON_BG, ICON_DIM, LINE, MIST, INK, LENS;
-const lv_font_t *F_SMALL = &lv_font_montserrat_12;
-const lv_font_t *F_BODY = &lv_font_montserrat_16;
-const lv_font_t *F_LARGE = &lv_font_montserrat_24;
+// Montserrat plus maths, Greek and super/subscripts from DejaVu Sans (tools/make_fonts.py).
+const lv_font_t *F_SMALL = &perch_font_12;
+const lv_font_t *F_BODY = &perch_font_16;
+const lv_font_t *F_LARGE = &perch_font_24;
 const lv_font_t *F_CLOCK = &lv_font_montserrat_48;
 
 enum class Screen {

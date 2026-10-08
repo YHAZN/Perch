@@ -28,6 +28,13 @@ void handleDeviceButton(char command) {
     sendFrame();
     return;
   }
+  if (command == '$') {
+    // Developer: "$<text>" prints text as the answer screen would show it ("<br>" = new line).
+    String in = Serial.readStringUntil('\n');
+    in.replace("<br>", "\n");
+    Serial.printf("MATH %s\n", cleanMath(in).c_str());
+    return;
+  }
   if (command == '!') {
     // Developer: "x1,y1,x2,y2,ms" drag, edges included (for gesture checks), then a frame.
     int v[5] = {0, 0, 0, 0, 300};
@@ -343,6 +350,16 @@ void handleDeviceButton(char command) {
           "Q2: b. 2n\n1. The loop runs while i < data.size() * 2\n\n"
           "Sample written on the device, not by a model.";
       chat.push_back(a);
+      ChatMsg mq;
+      mq.text = "And the maths one?";
+      chat.push_back(mq);
+      ChatMsg ma;  // LaTeX as models write it, to check the maths display
+      ma.user = false;
+      ma.text =
+          "Answer: \\(x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}\\)\n"
+          "Steps:\n1. $\\Delta = b^2 - 4ac \\geq 0$\n2. $\\int_0^1 x^2\\,dx = \\frac{1}{3}$, $\\theta = 30^\\circ$\n"
+          "3. $$\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}$$";
+      chat.push_back(ma);
       launch(Screen::Ask);
       rebuildChat();
       break;

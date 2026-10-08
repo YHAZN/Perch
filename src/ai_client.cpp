@@ -1,4 +1,5 @@
 #include "ai_client.h"
+#include "math_text.h"
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
@@ -62,7 +63,7 @@ class BoundedResponse : public Stream {
 };
 
 // The reply format is what the device renders (see the answer screen): a one-line answer,
-// then numbered steps, formulas on their own lines. Plain ASCII: the fonts have nothing else.
+// then numbered steps, formulas on their own lines, maths in Unicode symbols.
 const char *FORMAT =
     "Reply in this exact format for a small screen.\n"
     "If there is one question:\n"
@@ -75,8 +76,9 @@ const char *FORMAT =
     "1. <one short step>\n"
     "2. <next step>\n"
     "Use the question numbers printed on the page when there are any. "
-    "Put each formula or equation on its own line. Use ASCII math (x^2, sqrt(x), *, /, <=). "
-    "No tables, no LaTeX, no other headings. Use **bold** only for key terms. "
+    "Put each formula or equation on its own line. Write maths with Unicode symbols, as printed in a book: "
+    "x², x⁻¹, aₙ, √x, ∛x, π, θ, Δ, ×, ÷, ±, ≤, ≥, ≠, ≈, →, ∞, °, ½; fractions as (a+b)/c. "
+    "Never LaTeX, never $ signs around maths. No tables, no other headings. Use **bold** only for key terms. "
     "If text is unclear, say exactly what cannot be read and ask for a closer photo; never invent content.";
 const char *TASK_ONE = "Read the photographed problem carefully and solve it.";
 const char *TASK_PAGES =
@@ -94,56 +96,10 @@ const char *TRANSCRIBE_PROMPT =
     "Transcribe this audio exactly as spoken. Reply with only the words, no commentary. "
     "If nothing intelligible was said, reply with an empty line.";
 
-// The display fonts only cover printable ASCII. Models still send Unicode math and
-// typography, which would silently vanish and can change the meaning of an answer.
-// Markdown markers (** and list syntax) are kept: the answer screen formats them.
+// Replies keep every character the display fonts can draw (maths symbols included); the rest
+// is folded to near ASCII. Maths notation itself is converted when shown (math_text.h).
 String toDisplayText(const String &input) {
-  static const struct {
-    uint32_t code;
-    const char *text;
-  } map[] = {
-      {0x00D7, "x"},       {0x2212, "-"},     {0x00F7, "/"},     {0x2215, "/"},    {0x00B2, "^2"},
-      {0x00B3, "^3"},      {0x00B9, "^1"},    {0x2070, "^0"},    {0x2074, "^4"},   {0x2075, "^5"},
-      {0x2076, "^6"},      {0x2077, "^7"},    {0x2078, "^8"},    {0x2079, "^9"},   {0x207F, "^n"},
-      {0x2080, "_0"},      {0x2081, "_1"},    {0x2082, "_2"},    {0x2083, "_3"},   {0x221A, "sqrt"},
-      {0x03C0, "pi"},      {0x03B8, "theta"}, {0x03B1, "alpha"}, {0x03B2, "beta"}, {0x0394, "Delta"},
-      {0x03BB, "lambda"},  {0x03BC, "mu"},    {0x03C3, "sigma"}, {0x03A3, "Sum"},  {0x2264, "<="},
-      {0x2265, ">="},      {0x2260, "!="},    {0x2248, "~="},    {0x00B1, "+/-"},  {0x221E, "inf"},
-      {0x00B0, " deg"},    {0x2192, "->"},    {0x2190, "<-"},    {0x21D2, "=>"},   {0x2194, "<->"},
-      {0x2018, "'"},       {0x2019, "'"},     {0x201C, "\""},    {0x201D, "\""},   {0x2013, "-"},
-      {0x2014, "-"},       {0x2026, "..."},   {0x2022, "-"},     {0x00B7, "*"},    {0x22C5, "*"},
-      {0x00BD, "1/2"},     {0x00BC, "1/4"},   {0x00BE, "3/4"},   {0x2208, " in "}, {0x2200, "for all "},
-      {0x2203, "exists "}, {0x2229, " and "}, {0x222A, " or "},  {0x00A0, " "},    {0x2032, "'"},
-      {0x2033, "\""},
-  };
-  String out;
-  out.reserve(input.length());
-  const uint8_t *s = (const uint8_t *)input.c_str();
-  for (size_t i = 0; i < input.length();) {
-    uint8_t c = s[i];
-    if (c < 0x80) {
-      if (c == '\n' || c == '\t' || c >= 0x20) out += (char)(c == '\t' ? ' ' : c);
-      ++i;
-      continue;
-    }
-    int extra = c >= 0xF0 ? 3 : c >= 0xE0 ? 2 : c >= 0xC0 ? 1 : 0;
-    uint32_t code = extra == 3 ? c & 0x07 : extra == 2 ? c & 0x0F : c & 0x1F;
-    if (!extra || i + extra >= input.length()) {
-      ++i;
-      out += '?';
-      continue;
-    }
-    for (int k = 1; k <= extra; ++k) code = (code << 6) | (s[i + k] & 0x3F);
-    i += extra + 1;
-    const char *text = "?";
-    for (const auto &entry : map)
-      if (entry.code == code) {
-        text = entry.text;
-        break;
-      }
-    out += text;
-  }
-  return out;
+  return String(foldToDisplay(std::string(input.c_str(), input.length())).c_str());
 }
 
 String jsonEscape(const String &in) {

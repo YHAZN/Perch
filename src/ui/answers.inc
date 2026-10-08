@@ -11,99 +11,10 @@ void loadLatestAnswer() {
 // ---------- answer formatting ----------
 // Models write Markdown-ish text. The answer screen turns it into blocks: the answer in large
 // type, numbered steps with a badge, bullets, formulas on a tinted panel, headings in small
-// caps, and **key terms** in amber. LaTeX that slips through becomes plain ASCII math.
-int closingBrace(const String &t, int open) {
-  int depth = 0;
-  for (int i = open; i < (int)t.length(); ++i) {
-    if (t[i] == '{') ++depth;
-    else if (t[i] == '}' && --depth == 0) return i;
-  }
-  return -1;
-}
-String cleanMath(String t) {
-  static const char *const pairs[][2] = {{"\\left", ""},
-                                         {"\\right", ""},
-                                         {"\\(", ""},
-                                         {"\\)", ""},
-                                         {"\\[", ""},
-                                         {"\\]", ""},
-                                         {"$$", ""},
-                                         {"\\cdot", "*"},
-                                         {"\\times", "x"},
-                                         {"\\div", "/"},
-                                         {"\\leq", "<="},
-                                         {"\\geq", ">="},
-                                         {"\\le", "<="},
-                                         {"\\ge", ">="},
-                                         {"\\neq", "!="},
-                                         {"\\ne", "!="},
-                                         {"\\pm", "+/-"},
-                                         {"\\approx", "~="},
-                                         {"\\pi", "pi"},
-                                         {"\\infty", "inf"},
-                                         {"\\theta", "theta"},
-                                         {"\\alpha", "alpha"},
-                                         {"\\beta", "beta"},
-                                         {"\\Delta", "Delta"},
-                                         {"\\log", "log"},
-                                         {"\\ln", "ln"},
-                                         {"\\sin", "sin"},
-                                         {"\\cos", "cos"},
-                                         {"\\tan", "tan"},
-                                         {"\\to", "->"},
-                                         {"\\rightarrow", "->"},
-                                         {"\\Rightarrow", "=>"},
-                                         {"\\,", " "},
-                                         {"\\;", " "},
-                                         {"\\quad", "  "},
-                                         {"\\!", ""},
-                                         {"\\text{", "{"},
-                                         {"\\mathrm{", "{"},
-                                         {"\\mathbf{", "{"},
-                                         {"\\displaystyle", ""},
-                                         {"\\dfrac{", "\\frac{"},
-                                         {"\\tfrac{", "\\frac{"}};
-  for (const auto &p : pairs) t.replace(p[0], p[1]);
-  // A single token needs no brackets: 1/2, x^2; anything longer keeps them: (x+1)/(2), x^(n+1).
-  auto group = [](const String &g) -> String {
-    for (size_t i = 0; i < g.length(); ++i)
-      if (!isalnum((unsigned char)g[i]) && g[i] != '.') return "(" + g + ")";
-    return g;
-  };
-  // \frac{a}{b} -> a/b, \sqrt{x} -> sqrt(x)
-  for (int guard = 0; guard < 40; ++guard) {
-    const int at = t.indexOf("\\frac{");
-    if (at < 0) break;
-    const int a1 = closingBrace(t, at + 5);
-    if (a1 < 0 || a1 + 1 >= (int)t.length() || t[a1 + 1] != '{') break;
-    const int b1 = closingBrace(t, a1 + 1);
-    if (b1 < 0) break;
-    t = t.substring(0, at) + group(t.substring(at + 6, a1)) + "/" + group(t.substring(a1 + 2, b1)) +
-        t.substring(b1 + 1);
-  }
-  for (int guard = 0; guard < 40; ++guard) {
-    const int at = t.indexOf("\\sqrt{");
-    if (at < 0) break;
-    const int b = closingBrace(t, at + 5);
-    if (b < 0) break;
-    t = t.substring(0, at) + "sqrt(" + t.substring(at + 6, b) + ")" + t.substring(b + 1);
-  }
-  // x^{2} -> x^2, x^{n+1} -> x^(n+1); the same for subscripts.
-  for (const char *mark : {"^{", "_{"}) {
-    for (int guard = 0; guard < 40; ++guard) {
-      const int at = t.indexOf(mark);
-      if (at < 0) break;
-      const int b = closingBrace(t, at + 1);
-      if (b < 0) break;
-      t = t.substring(0, at + 1) + group(t.substring(at + 2, b)) + t.substring(b + 1);
-    }
-  }
-  t.replace("{", "");
-  t.replace("}", "");
-  t.replace("$", "");
-  t.replace("`", "");
-  return t;
-}
+// caps, and **key terms** in amber. Maths is shown with real symbols (x², √, π, ≤).
+// Every way models write maths (LaTeX in its various delimiters, x^2, Unicode) becomes the
+// Unicode the fonts draw; see math_text.h. Applied when shown, so older answers benefit too.
+String cleanMath(const String &t) { return String(mathToDisplay(std::string(t.c_str(), t.length())).c_str()); }
 String stripMarks(String t) {
   t.replace("**", "");
   t.replace("__", "");
