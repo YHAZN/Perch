@@ -142,7 +142,12 @@ lv_obj_t *answerScroll, *answerPhoto, *answerFlow, *answerMeta;
 lv_obj_t *photosImage, *photosEmpty, *photoCounter, *photoPrev, *photoNext, *photoDelete;
 // Zoom: the touch panel (CST816D) senses one finger, so no pinch. Double-tap decodes the full
 // photo at half resolution (2.7x the screen) and shows it in a window you drag around.
-lv_obj_t *zoomView, *zoomImage, *zoomExit;
+lv_obj_t *zoomView, *zoomImage, *zoomBlur, *zoomExit;
+// The sharp version is decoded on a background task (~3 s for a 2048x1536 photo); until it
+// arrives the screen copy is shown enlarged at once, around the point you tapped.
+volatile int zoomJob = 0;  // 0 idle, 1 decoding, 2 ready, 3 failed
+uint32_t zoomPhotoId = 0;
+int zoomTapX = 0, zoomTapY = 0;
 uint16_t *zoomPixels = nullptr;
 lv_image_dsc_t zoomDsc;
 int zoomW = 0, zoomH = 0;
@@ -521,7 +526,18 @@ void analyseGesture(const camera_fb_t *f) {
   gestureState = state;
 }
 volatile bool captureRequested = false;
+volatile bool captureProcessing = false;  // the save task is preparing the last photo
+bool cameraOffSetting();
+// The camera task owns the camera: it starts and stops the driver (0.3 s, longer the first
+// time) so the UI never waits for it. The UI only says what it wants (previewWanted).
 void previewTask(void *) {
+  // Load the autofocus firmware once at boot, in the background (~5 s of SCCB writes): it
+  // stays in the sensor while it is powered, so the first live view starts quickly.
+  if (!cameraOffSetting()) {
+    xSemaphoreTake(camLock, portMAX_DELAY);
+    if (cameraSetMode(CameraMode::Preview) && !previewWanted) cameraSetMode(CameraMode::Off);
+    xSemaphoreGive(camLock);
+  }
   for (;;) {
     if (captureRequested) {
       xSemaphoreTake(camLock, portMAX_DELAY);
@@ -530,7 +546,14 @@ void previewTask(void *) {
       captureRequested = false;
       continue;
     }
-    if (!previewWanted) {
+    const bool want = previewWanted;
+    if (want != (cameraMode() == CameraMode::Preview)) {
+      xSemaphoreTake(camLock, portMAX_DELAY);
+      cameraSetMode(want ? CameraMode::Preview : CameraMode::Off);
+      xSemaphoreGive(camLock);
+      continue;
+    }
+    if (!want) {
       vTaskDelay(pdMS_TO_TICKS(20));
       continue;
     }
@@ -570,15 +593,13 @@ bool cameraSwitch(CameraMode mode) {
   xSemaphoreGive(camLock);
   return ok;
 }
-void stopPreview() {
-  previewWanted = false;
-  // A capture in progress switches the camera off itself when done; never block the UI on it.
-  if (!captureRequested && cameraMode() != CameraMode::Off) cameraSwitch(CameraMode::Off);
-}
-bool ensurePreviewMode() {
-  if (!cameraSwitch(CameraMode::Preview)) return false;
+// Non-blocking: the camera task switches modes.
+void stopPreview() { previewWanted = false; }
+bool ensurePreviewMode(uint32_t waitMs = 0) {
   previewWanted = true;
-  return true;
+  const unsigned long start = millis();
+  while (waitMs && cameraMode() != CameraMode::Preview && millis() - start < waitMs) delay(20);
+  return !waitMs || cameraMode() == CameraMode::Preview;
 }
 // Show the newest converted frame, if there is one. Returns true when the image changed.
 bool takeLiveFrame() {
@@ -1424,6 +1445,7 @@ struct CaptureResult {
   size_t len = 0;
   String problem;
   bool blurry = false;
+  uint32_t previousPhoto = 0;  // the photo saved just before this one (joins the chat as context)
 };
 // Burst capture, keeping the sharpest frame. Sharpness = variance of a Laplacian
 // over the centre of a 1/8-scale decode, where text usually is. Below the floor even the
@@ -1469,10 +1491,39 @@ volatile int savesPending = 0;
 struct SaveJob {
   uint8_t *jpeg;
   size_t len;
+  bool blurry;
   uint8_t *small;
   size_t smallLen;
   uint16_t thumb[THUMB * THUMB];
 };
+uint8_t *saveScratch = nullptr;
+size_t saveScratchCapacity = 0;
+// After a shot: the screen copy, thumbnail and small JPEG are made here, off the camera task,
+// so the live view resumes as soon as the frames are taken. Then the photo goes to flash.
+void processShot(SaveJob *job) {
+  CaptureResult r;
+  r.jpeg = (uint8_t *)ps_malloc(job->len);
+  if (r.jpeg) {
+    memcpy(r.jpeg, job->jpeg, job->len);
+    r.len = job->len;
+  }
+  r.blurry = job->blurry;
+  // Jobs run in order, so the last photo saved is the one this shot follows.
+  r.previousPhoto = savedPhotoId ? (uint32_t)savedPhotoId : latestPhotoId;
+  const bool haveScreen = decodeStoredWith(job->jpeg, job->len, captureScreen, saveScratch, saveScratchCapacity);
+  if (!haveScreen) memset(captureScreen, 0, W * H * 2);
+  makeThumb(captureScreen, job->thumb);
+  uint16_t *swapped = (uint16_t *)ps_malloc(W * H * 2);
+  if (swapped) {
+    for (int i = 0; i < W * H; ++i) swapped[i] = __builtin_bswap16(captureScreen[i]);
+    fmt2jpg((uint8_t *)swapped, W * H * 2, W, H, PIXFORMAT_RGB565, 80, &job->small, &job->smallLen);
+    free(swapped);
+  }
+  if (!r.jpeg) r.problem = "Not enough memory for the photo.";
+  captureOut = r;
+  captureReady = true;
+  captureProcessing = false;
+}
 QueueHandle_t saveQueue = nullptr;
 void saveTask(void *) {
   freeKbCache = storageFreeBytes() / 1024;
@@ -1486,6 +1537,7 @@ void saveTask(void *) {
       continue;
     }
     const uint32_t t = millis();
+    processShot(job);
     const uint32_t id = savePhoto(job->jpeg, job->len, job->thumb);
     if (id && job->small) savePhotoScreen(id, job->small, job->smallLen);
     if (id) savedPhotoId = id;
@@ -1545,56 +1597,45 @@ void captureInTask() {
     cameraReport();
     if (!r.jpeg) r.problem = "No usable photo. Try again.";
     r.blurry = r.jpeg && best < BLUR_FLOOR;
-    vTaskDelay(1);
-    if (r.jpeg && !haveScreen)
-      haveScreen = decodeStoredWith(r.jpeg, r.len, captureScreen, taskScratch, taskScratchCapacity);
   }
   const uint32_t t1 = millis();
-  // Prepare what saving needs (own copies), then hand the photo to the UI at once.
+  // Back to the live view (or off) right away: never leave the sensor streaming full-size
+  // frames (heat, core 0), and the user sees the viewfinder again at once.
+  cameraSetMode(previewWanted ? CameraMode::Preview : CameraMode::Off);
   SaveJob *job = r.jpeg ? (SaveJob *)ps_malloc(sizeof(SaveJob)) : nullptr;
   if (job) {
-    job->jpeg = (uint8_t *)ps_malloc(r.len);
+    job->jpeg = r.jpeg;  // the save task owns it now
     job->len = r.len;
+    job->blurry = r.blurry;
     job->small = nullptr;
     job->smallLen = 0;
-    if (job->jpeg) memcpy(job->jpeg, r.jpeg, r.len);
-    vTaskDelay(1);
-    makeThumb(captureScreen, job->thumb);
-    // A screen-sized copy makes browsing Photos fast.
-    uint16_t *swapped = (uint16_t *)ps_malloc(W * H * 2);
-    if (swapped) {
-      for (int i = 0; i < W * H; ++i) swapped[i] = __builtin_bswap16(captureScreen[i]);
-      vTaskDelay(1);
-      fmt2jpg((uint8_t *)swapped, W * H * 2, W, H, PIXFORMAT_RGB565, 80, &job->small, &job->smallLen);
-      free(swapped);
-    }
-    if (!job->jpeg) {
-      free(job->small);
-      free(job);
-      job = nullptr;
-    }
-  }
-  if (job) {
+    r.jpeg = nullptr;
+    captureProcessing = true;
     ++savesPending;
     if (xQueueSend(saveQueue, &job, 0) != pdTRUE) {
       --savesPending;
+      captureProcessing = false;
       free(job->jpeg);
-      free(job->small);
       free(job);
+      job = nullptr;
+      r.problem = "Could not keep the photo. Try again.";
     }
   }
-  captureOut = r;
-  captureReady = true;
-  Serial.printf("SHUTTER capture=%lums handoff=%lums\n", (unsigned long)(t1 - t0), (unsigned long)(millis() - t1));
-  // Never leave the sensor streaming full-size frames: it heats up and takes core 0 from Wi-Fi.
-  cameraSetMode(previewWanted ? CameraMode::Preview : CameraMode::Off);
+  if (!job) {
+    free(r.jpeg);
+    r.jpeg = nullptr;
+    if (r.problem.isEmpty()) r.problem = "No usable photo. Try again.";
+    captureOut = r;
+    captureReady = true;
+  }
+  Serial.printf("SHUTTER frames=%lums back-to-live=%lums\n", (unsigned long)(t1 - t0), (unsigned long)(millis() - t1));
 }
 bool requestCapture(String &problem) {
   if (cameraOff) {
     problem = "Camera is off. Turn it on in Control Center.";
     return false;
   }
-  if (captureRequested || captureReady) {
+  if (captureRequested || captureReady || captureProcessing) {
     problem = "Still taking the last photo.";
     return false;
   }
@@ -1616,8 +1657,9 @@ bool acceptCapture(String &problem) {
   // "+ Page" keeps the previous photo as context; any other photo starts a new question.
   // A new photo joins the conversation; the previous one becomes context. After "New chat"
   // the next photo starts clean.
-  if (!chatFresh && latestPhotoId && jpegBytes) {
-    contextIds.push_back(latestPhotoId);
+  const uint32_t previous = captureOut.previousPhoto ? captureOut.previousPhoto : latestPhotoId;
+  if (!chatFresh && previous && jpegBytes) {
+    contextIds.push_back(previous);
     while ((int)contextIds.size() > AI_MAX_PAGES - 1) contextIds.erase(contextIds.begin());
   }
   chatFresh = false;
@@ -1799,7 +1841,6 @@ void addPage() {
     toast("Camera is off. Turn it on in Control Center");
     return;
   }
-  waitForSave();
   pageCamera = true;
   setText(pageBanner, jpegBytes ? "Add a photo to this chat" : "Photo for Ask");
   show(Screen::Camera);
@@ -1892,6 +1933,7 @@ void resumeBluetooth() {
   btPaused = false;
   if (bluetoothOn && !remoteStarted()) remoteBegin();
 }
+bool cameraOffSetting() { return cameraOff; }
 void setCameraOff(bool off) {
   cameraOff = off;
   settings.putBool("camera-off", off);
@@ -2572,34 +2614,59 @@ void zoomOut() {
   hide(photoDelete, false);
   showPhoto(photoIndex);
 }
-// Double-tap at (x, y) on the screen copy: show that spot of the full photo, 2.7x larger.
-void zoomIn(int x, int y) {
-  if (!photoCount) return;
-  uint8_t *jpeg;
-  size_t len;
-  int w, h;
-  if (!loadPhoto(photoIds[photoIndex], jpeg, len)) {
-    toast("Could not open the full photo");
-    return;
+void zoomTask(void *) {
+  uint8_t *jpeg = nullptr;
+  size_t len = 0;
+  int w = 0, h = 0;
+  bool ok = loadPhoto(zoomPhotoId, jpeg, len) && jpegSize(jpeg, len, w, h);
+  if (ok) {
+    const size_t needed = (size_t)(w / 2) * (h / 2) * 2;
+    static size_t capacity = 0;
+    if (needed > capacity) {
+      free(zoomPixels);
+      zoomPixels = (uint16_t *)ps_malloc(needed);
+      capacity = zoomPixels ? needed : 0;
+    }
+    const uint32_t t = millis();
+    ok = zoomPixels && jpg2rgb565(jpeg, len, (uint8_t *)zoomPixels, JPG_SCALE_2X);
+    Serial.printf("ZOOM decode %lums\n", (unsigned long)(millis() - t));
+    zoomW = w / 2;
+    zoomH = h / 2;
   }
-  if (!jpegSize(jpeg, len, w, h)) {
-    free(jpeg);
-    return;
-  }
-  zoomW = w / 2;
-  zoomH = h / 2;
-  const size_t needed = (size_t)zoomW * zoomH * 2;
-  static size_t zoomCapacity = 0;
-  if (needed > zoomCapacity) {
-    free(zoomPixels);
-    zoomPixels = (uint16_t *)ps_malloc(needed);
-    zoomCapacity = zoomPixels ? needed : 0;
-  }
-  toast("Zooming");
-  lv_refr_now(display);
-  const bool ok = zoomPixels && jpg2rgb565(jpeg, len, (uint8_t *)zoomPixels, JPG_SCALE_2X);
   free(jpeg);
-  if (!ok) {
+  zoomJob = ok ? 2 : 3;
+  vTaskDelete(nullptr);
+}
+// Double-tap at (x, y): that spot grows under the finger at once; the sharp full photo
+// replaces the enlarged screen copy when it has been decoded.
+void zoomIn(int x, int y) {
+  if (!photoCount || zoomJob == 1) return;
+  zoomTapX = x;
+  zoomTapY = y;
+  zoomPhotoId = photoIds[photoIndex];
+  lv_image_set_src(zoomBlur, &galleryDsc);
+  lv_obj_set_size(zoomBlur, W, H);
+  lv_obj_set_pos(zoomBlur, 0, 0);
+  lv_image_set_pivot(zoomBlur, x, y);
+  lv_image_set_scale(zoomBlur, 256 * 27 / 10);
+  lv_obj_remove_flag(zoomBlur, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_add_flag(zoomImage, LV_OBJ_FLAG_HIDDEN);
+  setText(lv_obj_get_child(zoomExit, 0), "Sharpening");
+  lv_obj_remove_flag(zoomView, LV_OBJ_FLAG_HIDDEN);
+  hide(photoPrev, true);
+  hide(photoNext, true);
+  hide(photoDelete, true);
+  zoomJob = 1;
+  if (xTaskCreatePinnedToCore(zoomTask, "zoom", 8192, nullptr, 1, nullptr, 0) != pdPASS) zoomJob = 3;
+}
+// Called from deviceTick: swap in the sharp photo when it is ready.
+void zoomTick() {
+  if (zoomJob < 2) return;
+  const int job = zoomJob;
+  zoomJob = 0;
+  if (lv_obj_has_flag(zoomView, LV_OBJ_FLAG_HIDDEN)) return;  // closed meanwhile
+  if (job == 3) {
+    setText(lv_obj_get_child(zoomExit, 0), "1x");
     toast("Could not open the full photo");
     return;
   }
@@ -2608,14 +2675,14 @@ void zoomIn(int x, int y) {
   lv_image_set_src(zoomImage, &zoomDsc);
   lv_obj_set_size(zoomImage, zoomW, zoomH);
   // The screen copy is the photo scaled to the screen height with the width centre-cropped;
-  // map the tap into the decoded photo and centre the window on it.
+  // keep the tapped point where it is on screen.
   const int cropW = zoomH * W / H, left = (zoomW - cropW) / 2;
-  const int px = left + x * cropW / W, py = y * zoomH / H;
-  lv_obj_set_pos(zoomImage, -constrain(px - W / 2, 0, max(0, zoomW - W)), -constrain(py - H / 2, 0, max(0, zoomH - H)));
-  lv_obj_remove_flag(zoomView, LV_OBJ_FLAG_HIDDEN);
-  hide(photoPrev, true);
-  hide(photoNext, true);
-  hide(photoDelete, true);
+  const int px = left + zoomTapX * cropW / W, py = zoomTapY * zoomH / H;
+  lv_obj_set_pos(zoomImage, -constrain(px - zoomTapX, 0, max(0, zoomW - W)),
+                 -constrain(py - zoomTapY, 0, max(0, zoomH - H)));
+  lv_obj_remove_flag(zoomImage, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_add_flag(zoomBlur, LV_OBJ_FLAG_HIDDEN);
+  setText(lv_obj_get_child(zoomExit, 0), "1x");
 }
 void buildPhotos() {
   lv_obj_t *s = scr[(int)Screen::Photos] = screenBase();
@@ -2665,12 +2732,15 @@ void buildPhotos() {
   lv_obj_add_flag(zoomView, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_remove_flag(zoomView, LV_OBJ_FLAG_GESTURE_BUBBLE);
   lv_obj_add_flag(zoomView, LV_OBJ_FLAG_HIDDEN);
+  zoomBlur = lv_image_create(zoomView);
+  lv_obj_remove_flag(zoomBlur, LV_OBJ_FLAG_CLICKABLE);
   zoomImage = lv_image_create(zoomView);
   lv_obj_remove_flag(zoomImage, LV_OBJ_FLAG_CLICKABLE);
   // Drag moves the window over the photo.
   lv_obj_add_event_cb(
       zoomView,
       [](lv_event_t *) {
+        if (lv_obj_has_flag(zoomImage, LV_OBJ_FLAG_HIDDEN)) return;  // pan once sharp
         lv_point_t v;
         lv_indev_get_vect(lv_indev_active(), &v);
         const int x = constrain((int)lv_obj_get_x(zoomImage) + v.x, -max(0, zoomW - W), 0);
@@ -3709,7 +3779,7 @@ void previewToUsb() {
     Serial.println("CAPTURE FAILED Preview is not active");
     return;
   }
-  if (!ensurePreviewMode()) {
+  if (!ensurePreviewMode(8000)) {
     Serial.println("CAPTURE FAILED Preview setup failed");
     return;
   }
@@ -3780,7 +3850,7 @@ void initDeviceUi() {
   camLock = xSemaphoreCreateMutex();
   xTaskCreatePinnedToCore(previewTask, "viewfinder", 4096, nullptr, 2, nullptr, 0);
   saveQueue = xQueueCreate(3, sizeof(SaveJob *));
-  xTaskCreatePinnedToCore(saveTask, "photo-save", 4096, nullptr, 1, nullptr, 0);
+  xTaskCreatePinnedToCore(saveTask, "photo-save", 8192, nullptr, 1, nullptr, 0);
   photoPixels = (uint16_t *)ps_calloc(W * H, 2);
   captureScreen = (uint16_t *)ps_calloc(W * H, 2);
   galleryPixels = (uint16_t *)ps_calloc(W * H, 2);
@@ -4453,6 +4523,7 @@ void deviceTick() {
     if (waiting && current == Screen::Ask) notice(result, Screen::Ask);
   }
   if (btPaused && !aiBusy()) resumeBluetooth();
+  zoomTick();
   static bool btStarted = false;  // start a few seconds after boot, once the UI is up
   if (!btStarted && now > 4000) {
     btStarted = true;
@@ -4536,7 +4607,7 @@ void deviceTick() {
   gestureActive = current == Screen::Gestures && !ccOpen;
   if (current == Screen::Gestures) renderGestures();
   if (wantsCamera && !cameraOff && !ccOpen && now - lastSerialMs > 3000) {
-    if (!previewWanted) ensurePreviewMode();
+    previewWanted = true;
     if (takeLiveFrame()) {
       lv_image_cache_drop(&liveDsc);
       lv_obj_invalidate(current == Screen::Gestures ? gestureView : viewfinder);
