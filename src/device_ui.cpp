@@ -197,7 +197,8 @@ void refreshChat();
 void refreshChats();
 void refreshPicker();
 lv_obj_t *title(lv_obj_t *s, const char *value);
-String draft;  // the chat's message box (src/ui/chat.inc)
+String draft;              // the chat's message box (src/ui/chat.inc)
+uint32_t nextTimerMs = 1;  // when LVGL next needs to run (main loop rest)
 void chatPhotoTaken();
 void chatPhotoSaved(uint32_t id);
 void pauseBluetooth();

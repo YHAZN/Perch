@@ -134,9 +134,10 @@ void loop() {
   deviceTick();
   networkTick();
   static unsigned long lastHeartbeat = 0;
-  if (millis() - lastHeartbeat >= 2000) {
+  if (millis() - lastHeartbeat >= 10000) {
     lastHeartbeat = millis();
     Serial.printf("Alive: %lu seconds | free heap: %u bytes\n", millis() / 1000, ESP.getFreeHeap());
   }
-  delay(1);
+  // Rest until something is due: the processor idles instead of spinning.
+  delay(deviceIdleMs());
 }

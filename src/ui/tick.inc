@@ -210,5 +210,12 @@ void deviceTick() {
     shown = 0;
     if (!wantsCamera || cameraOff) stopPreview();
   }
-  lv_timer_handler();
+  nextTimerMs = lv_timer_handler();
+}
+// How long the main loop may rest: until LVGL's next timer, never long while the live camera
+// or an edge drag needs every frame, and longer while the screen is off.
+uint32_t deviceIdleMs() {
+  if (screenAsleep) return 30;
+  if (current == Screen::Camera || current == Screen::Gestures || fingerDown || micRecording()) return 1;
+  return constrain(nextTimerMs, 1, 10);
 }
