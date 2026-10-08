@@ -1,5 +1,6 @@
 #pragma once
 #include <Arduino.h>
+#include <vector>
 
 // Durable device storage on the internal flash filesystem (LittleFS, 1.5 MB "spiffs"
 // partition) until the SD card takes over. Survives reboots and power loss.
@@ -71,3 +72,5 @@ bool chatDelete(uint32_t id);
 bool photoUriSave(uint32_t id, const String &uri, uint32_t expires, uint32_t keyTag);
 bool photoUriLoad(uint32_t id, String &uri, uint32_t &expires, uint32_t &keyTag);
 void photoUriForget(uint32_t id);
+// Upload links of photos deleted since the last call (to delete the provider's copies too).
+std::vector<String> storageTakeForgottenUploads();

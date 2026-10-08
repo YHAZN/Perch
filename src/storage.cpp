@@ -185,6 +185,22 @@ void photoUriForget(uint32_t id) {
   if (mounted) LittleFS.remove(path("/photos", id, ".gfu"));
 }
 
+// Upload links of photos deleted here; the UI asks the provider to delete those copies too.
+std::vector<String> forgottenUploads;
+void noteUpload(const String &file) {
+  File f = LittleFS.open(file, "r");
+  if (!f) return;
+  String uri = f.readStringUntil('\n');
+  f.close();
+  uri.trim();
+  if (uri.startsWith("https://")) forgottenUploads.push_back(uri);
+}
+std::vector<String> storageTakeForgottenUploads() {
+  std::vector<String> out;
+  out.swap(forgottenUploads);
+  return out;
+}
+
 // Chats: "/chats/<id>.json", written whole each time it changes (they are small text).
 uint32_t chatNewId() { return mounted ? nextId() : 0; }
 bool chatSave(uint32_t id, const String &json) {
@@ -338,7 +354,10 @@ int storageForgetSince(time_t since) {
     for (File f = d.openNextFile(); f; f = d.openNextFile())
       if (f.getLastWrite() >= since) doomed.push_back(String(dir) + "/" + f.name());
     d.close();
-    for (const String &path : doomed) removed += LittleFS.remove(path);
+    for (const String &path : doomed) {
+      if (path.endsWith(".gfu")) noteUpload(path);
+      removed += LittleFS.remove(path);
+    }
   }
   return removed;
 }
@@ -351,6 +370,7 @@ bool deletePhoto(uint32_t id) {
     if (queued[i].photoId == id) return false;
   LittleFS.remove(path("/photos", id, ".thm"));
   LittleFS.remove(path("/photos", id, ".scr"));
+  noteUpload(path("/photos", id, ".gfu"));
   LittleFS.remove(path("/photos", id, ".gfu"));
   return LittleFS.remove(path("/photos", id, ".jpg"));
 }

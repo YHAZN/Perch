@@ -1,5 +1,6 @@
 #pragma once
 #include <Arduino.h>
+#include <vector>
 
 #include "network.h"
 
@@ -74,6 +75,8 @@ int aiRequestsToday(bool gemini);
 // Spending guard: at most this many requests a day across providers (every attempt counts,
 // retries and fallbacks included). 0 = no limit.
 void aiSetDailyLimit(int requests);
+// Privacy: delete the provider's uploaded copies (Gemini Files API links) in the background.
+void aiDeleteUploads(const std::vector<String> &uris, const String &key);
 // The answer so far while it streams in; returns a version that changes with every piece.
 uint32_t aiPartial(String &text);
 void aiShrinkTest(const uint8_t *jpeg, size_t len);

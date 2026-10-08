@@ -41,6 +41,7 @@ void buildSettings() {
         const uint32_t since = (uint32_t)time(nullptr) - 3600;
         if (aiBusy()) aiCancel();  // nothing more leaves the device from that hour
         const int removed = storageForgetSince(since) + forgetChatsSince(since);
+        aiDeleteUploads(storageTakeForgottenUploads(), aiOptions(true).key);  // Google's copies too
         freeKbStale = true;
         loadLatestAnswer();
         refreshPhotos();

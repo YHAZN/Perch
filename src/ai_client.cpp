@@ -1,5 +1,6 @@
 #include "ai_client.h"
 #include "math_text.h"
+#include <algorithm>
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
@@ -538,6 +539,27 @@ String responseText(Kind kind, bool gemini, JsonDocument &doc, String &finish) {
   return text;
 }
 
+// Gemini models that answered "overloaded" (500/503) lately: tried last for 10 minutes, so a
+// busy preview model does not cost every question an extra round trip.
+struct BusyModel {
+  String id;
+  uint32_t until;
+};
+std::vector<BusyModel> busyModels;
+bool modelBusy(const String &id) {
+  for (const BusyModel &b : busyModels)
+    if (b.id == id && (int32_t)(b.until - millis()) > 0) return true;
+  return false;
+}
+void markBusy(const String &id) {
+  for (BusyModel &b : busyModels)
+    if (b.id == id) {
+      b.until = millis() + 600000;
+      return;
+    }
+  busyModels.push_back({id, millis() + 600000});
+}
+
 bool request(Job &j) {
   String &answer = j.result;
   auto fail = [&](const char *message) {
@@ -599,6 +621,9 @@ bool request(Job &j) {
       models.push_back(j.options.model.length() ? j.options.model : String(GEMINI_MODELS[0].id));
       for (int i = 0; i < GEMINI_MODEL_COUNT; ++i)
         if (models[0] != GEMINI_MODELS[i].id && i < 3) models.push_back(GEMINI_MODELS[i].id);
+      std::stable_partition(models.begin(), models.end(), [](const String &m) { return !modelBusy(m); });
+      if (models[0] != (j.options.model.length() ? j.options.model : String(GEMINI_MODELS[0].id)))
+        Serial.printf("AI_MODEL starting with %s (recently overloaded models last)\n", models[0].c_str());
     }
   } else models.push_back(j.kind == Kind::Transcribe ? String("gpt-transcribe") : j.options.model);
   // Only requests the provider cannot have processed are retried:
@@ -703,8 +728,10 @@ bool request(Job &j) {
       break;
     }
     if (gemini && (status == 503 || status == 500)) {
+      markBusy(models[model]);
+      // Another model has its own capacity: no pause before the first switch.
       model = (model + 1) % models.size();
-      waitMs = tries == 1 ? 1000 : 4000;
+      waitMs = tries == 1 ? 0 : 3000;
       continue;
     }
     if ((status == HTTPC_ERROR_CONNECTION_REFUSED || status == HTTPC_ERROR_SEND_PAYLOAD_FAILED) && !resent) {
@@ -1124,6 +1151,41 @@ int aiRequestsToday(bool gemini) {
   const int day = usageDay();
   if (usage.getInt("day", -1) != day) return 0;
   return usage.getUShort(gemini ? "g" : "o", 0);
+}
+
+// Privacy: ask Gemini to delete uploaded copies of photos deleted on the device (otherwise
+// they expire after 48 h). Free; runs in the background; failures only logged.
+struct ForgetJob {
+  std::vector<String> uris;
+  String key;
+};
+void forgetTask(void *arg) {
+  ForgetJob *f = (ForgetJob *)arg;
+  int deleted = 0;
+  for (const String &uri : f->uris) {
+    if (!uri.startsWith("https://generativelanguage.googleapis.com/")) continue;
+    WiFiClientSecure client;
+    client.setCACert(AI_ROOT_CERTS);
+    client.setHandshakeTimeout(12);
+    HTTPClient http;
+    http.setConnectTimeout(12000);
+    http.setTimeout(20000);
+    if (!http.begin(client, uri)) continue;
+    http.addHeader("x-goog-api-key", f->key);
+    const int status = http.sendRequest("DELETE");
+    http.end();
+    if (status == 200 || status == 204 || status == 404) ++deleted;  // 404: already gone
+    Serial.printf("AI_FORGET %d\n", status);
+  }
+  Serial.printf("AI_FORGET %d of %u uploads deleted\n", deleted, (unsigned)f->uris.size());
+  f->key = "";
+  delete f;
+  vTaskDelete(nullptr);
+}
+void aiDeleteUploads(const std::vector<String> &uris, const String &key) {
+  if (uris.empty() || key.isEmpty() || WiFi.status() != WL_CONNECTED) return;
+  ForgetJob *f = new ForgetJob{uris, key};
+  if (xTaskCreatePinnedToCore(forgetTask, "ai-forget", 12288, f, 1, nullptr, 0) != pdPASS) delete f;
 }
 
 // Developer: is the saved Gemini key valid, and can it see the model? A GET of the model's

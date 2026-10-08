@@ -257,6 +257,7 @@ void deleteShownPhoto() {
           toast("Waiting to be asked: kept");
           return;
         }
+        aiDeleteUploads(storageTakeForgottenUploads(), aiOptions(true).key);  // and Google's copy
         const bool wasLatest = id == latestPhotoId;
         refreshPhotos();
         if (wasLatest) {
