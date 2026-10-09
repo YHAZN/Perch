@@ -67,16 +67,8 @@ for (x, y), view in [
 post('/api/button/status')
 check('Settings row opens AI', post('/api/touch', {'x': 120, 'y': 136})['view'] == 'model')
 
-# AI screen: switch the answering provider and back (rows: Gemini ~y110, GPT ~y166).
-before = post('/api/screen')['provider']
-post('/api/touch', {'x': 120, 'y': 166})
-after = post('/api/screen')['provider']
-post('/api/touch', {'x': 120, 'y': 110})
-check(
-    'AI screen switches provider and restores',
-    after == 'gpt' and post('/api/screen')['provider'] == 'gemini',
-    f'{before} -> {after} -> back',
-)
+# The provider is never changed here: a missed tap could leave the device on a paid key.
+check('AI screen shows the provider', post('/api/screen')['provider'] in ('gemini', 'gpt'))
 check('back arrow returns to Settings', post('/api/touch', {'x': 31, 'y': 31})['view'] == 'status')
 
 # Edge gestures: a scroll that starts at the left edge stays in the app; the bottom line goes home.
@@ -120,5 +112,5 @@ else:
     check('offline Ask stays in Ask (queued)', r['view'] == 'ai')
     post('/api/button/clear-queue')
 
-post('/api/button/home')
+check('answers still come from Gemini', post('/api/button/home')['provider'] == 'gemini')
 print(f'{sum(results)}/{len(results)} passed')

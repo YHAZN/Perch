@@ -36,7 +36,7 @@ CASES = [
     (r'Answer: \frac{3}{4} of the total', 'Answer: ¾ of the total'),
     (r'Multiply 3 \times 4 = 12', 'Multiply 3 × 4 = 12'),
     ('x^2 + 2x + 1 = (x+1)^2', 'x² + 2x + 1 = (x + 1)²'),
-    # ASCII maths from older answers
+    # ASCII maths in plain text
     ('7*(6*m+1)-1 = 42*m +7 -1', '7(6m + 1) − 1 = 42m + 7 − 1'),
     ('1. 3*4 = 12', '1. 3 × 4 = 12'),
     ('Total: 5*x + 2 = 17, so x = 3.', 'Total: 5x + 2 = 17, so x = 3.'),
