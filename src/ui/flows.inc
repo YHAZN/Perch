@@ -137,7 +137,6 @@ void saveTask(void *) {
 void captureInTask() {
   CaptureResult r;
   const uint32_t t0 = millis();
-  bool haveScreen = false;
   // The on-screen copy is decoded from the photo itself below: the fast preview frame is
   // darker and its colours differ from what is saved and sent.
   if (!cameraSetMode(CameraMode::Still)) {
@@ -283,18 +282,7 @@ AiOptions aiOptions(bool gemini) {
   o.effort = AI_EFFORTS[constrain(gemini ? geminiEffort : gptEffort, 0, AI_EFFORT_COUNT - 1)];
   return o;
 }
-// Wait for the previous photo to reach flash: its id is what a new page links back to.
-void waitForSave() {
-  const unsigned long start = millis();
-  while (photoSavePending && millis() - start < 10000) {
-    lv_timer_handler();
-    delay(10);
-  }
-}
-void refreshQueue() {
-  queuedCount = queueList(queued, 16);
-  historyDirty = true;
-}
+void refreshQueue() { queuedCount = queueList(queued, 16); }
 void cancelAsk() {
   aiCancel();
   refreshDynamic();
@@ -406,13 +394,9 @@ void showPhoto(int index) {
   lv_anim_set_exec_cb(&a, [](void *o, int32_t v) { lv_obj_set_style_opa((lv_obj_t *)o, v, 0); });
   lv_anim_start(&a);
 }
-void rebuildHistory() {}
 void onEnter(Screen s) {
   // Bluetooth only runs inside the apps that use it: it costs ~100 KB of RAM HTTPS needs.
-  if (s != Screen::Camera && pageCamera && !captureRequested && !captureReady) {
-    pageCamera = false;
-    appendingPage = false;
-  }
+  if (s != Screen::Camera && pageCamera && !captureRequested && !captureReady) { pageCamera = false; }
   if (s == Screen::Model) {
     aiScreenSignature = "";
     lv_obj_scroll_to_y(lv_obj_get_child(layer(Screen::Model), 1), 0, LV_ANIM_OFF);

@@ -157,9 +157,8 @@ bool cameraSetMode(CameraMode next) {
   // Correct the mirrored worksheet in the sensor, so photos and preview match the scene.
   sensor->set_hmirror(sensor, !sensor->status.hmirror);
   if (next == CameraMode::Still && sensor->id.PID == OV5640_PID) {
-    // No reset line: preview settings survive a driver restart, so photos set their own.
-    // Low gain plus a longer exposure gives less noise (the purple speckle and column lines
-    // get worse with gain); a burst of three then keeps the sharpest against hand shake.
+    // No reset line: preview settings survive a driver restart, so photos set their own
+    // exposure limit, gain ceiling and white balance.
     const int vts = (sensor->get_reg(sensor, 0x380E, 0xFF) << 8) | sensor->get_reg(sensor, 0x380F, 0xFF);
     stillVts = vts;
     int maxLines = vts * stillExposureFrames;

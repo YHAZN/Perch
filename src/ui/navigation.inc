@@ -146,11 +146,6 @@ void launch(Screen app) {
   }
   show(app);
 }
-void goHome() {
-  // Same gesture everywhere: from an app to the face, from the face to the app grid.
-  if (current == Screen::Face) openApps();
-  else leaveTo(Screen::Face, 0);
-}
 
 // Interactive home gesture: the layer follows the finger, then commits or springs back.
 bool dragging = false;

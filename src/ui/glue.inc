@@ -124,7 +124,6 @@ void readTouch(lv_indev_t *, lv_indev_data_t *data) {
 uint32_t tick() { return millis(); }
 const char *screenName() {
   if (ccOpen) return "control";
-  if (current == Screen::Ask && !lv_obj_has_flag(busy, LV_OBJ_FLAG_HIDDEN)) return "busy";
   switch (current) {
     case Screen::Face: return "face";
     case Screen::Apps: return "apps";
@@ -132,7 +131,6 @@ const char *screenName() {
     case Screen::Ask: return "ai";
     case Screen::Answer: return "answer";
     case Screen::Photos: return "photo";
-    case Screen::History: return "history";
     case Screen::Remote: return "remote";
     case Screen::Wifi: return "wifi";
     case Screen::Gestures: return "gestures";

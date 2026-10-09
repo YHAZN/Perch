@@ -57,7 +57,6 @@ void deviceTick() {
     queueInFlight = 0;
     refreshQueue();
     loadLatestAnswer();
-    if (current == Screen::Ask) rebuildHistory();
     toast("Answer ready");
     refreshDynamic();
   } else if (ai == AiState::Failed && queueInFlight) {
@@ -65,7 +64,6 @@ void deviceTick() {
     queueInFlight = 0;
     queueRetryAt = millis() + 60000;
     refreshQueue();
-    if (current == Screen::Ask) rebuildHistory();
   } else if (ai == AiState::Done) {
     pending = Pending::None;
     // Kept for the clock card too: the newest answer, with the chat's newest photo.
@@ -128,12 +126,6 @@ void deviceTick() {
     latestPhotoId = savedPhotoId;
     refreshPhotos();
     chatPhotoSaved(savedPhotoId);
-    if (queueWhenSaved) {
-      queueWhenSaved = false;
-      queueAdd(latestPhotoId, useGemini, clockKnown() ? (uint32_t)time(nullptr) : 0);
-      refreshQueue();
-      if (current == Screen::Ask) rebuildHistory();
-    }
     refreshDynamic();
   }
   // Ask waiting questions once Wi-Fi is back, one at a time, never while you are asking.
@@ -157,11 +149,7 @@ void deviceTick() {
       const bool started = aiStart(options, pages, lengths, 1, "", "", wav, wavLen);
       options.key = "";
       free(wav);
-      if (started) {
-        queueInFlight = queued[i].id;
-        historyDirty = true;
-        if (current == Screen::Ask) rebuildHistory();
-      }
+      if (started) { queueInFlight = queued[i].id; }
       free(jpeg);
       break;
     }

@@ -1,7 +1,7 @@
 #pragma once
 #include <stdint.h>
 
-// The OV3660 runs in one of two driver configurations. Switching re-initialises the
+// The camera runs in one of two driver configurations. Switching re-initialises the
 // camera driver (a few hundred ms), so the UI switches only when it must.
 enum class CameraMode {
   Off,      // driver stopped: no power or PSRAM bandwidth used

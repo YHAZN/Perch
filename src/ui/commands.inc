@@ -230,7 +230,6 @@ void handleDeviceButton(char command) {
     showPhoto(photoIndex + 1);
     Serial.printf("PHOTO_SWIPE %lums (of %d photos)\n", (unsigned long)((micros() - t) / 1000), photoCount);
     goBack();
-    historyDirty = true;
     run("open_ask", [] { show(Screen::Ask); });
     if (answerCount) {
       t = micros();
@@ -396,7 +395,6 @@ void handleDeviceButton(char command) {
     case 'U':  // developer: clear the offline queue (so test questions are never sent)
       for (int i = 0; i < queuedCount; ++i) queueRemove(queued[i].id);
       refreshQueue();
-      rebuildHistory();
       Serial.println("QUEUE_CLEARED");
       break;
     case 'V':  // developer: password screen layout check without a real network

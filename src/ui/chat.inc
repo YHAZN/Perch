@@ -23,7 +23,7 @@ uint8_t *chatWav = nullptr;       // a spoken question kept until it is sent
 size_t chatWavLen = 0;
 // The composer sits just above the home strip (only its middle starts the home swipe).
 constexpr int COMPOSER_Y = HOME_ZONE - 48;
-lv_obj_t *chatScroll, *chatEmpty, *chatTitle, *attachRow, *composerText, *sendBtn, *stopBtn, *plusSheet;
+lv_obj_t *chatScroll, *chatEmpty, *attachRow, *composerText, *sendBtn, *stopBtn, *plusSheet;
 lv_obj_t *assistantLive = nullptr;
 std::vector<void *> chatImages;  // thumbnails and their descriptors, freed when the chat is redrawn
 
@@ -581,8 +581,6 @@ void chatTakePhoto() {
   setText(pageBanner, "Photo for this chat");
   show(Screen::Camera);
 }
-void addPage() { chatTakePhoto(); }
-void newPhoto() { chatTakePhoto(); }
 // The camera came back with a photo for the chat; it is attached once it is saved.
 void chatPhotoTaken() {
   ++attachAwaiting;

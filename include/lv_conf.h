@@ -23,13 +23,11 @@
 #define LV_USE_ASSERT_NULL 1
 #define LV_USE_ASSERT_MALLOC 1
 
-// Three type sizes (12/16/24) plus the face clock (48).
-#define LV_FONT_MONTSERRAT_12 1
+// UI text uses the generated fonts in src/fonts; LVGL's own are only the default and the
+// face clock.
 #define LV_FONT_MONTSERRAT_14 1
-#define LV_FONT_MONTSERRAT_16 1
-#define LV_FONT_MONTSERRAT_24 1
 #define LV_FONT_MONTSERRAT_48 1
-#define LV_FONT_DEFAULT &lv_font_montserrat_16
+#define LV_FONT_DEFAULT &lv_font_montserrat_14
 
 #define LV_USE_THEME_DEFAULT 0
 #define LV_USE_THEME_SIMPLE 0

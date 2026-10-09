@@ -122,9 +122,6 @@ lv_obj_t *glyphSymbol(lv_obj_t *b, const char *symbol, lv_color_t color) {
   lv_obj_center(l);
   return l;
 }
-void planned(const char *name) {
-  notice(String(name) + " is planned for the gesture and remote-control update.", Screen::Apps);
-}
 void buildApps() {
   lv_obj_t *s = scr[(int)Screen::Apps] = screenBase();
   // Two rows of three, the main app first.
@@ -142,8 +139,6 @@ void buildApps() {
   appIcon(
       s, 194, 164, "Settings", ICON_BG, [] { show(Screen::Settings); },
       [](lv_obj_t *b) { glyphSymbol(b, LV_SYMBOL_SETTINGS, INK); });
-  iconName = text(s, "", F_SMALL, INK);  // kept for older code paths; unused
-  lv_obj_add_flag(iconName, LV_OBJ_FLAG_HIDDEN);
 }
 
 void buildCamera() {
@@ -219,9 +214,6 @@ void buildAsk() {
   lv_obj_align(listenLabel, LV_ALIGN_CENTER, 0, 20);
   listenTime = text(listenOverlay, "Let go when you are done", F_SMALL, MIST);
   lv_obj_align(listenTime, LV_ALIGN_CENTER, 0, 44);
-  // Kept hidden for older code paths that still check it.
-  busy = plain(s);
-  lv_obj_add_flag(busy, LV_OBJ_FLAG_HIDDEN);
 }
 
 void buildAnswer() {
@@ -265,7 +257,6 @@ void deleteShownPhoto() {
           savedJpeg = nullptr;
           jpegBytes = jpegCapacity = 0;
           latestPhotoId = 0;
-          contextIds.clear();
           restoreLatestPhoto();
         }
         cardSignature = "";
@@ -469,9 +460,4 @@ lv_obj_t *row(lv_obj_t *s, int y, const char *label, lv_obj_t **value, int heigh
     lv_obj_align(*value, LV_ALIGN_RIGHT_MID, -20, 0);
   }
   return r;
-}
-
-void buildHistory() {
-  // Earlier answers live inside Ask now; this layer stays empty.
-  scr[(int)Screen::History] = screenBase();
 }

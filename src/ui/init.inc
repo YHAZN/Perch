@@ -33,7 +33,6 @@ void initDeviceUi() {
   photoPixels = (uint16_t *)ps_calloc(W * H, 2);
   captureScreen = (uint16_t *)ps_calloc(W * H, 2);
   galleryPixels = (uint16_t *)ps_calloc(W * H, 2);
-  historyThumbs = (uint16_t *)ps_calloc(ANSWER_KEEP * THUMB * THUMB, 2);
   // Screen link speed is stored so it can be tuned for the wiring without reflashing ('Y').
   // 40 MHz works on both boards over jumper wires; 80 halves tearing if the wiring allows.
   aiSetFlashBusy([] { return savesPending > 0; });
@@ -41,14 +40,9 @@ void initDeviceUi() {
   const bool lcd = displayBegin(spiMhz * 1000000UL, drawDone);
   for (auto &b : drawBuffers)
     b = (uint16_t *)heap_caps_malloc(W * DISPLAY_CHUNK_ROWS * 2, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
-  for (int y = 0; y < H; ++y) {
-    // No shading baked into the viewfinder: it showed as a seam across the picture. The
-    // controls carry their own dark outline instead, so they read on any scene.
-    scrimRow[y] = 255;
-  }
   Serial.printf("DISPLAY lcd=%d touch=%d spi=%uMHz\n", lcd, touchAvailable(), spiMhz);
   if (!framebuffer || !captureScreen || !liveBuf[1] || !liveBuf[2] || !livePixels || !photoPixels || !galleryPixels ||
-      !historyThumbs || !drawBuffers[0] || !drawBuffers[1]) {
+      !drawBuffers[0] || !drawBuffers[1]) {
     Serial.println("DISPLAY_ERROR Out of PSRAM");
     framebuffer = nullptr;
     return;
@@ -101,7 +95,6 @@ void initDeviceUi() {
   buildPicker();
   buildAnswer();
   buildPhotos();
-  buildHistory();
   buildSettings();
   buildModel();
   buildNotice();

@@ -6,14 +6,12 @@ void loadLatestAnswer() {
   lastAnswer = "";
   lastInfo = AnswerInfo();
   if (answerCount) loadAnswer(answerIds[0], lastAnswer, lastInfo);
-  historyDirty = true;
 }
 // ---------- answer formatting ----------
 // Models write Markdown-ish text. The answer screen turns it into blocks: the answer in large
 // type, numbered steps with a badge, bullets, formulas on a tinted panel, headings in small
 // caps, and **key terms** in amber. Maths is shown with real symbols (x², √, π, ≤).
-// Every way models write maths (LaTeX in its various delimiters, x^2, Unicode) becomes the
-// Unicode the fonts draw; see math_text.h. Applied when shown, so older answers benefit too.
+// Maths is converted to the Unicode the fonts draw when an answer is shown (math_text.h).
 uint32_t mathMicros = 0;  // developer timing
 String cleanMath(const String &t) { return String(mathToDisplay(std::string(t.c_str(), t.length())).c_str()); }
 String stripMarks(String t) {
@@ -279,16 +277,6 @@ void renderAnswer(const String &raw) {
   if (inCode && code.length()) panel(code);
 }
 
-// Streaming: the answer screen opens with the first words and grows as the model writes.
-void showStreaming(const String &text, bool first) {
-  renderAnswer(text);
-  if (first) {
-    setText(answerMeta, "Writing...");
-    hide(answerPhoto, true);
-    lv_obj_scroll_to_y(answerScroll, 0, LV_ANIM_OFF);
-    show(Screen::Answer);
-  }
-}
 void showAnswer(uint32_t id) {
   String body;
   AnswerInfo info;

@@ -10,7 +10,7 @@ uint16_t *liveBuf[3] = {nullptr, nullptr, nullptr};
 volatile int liveFront = 0, liveReady = -1;
 volatile bool previewWanted = false;
 volatile uint32_t framesConverted = 0, convertMicros = 0;
-void convertPreview(const camera_fb_t *f, uint16_t *out, bool shade = true);
+void convertPreview(const camera_fb_t *f, uint16_t *out);
 void captureInTask();
 // Gestures without a PC or a model: a 32x24 brightness grid of each preview frame.
 //  - background: learned while the area is clear (and slowly afterwards where no hand is)
@@ -179,10 +179,10 @@ bool takeLiveFrame() {
   if (changed) liveDsc.data = reinterpret_cast<const uint8_t *>(liveBuf[liveFront]);
   return changed;
 }
-// Camera frame -> 240x284 screen: scale to height, centre-crop the width, and darken the
-// bottom so the shutter reads on any scene. Accepts JPEG (decoded here) or raw RGB565.
+// Camera frame -> 240x284 screen: scale to height and centre-crop the width.
+// Accepts JPEG (decoded here) or raw RGB565.
 uint8_t *previewScratch = nullptr;  // owned by the viewfinder task
-void convertPreview(const camera_fb_t *f, uint16_t *out, bool shade) {
+void convertPreview(const camera_fb_t *f, uint16_t *out) {
   const int sw = f->width, sh = f->height;
   const uint8_t *src = f->buf;
   bool bigEndian = true;
@@ -195,16 +195,10 @@ void convertPreview(const camera_fb_t *f, uint16_t *out, bool shade) {
   const int cropW = min(sw, sh * W / H), left = (sw - cropW) / 2;
   for (int y = 0; y < H; ++y) {
     const uint8_t *row = src + (y * sh / H) * sw * 2;
-    const uint32_t m = shade ? scrimRow[y] : 255;
     uint16_t *dst = out + y * W;
     for (int x = 0; x < W; ++x) {
       const uint8_t *px = row + (left + x * cropW / W) * 2;
-      uint16_t v = bigEndian ? (px[0] << 8) | px[1] : px[0] | (px[1] << 8);
-      if (m < 255) {
-        const uint32_t r = ((v >> 11) * m) >> 8, g = (((v >> 5) & 63) * m) >> 8, b = ((v & 31) * m) >> 8;
-        v = (r << 11) | (g << 5) | b;
-      }
-      dst[x] = v;
+      dst[x] = bigEndian ? (px[0] << 8) | px[1] : px[0] | (px[1] << 8);
     }
   }
 }

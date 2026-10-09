@@ -1,6 +1,6 @@
 // Perch OS shell on LVGL 9. Design source of truth: design/index.html.
-// Face (clock + Smart Stack), honeycomb app grid, Control Center, Camera, Ask, Answer,
-// Photos gallery, History, Settings, Model picker. All apps are layers on one screen.
+// Face (clock + Smart Stack), app grid, Control Center, Camera, Ask (chats), Answer, Photos,
+// Settings, AI settings, Wi-Fi, Remote and Gestures. All apps are layers on one screen.
 #include "device_ui.h"
 #include <Arduino.h>
 #include <lvgl.h>
@@ -48,8 +48,6 @@ constexpr int TOP_ZONE = 22;
 constexpr int ABOVE_HOME = 30;
 // Drag this far (or flick) to commit an edge gesture; less springs back.
 constexpr int COMMIT_DRAG = 70;
-// When Ask has earlier answers, its first screen ends this short so the list peeks in.
-constexpr int ASK_PEEK = 26;
 constexpr int MAX_PHOTOS = 12;
 // Left strip: drag right from here to go back one level.
 constexpr int BACK_ZONE = 24;
@@ -69,7 +67,6 @@ enum class Screen {
   Ask,
   Answer,
   Photos,
-  History,
   Settings,
   Model,
   Notice,
@@ -88,18 +85,8 @@ Preferences settings;
 bool useGemini = true;
 // AI settings, saved per provider: model and effort (indexes into ai_client's lists).
 int geminiModel = 0, geminiEffort = 0, gptModel = 0, gptEffort = 0;
-// Ask is a conversation: every question keeps the chat's earlier photos (contextIds, oldest
-// first) and earlier answers as context, until "New chat". Works the same for every provider.
-std::vector<uint32_t> contextIds;
-std::vector<uint32_t> sessionAnswers;  // answer ids in this chat, oldest first
-std::vector<String> sessionQuestions;  // what was asked for each ("" = about the photo)
-String pendingQuestion;
-bool chatFresh = false;  // "New chat" pressed: the next photo starts clean
-bool appendingPage = false;
 // What the running AI request is for: an answer, or writing down what was said.
 enum class Pending { None, Answer, Transcribe } pending = Pending::None;
-String heardText;
-bool streaming = false;  // the answer screen is showing an answer as it arrives
 // Text entry is shared: Wi-Fi password or a typed question. The Talk key dictates into it.
 enum class TextMode { Password, Question } textMode = TextMode::Password;
 bool dictating = false;    // the Talk key is held / its words are on their way
@@ -141,8 +128,6 @@ uint16_t *galleryPixels = nullptr;  // photo shown in Photos / Answer
 uint8_t *savedJpeg = nullptr, *rgbScratch = nullptr;
 size_t jpegBytes = 0, jpegCapacity = 0, rgbCapacity = 0;
 uint32_t latestPhotoId = 0;
-// Bottom-of-viewfinder shading, baked into each preview frame (cheaper than blending a layer).
-uint8_t scrimRow[284];
 uint32_t photoIds[MAX_PHOTOS];
 int photoCount = 0, photoIndex = 0;
 lv_image_dsc_t liveDsc, photoDsc, galleryDsc;
@@ -154,19 +139,14 @@ bool pendingGemini = true;
 uint32_t pendingPhotoId = 0;
 uint32_t answerIds[ANSWER_KEEP];
 int answerCount = 0;
-uint16_t *historyThumbs = nullptr;  // ANSWER_KEEP x 64x64
-lv_image_dsc_t historyDsc[ANSWER_KEEP];
-bool historyDirty = true;
 
 // Widgets
 lv_obj_t *scr[(int)Screen::Count];
 lv_obj_t *faceWifi, *faceBt, *faceBattery;
 lv_obj_t *clockLabel, *dateLabel, *faceOffline, *card, *cardImage, *cardScrim, *cardRing, *cardKey, *cardValue,
     *cardDots;
-lv_obj_t *iconName;
 std::vector<lv_obj_t *> icons;
 lv_obj_t *viewfinder, *thumb, *flash, *shutter, *cameraOffLabel;
-lv_obj_t *askPhoto, *askEmpty, *askPill, *askButtonLabel, *askOffline, *busy, *busyRing, *busyLabel, *askSheet;
 lv_obj_t *answerScroll, *answerPhoto, *answerFlow, *answerMeta;
 lv_obj_t *photosImage, *photosEmpty, *photoCounter, *photoPrev, *photoNext, *photoDelete;
 // Zoom: the touch panel (CST816D) senses one finger, so no pinch. Double-tap decodes the full
@@ -181,19 +161,16 @@ uint16_t *zoomPixels = nullptr;
 lv_image_dsc_t zoomDsc;
 int zoomW = 0, zoomH = 0;
 unsigned long lastPhotoTap = 0;
-lv_obj_t *historyList, *historyEmpty, *askScroll, *askHero;
 lv_obj_t *remoteStatus, *remoteSlides, *remoteMediaPanel, *remoteModeLabel[2];
 bool remoteMediaMode = false;
 // Offline queue state (see storage.h). queueInFlight is the item being asked right now.
 QueuedAsk queued[16];
 int queuedCount = 0;
 uint32_t queueInFlight = 0;
-bool queueWhenSaved = false;
 lv_obj_t *recordingDot = nullptr;
 lv_obj_t *listenOverlay = nullptr, *listenRing = nullptr, *listenTime = nullptr;
 unsigned long queueRetryAt = 0;
 void refreshQueue();
-void rebuildHistory();
 void restoreLatestPhoto();
 void refreshPhotos();
 extern String cardSignature;
@@ -202,14 +179,9 @@ String joiningSsid;
 bool scanShown = false;
 unsigned long scanStartedAt = 0;
 lv_obj_t *modelValue, *wifiValue, *brightSlider, *storageValue, *storageSub, *softwareSub;
-lv_obj_t *modelCheck[2], *modelSub[2];
 lv_obj_t *noticeText;
-// Ask: pages and "what you said"
-lv_obj_t *typeBtn, *passwordEye;
-lv_obj_t *pageBar, *plusBtn, *plusBadge, *newChatBtn, *pageBanner, *micBtn;
-lv_obj_t *heardSheet, *heardLabel;
+lv_obj_t *passwordEye, *newChatBtn, *pageBanner, *micBtn;
 bool pageCamera = false;  // the camera was opened from Ask ("New photo" / "+ Page"); return after the shot
-void newPhoto();
 void refreshChat();
 void refreshChats();
 void refreshPicker();
@@ -221,9 +193,6 @@ void chatPhotoSaved(uint32_t id);
 void pauseBluetooth();
 void setBluetooth(bool on);
 void wakeScreen();
-void showHeard(const String &words);
-void addPage();
-int pageCount();
 void refreshAiScreen();
 // AI settings screen
 lv_obj_t *aiUseCheck[2], *aiUseSub[2], *wordsCheck, *wordsSub, *aiUsageLabel;
