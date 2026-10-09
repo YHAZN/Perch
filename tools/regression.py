@@ -1,6 +1,6 @@
 """Hardware regression through the USB bridge. Never sends an AI request.
 
-Run with the bridge up: python tools/regress_no_ai.py
+Run with the bridge up: python tools/regression.py
 Safe offline: an Ask without Wi-Fi only queues (and the queue is cleared at the end).
 With Wi-Fi it would send, so the Ask step is skipped when the board reports a connection.
 """

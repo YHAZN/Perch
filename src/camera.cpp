@@ -8,9 +8,8 @@ namespace {
 CameraMode mode = CameraMode::Off;
 uint16_t sensorPid = 0;  // known after the first start
 OV5640 autofocus;
-// Photos are hand-held: a full-size frame takes ~0.3 s to read out, and letting exposure run
-// that long (or two frames, as before) smeared every indoor photo. Exposure is capped in time
-// instead, and gain makes up the light: some grain is far easier to read than motion blur.
+// Photos are hand-held and a full-size frame takes ~0.3 s to read out, so exposure is capped
+// in time and gain makes up the light. Some grain is easier to read than motion blur.
 int stillGainCeiling = GAINCEILING_32X;
 int stillAeLevel = 1;         // photos aim a little brighter than the sensor default
 int stillExposureFrames = 1;  // >1 lets night mode stretch exposure over several frames
@@ -126,7 +125,7 @@ bool cameraSetMode(CameraMode next) {
     config.frame_size = FRAMESIZE_QXGA;
     // The driver's JPEG buffer holds ~630 KB. Measured on the OV5640 at 2048x1536: quality 8
     // overflowed it on busy scenes (no frame at all); 12 gives ~430 KB with headroom.
-    // Two buffers let the burst take consecutive frames (~0.3 s apart instead of ~0.5 s).
+    // Two buffers let the burst take consecutive frames (~0.3 s apart).
     config.jpeg_quality = 12;
     config.fb_count = 2;
     config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;

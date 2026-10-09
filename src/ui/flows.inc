@@ -27,7 +27,7 @@ struct CaptureResult {
   bool blurry = false;
   uint32_t previousPhoto = 0;  // the photo saved just before this one (joins the chat as context)
 };
-// Burst-and-pick-sharpest. Sharpness = variance of a Laplacian
+// Burst capture, keeping the sharpest frame. Sharpness = variance of a Laplacian
 // over the centre of a 1/8-scale decode, where text usually is. Two frames (~0.3 s apart):
 // the photo should be of the moment you pressed, so a later frame wins only when clearly
 // sharper. The variance grows with the square of brightness, so it is judged relative to

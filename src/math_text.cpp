@@ -769,8 +769,8 @@ const struct {
 };
 
 // ---------- ASCII expressions in ordinary text ----------
-// Answers written before Unicode maths was asked for (and models that still do it) contain
-// "7*(6*m+1)-1 = 42*m +7 -1". Runs of space-separated tokens made only of maths characters,
+// Plain-text answers often contain "7*(6*m+1)-1 = 42*m +7 -1". Runs of space-separated
+// tokens made only of maths characters,
 // joined by operators, are typeset like maths: "7(6m + 1) − 1 = 42m + 7 − 1". Words, dates
 // (2024-10-08), list markers and **bold** are left alone.
 bool exprChar(char c) { return isalnum((uint8_t)c) || strchr("().^*/+-=<>!_", c); }
