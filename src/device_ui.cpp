@@ -12,6 +12,7 @@
 #include <Preferences.h>
 #include <time.h>
 #include <vector>
+#include <algorithm>
 #include <ArduinoJson.h>
 #include "ai_client.h"
 #include "audio.h"

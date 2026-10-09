@@ -14,6 +14,7 @@ void loadLatestAnswer() {
 // caps, and **key terms** in amber. Maths is shown with real symbols (x², √, π, ≤).
 // Every way models write maths (LaTeX in its various delimiters, x^2, Unicode) becomes the
 // Unicode the fonts draw; see math_text.h. Applied when shown, so older answers benefit too.
+uint32_t mathMicros = 0;  // developer timing
 String cleanMath(const String &t) { return String(mathToDisplay(std::string(t.c_str(), t.length())).c_str()); }
 String stripMarks(String t) {
   t.replace("**", "");
@@ -178,7 +179,9 @@ bool looksLikeFormula(const String &t) {
 }
 void renderAnswer(const String &raw) {
   lv_obj_clean(answerFlow);
+  const uint32_t mt0 = micros();
   String body = cleanMath(raw);
+  mathMicros += micros() - mt0;
   body.replace("\r", "");
   bool sawAnswer = false, firstBlock = true, inCode = false;
   String code;

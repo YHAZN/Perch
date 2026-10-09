@@ -4,7 +4,8 @@ void startScan() {
   networkScanStart();
   scanShown = false;
   scanStartedAt = millis();
-  setText(wifiStatus, networkConnected() ? ("Connected to " + networkName()).c_str() : "Searching...");
+  setText(wifiStatus,
+          networkConnected() ? ("Connected to " + networkName() + " · searching...").c_str() : "Searching...");
 }
 void joinNetwork(const String &ssid, const String &password) {
   networkSave(ssid, password);
@@ -18,6 +19,11 @@ void renderScan() {
   scanShown = true;
   lv_obj_clean(wifiList);
   const String current = networkName();
+  // The network in use first, then saved ones, then by signal.
+  auto rank = [&](const ScanResult &r) { return r.ssid == current ? 2 : networkIsSaved(r.ssid) ? 1 : 0; };
+  std::stable_sort(results, results + n, [&](const ScanResult &a, const ScanResult &b) {
+    return rank(a) != rank(b) ? rank(a) > rank(b) : a.rssi > b.rssi;
+  });
   setText(wifiStatus, current.length() ? ("Connected to " + current).c_str()
                       : n              ? "Choose a network"
                                        : "No networks found");
@@ -35,6 +41,10 @@ void renderScan() {
     const char *note = connected ? "Connected" : saved ? "Saved" : results[i].secured ? "" : "Open";
     lv_obj_t *sub = text(r, note, F_SMALL, connected ? LENS : MIST);
     lv_obj_set_pos(sub, 22, 29);
+    if (!*note) {
+      lv_obj_delete(sub);
+      lv_obj_align(name, LV_ALIGN_LEFT_MID, 22, 0);
+    }  // no subtitle: centred
     // Signal: the Wi-Fi glyph, brighter when stronger.
     lv_obj_t *bars = text(r, LV_SYMBOL_WIFI, F_BODY, INK);
     lv_obj_set_style_text_opa(bars,

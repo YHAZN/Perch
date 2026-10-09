@@ -14,6 +14,7 @@ struct ChatMsg {
   uint32_t when = 0;     // epoch seconds when first saved; 1 = unknown (older chats)
 };
 std::vector<ChatMsg> chat;
+extern bool chatShowAll;
 uint32_t chatId = 0;
 uint32_t requestChatId = 0;       // the chat the running request belongs to (it may not be on screen)
 std::vector<uint32_t> attachIds;  // photos for the next message
@@ -120,6 +121,7 @@ bool loadChat(uint32_t id) {
     chat.back().failed = true;
   }
   chatId = id;
+  chatShowAll = false;
   attachIds.clear();
   draft = "";
   return true;
@@ -299,17 +301,45 @@ void refreshAttachments() {
     lv_obj_center(text(cell, "...", F_SMALL, MIST));
   }
 }
+// Drawing costs ~15 ms a message, so a chat opens with its newest few; older ones on request.
+constexpr int CHAT_RECENT = 6;
+bool chatShowAll = false;
 void rebuildChat() {
+  const uint32_t t0 = millis();
   lv_obj_clean(chatScroll);
   freeChatImages();
   assistantLive = nullptr;
-  for (size_t i = 0; i < chat.size(); ++i) {
+  size_t from = 0;
+  if (!chatShowAll && chat.size() > (size_t)CHAT_RECENT) {
+    from = chat.size() - CHAT_RECENT;
+    while (from > 0 && !chat[from].user) --from;  // start at a question
+  }
+  if (from) {
+    lv_obj_t *bar = plain(chatScroll);  // full width, the button centred
+    lv_obj_set_size(bar, W, LV_SIZE_CONTENT);
+    lv_obj_t *earlier = chip(bar, (String("Earlier messages (") + from + ")").c_str());
+    lv_obj_align(earlier, LV_ALIGN_TOP_MID, 0, 0);
+    onClick(earlier, [] {
+      chatShowAll = true;
+      const size_t was = chat.size();
+      rebuildChat();
+      // Keep the reader where they were: at the first message that was already shown.
+      size_t shown = was > (size_t)CHAT_RECENT ? was - CHAT_RECENT : 0;
+      while (shown > 0 && !chat[shown].user) --shown;
+      if (shown < (size_t)lv_obj_get_child_count(chatScroll))
+        lv_obj_scroll_to_view(lv_obj_get_child(chatScroll, shown), LV_ANIM_OFF);
+    });
+  }
+  for (size_t i = from; i < chat.size(); ++i) {
     lv_obj_t *o = drawMessage(chat[i], i);
     if (!chat[i].user && i == chat.size() - 1 && chat[i].text.isEmpty()) assistantLive = o;
   }
   refreshAttachments();
   refreshChat();
-  scrollChatToEnd(false);
+  if (!chatShowAll || !from) scrollChatToEnd(false);
+  Serial.printf("CHAT_DRAW %u messages in %lu ms (maths %lu ms)\n", (unsigned)chat.size(),
+                (unsigned long)(millis() - t0), (unsigned long)(mathMicros / 1000));
+  mathMicros = 0;
 }
 // Composer state: Send when there is something to send, Stop while answering, else the mic.
 void refreshChat() {
@@ -464,7 +494,13 @@ void dispatchChat() {
 void chatPartial(const String &text) {
   if (!assistantLive || requestChatId != chatId) return;
   const bool atEnd = lv_obj_get_scroll_bottom(chatScroll) < 40;
+  const uint32_t t0 = millis();
   renderInto(assistantLive, text);
+  static uint32_t logged = 0;
+  if (millis() - logged > 3000) {
+    logged = millis();
+    Serial.printf("CHAT_STREAM %u chars drawn in %lu ms\n", text.length(), (unsigned long)(millis() - t0));
+  }
   if (atEnd) scrollChatToEnd(false);
 }
 // A reply for a chat that is not on screen goes into that chat's saved file.
@@ -525,6 +561,7 @@ void chatCancelled() {
 void newChat() {
   chat.clear();
   chatId = 0;
+  chatShowAll = false;
   attachIds.clear();
   attachAwaiting = 0;
   draft = "";
