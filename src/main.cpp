@@ -98,7 +98,7 @@ void printStatus() {
   Serial.printf("Wi-Fi status: %d | IP: %s | %s %d dBm\n", WiFi.status(), WiFi.localIP().toString().c_str(),
                 WiFi.SSID().c_str(), WiFi.RSSI());
   Serial.println("Type w to scan and test configured Wi-Fi.");
-  Serial.println("Type g to scan and test campus guest Wi-Fi.");
+  Serial.println("Type g to scan and test an open guest network.");
 }
 
 void setup() {

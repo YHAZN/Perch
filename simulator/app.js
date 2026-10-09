@@ -122,7 +122,7 @@ async function diagnostic(path) {
   await display(await request('/api/screen'));
 }
 $('status').onclick = () => operation(() => diagnostic('/api/status'));
-$('campus').onclick = () => operation(() => diagnostic('/api/wifi/campus'));
+$('guestTest').onclick = () => operation(() => diagnostic('/api/wifi/guest'));
 $('hotspot').onclick = () => operation(() => diagnostic('/api/wifi/hotspot'));
 $('nativeSize').onchange = () => {
   $('screen').classList.toggle('native-size', $('nativeSize').checked);

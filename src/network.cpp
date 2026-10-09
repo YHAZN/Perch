@@ -53,7 +53,7 @@ void networkBegin() {
   WiFi.persistent(false);
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
-  // A school or office network has many access points with one name. By default the ESP32
+  // A large network (office, campus) has many access points with one name. By default the ESP32
   // joins the first it hears; scan every channel and join the strongest instead.
   WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
   WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);

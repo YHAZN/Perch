@@ -357,7 +357,7 @@ class Handler(BaseHTTPRequestHandler):
             '/api/capture': 'j',
             '/api/original': 'o',
             '/api/wifi/hotspot': 'w',
-            '/api/wifi/campus': 'g',
+            '/api/wifi/guest': 'g',
             '/api/device-preview': 'N',
             '/api/screen': 'f',
             '/api/button/capture': 'a',
