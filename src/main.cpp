@@ -112,7 +112,7 @@ void setup() {
   Serial.setTxTimeoutMs(1000);
   const unsigned long start = millis();
   // Brief wait so early lines reach a connected PC; standalone boots must not stall here.
-  while (!Serial && millis() - start < 800) { delay(10); }
+  while (!Serial && millis() - start < 200) { delay(10); }
   aiBegin();  // before any HTTPS (SNTP is plain UDP)
   clockBegin();
   printStatus();

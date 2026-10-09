@@ -103,7 +103,7 @@ void handleDeviceButton(char command) {
     return;
   }
   if (command == '~') {
-    if (jpegBytes) aiShrinkTest(savedJpeg, jpegBytes);
+    if (ensureSavedJpeg()) aiShrinkTest(savedJpeg, jpegBytes);
     return;
   }
   if (command == '>') {
@@ -257,7 +257,7 @@ void handleDeviceButton(char command) {
     return;
   }
   if (command == 'o') {
-    if (!savedJpeg || !jpegBytes) {
+    if (!ensureSavedJpeg()) {
       Serial.println("CAPTURE FAILED Capture a photo first.");
       return;
     }

@@ -271,16 +271,24 @@ void previewToUsb() {
 }
 void restoreLatestPhoto() {
   // The newest stored photo comes back after a reboot, so Ask and the face have it.
+  // Only the small screen copy is decoded at boot; the full photo (~300 KB, ~0.5 s to read) is
+  // loaded when something needs it (ensureSavedJpeg).
   refreshPhotos();
   if (!photoCount) return;
+  const size_t len = photoBytes(photoIds[0]);
+  if (!len || !loadPhotoInto(photoIds[0], photoPixels)) return;
+  free(savedJpeg);
+  savedJpeg = nullptr;
+  jpegBytes = jpegCapacity = len;
+  latestPhotoId = photoIds[0];
+}
+bool ensureSavedJpeg() {
+  if (savedJpeg) return true;
+  if (!latestPhotoId || !jpegBytes) return false;
   uint8_t *jpeg;
   size_t len;
-  if (!loadPhoto(photoIds[0], jpeg, len)) return;
-  if (loadPhotoInto(photoIds[0], photoPixels)) {
-    savedJpeg = jpeg;
-    jpegBytes = jpegCapacity = len;
-    latestPhotoId = photoIds[0];
-  } else {
-    free(jpeg);
-  }
+  if (!loadPhoto(latestPhotoId, jpeg, len)) return false;
+  savedJpeg = jpeg;
+  jpegBytes = jpegCapacity = len;
+  return true;
 }

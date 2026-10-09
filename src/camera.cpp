@@ -145,6 +145,7 @@ bool cameraSetMode(CameraMode next) {
   // which crashes the board. Dropped frames are harmless; keep its logging silent.
   esp_log_level_set("cam_hal", ESP_LOG_NONE);
   esp_log_level_set("camera", ESP_LOG_NONE);
+  esp_log_level_set("gdma", ESP_LOG_NONE);  // harmless "no peripheral is connected" on every stop
   const esp_err_t result = esp_camera_init(&config);
   if (result != ESP_OK) {
     Serial.printf("CAMERA INIT FAILED: %s (0x%x)\n", esp_err_to_name(result), result);

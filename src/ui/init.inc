@@ -58,8 +58,11 @@ void initDeviceUi() {
     const String legacy = settings.getString("last-answer", "");
     if (!legacy.isEmpty()) saveAnswer(legacy, settings.getBool("answer-gemini", true), 0, 0, nullptr);
   }
+  const uint32_t bootT0 = millis();
   loadLatestAnswer();
+  const uint32_t bootT1 = millis();
   restoreLatestPhoto();
+  const uint32_t bootT2 = millis();
   queuedCount = queueList(queued, 16);
 
   VOID_ = lv_color_hex(0x000000);
@@ -89,6 +92,7 @@ void initDeviceUi() {
   setupImage(liveDsc, livePixels, W, H);
   setupImage(photoDsc, photoPixels, W, H);
   setupImage(galleryDsc, galleryPixels, W, H);
+  const uint32_t bootT3 = millis();
   buildFace();
   buildApps();
   buildCamera();
@@ -224,6 +228,9 @@ void initDeviceUi() {
   lv_obj_remove_flag(topBar, LV_OBJ_FLAG_CLICKABLE);
   setBrightness(brightnessPct, false);
 
+  Serial.printf("BOOT answers %lu ms, photo %lu ms, queue+lvgl %lu ms, screens %lu ms\n",
+                (unsigned long)(bootT1 - bootT0), (unsigned long)(bootT2 - bootT1), (unsigned long)(bootT3 - bootT2),
+                (unsigned long)(millis() - bootT3));
   lv_obj_remove_flag(layer(Screen::Face), LV_OBJ_FLAG_HIDDEN);
   enter(Screen::Face);
   const uint32_t start = micros();

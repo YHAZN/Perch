@@ -1,5 +1,7 @@
 #include "storage.h"
 #include <LittleFS.h>
+#include <dirent.h>
+#include <sys/stat.h>
 #include <algorithm>
 #include <vector>
 
@@ -25,14 +27,19 @@ uint32_t nextId() {
 }
 
 // Ids of files named "<id><suffix>" in a directory, newest (highest) first.
+// Names only, through the VFS: File::openNextFile opens every file, ~10 ms each (the answers
+// folder alone took ~0.45 s at boot).
 std::vector<uint32_t> ids(const char *dir, const char *suffix) {
   std::vector<uint32_t> out;
-  File d = LittleFS.open(dir);
+  DIR *d = opendir((String("/littlefs") + dir).c_str());
   if (!d) return out;
-  for (File f = d.openNextFile(); f; f = d.openNextFile()) {
-    String name = f.name();
-    if (name.endsWith(suffix)) out.push_back(name.toInt());
+  const size_t suffixLen = strlen(suffix);
+  while (struct dirent *e = readdir(d)) {
+    const size_t len = strlen(e->d_name);
+    if (len > suffixLen && strcmp(e->d_name + len - suffixLen, suffix) == 0)
+      out.push_back(strtoul(e->d_name, nullptr, 10));
   }
+  closedir(d);
   std::sort(out.begin(), out.end(), [](uint32_t a, uint32_t b) { return a > b; });
   return out;
 }
@@ -137,6 +144,12 @@ bool loadPhoto(uint32_t id, uint8_t *&jpeg, size_t &length) {
     length = 0;
   }
   return ok;
+}
+
+size_t photoBytes(uint32_t id) {
+  if (!mounted) return 0;
+  struct stat info;
+  return stat((String("/littlefs") + path("/photos", id, ".jpg")).c_str(), &info) == 0 ? (size_t)info.st_size : 0;
 }
 
 bool loadPhotoThumb(uint32_t id, uint16_t *thumb) { return mounted && readThumb(path("/photos", id, ".thm"), thumb); }
