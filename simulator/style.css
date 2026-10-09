@@ -364,7 +364,7 @@ canvas {
   outline-offset: 3px;
 }
 
-/* Match the rounded glass panel, without the old square inner bezel. */
+/* Match the rounded glass panel. */
 .device {
   background: #080c09;
   border: 1px solid #33433b;

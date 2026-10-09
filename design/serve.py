@@ -47,7 +47,7 @@ class Handler(SimpleHTTPRequestHandler):
         return super().do_GET()
 
     def end_headers(self):
-        # Always serve the latest design; a cached page hid changes during review.
+        # Disable caching so edits show up on reload.
         self.send_header('Cache-Control', 'no-store')
         super().end_headers()
 

@@ -94,12 +94,7 @@ async function display(result) {
   $('screenDescription').textContent =
     'Device: ' + result.view + (result.view === 'answer' ? ' / page ' + result.page + ' of ' + result.pages : '');
   canvas.setAttribute('aria-label', $('screenDescription').textContent + '. Pixels rendered on ESP32.');
-  // AI requests run in the background on the board; refresh until the result screen appears.
-  clearTimeout(busyTimer);
-  if (result.view === 'busy')
-    busyTimer = setTimeout(() => operation(async () => display(await request('/api/screen'))), 800);
 }
-let busyTimer = null;
 function button(name) {
   return operation(async () => {
     const result = await request('/api/button/' + name);
