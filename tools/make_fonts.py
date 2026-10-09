@@ -16,7 +16,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = sorted(glob.glob(os.path.join(ROOT, '.pio', 'libdeps', '*', 'lvgl', 'scripts', 'built_in_font')))
 if not SRC:
     sys.exit('LVGL font sources not found: build once so PlatformIO fetches LVGL.')
-SRC = SRC[0]
+SRC = os.path.relpath(SRC[0], ROOT).replace(os.sep, '/')  # relative: the generated files record the command line
 
 # Montserrat: printable ASCII and Latin-1 (accents, ½ ± × ÷ ² ³ · °).
 LATIN = [
@@ -116,8 +116,8 @@ def ranges(rs):
 
 npx = 'npx.cmd' if os.name == 'nt' else 'npx'
 for size in (12, 14, 20):
-    out = os.path.join(ROOT, 'src', 'fonts', f'perch_font_{size}.c')
-    os.makedirs(os.path.dirname(out), exist_ok=True)
+    out = f'src/fonts/perch_font_{size}.c'
+    os.makedirs(os.path.join(ROOT, 'src', 'fonts'), exist_ok=True)
     cmd = [
         npx,
         '--yes',
@@ -138,20 +138,20 @@ for size in (12, 14, 20):
         '-o',
         out,
         '--font',
-        os.path.join(SRC, 'Montserrat-Medium.ttf'),
+        SRC + '/' + 'Montserrat-Medium.ttf',
         '-r',
         ranges(LATIN),
         '--font',
-        os.path.join(SRC, 'DejaVuSans.ttf'),
+        SRC + '/' + 'DejaVuSans.ttf',
         '-r',
         ranges(MATH),
         '--font',
-        os.path.join(SRC, 'FontAwesome5-Solid+Brands+Regular.woff'),
+        SRC + '/' + 'FontAwesome5-Solid+Brands+Regular.woff',
         '-r',
         ','.join(map(str, SYMBOLS)),
     ]
-    subprocess.run(cmd, check=True)
-    print('wrote', os.path.relpath(out, ROOT))
+    subprocess.run(cmd, check=True, cwd=ROOT)
+    print('wrote', out)
 
 codes = sorted({c for a, b in LATIN + MATH for c in range(a, b + 1)} | set(SYMBOLS))
 with open(os.path.join(ROOT, 'include', 'glyphs.h'), 'w', encoding='utf-8', newline='\n') as f:
