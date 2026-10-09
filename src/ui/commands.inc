@@ -340,24 +340,24 @@ void handleDeviceButton(char command) {
     }
     case 'S': {  // developer: a sample exchange in the chat, for layout checks (not sent anywhere)
       ChatMsg q;
-      q.text = "Sample question for a layout check";
+      q.text = "What is the time complexity of this loop?";
       chat.push_back(q);
       ChatMsg a;
       a.user = false;
       a.text =
-          "Q1: c. O(n^2)\n1. **.get(i)** on a LinkedList walks i nodes: O(n)\n2. The loop calls it n times\n\n"
-          "Q2: b. 2n\n1. The loop runs while i < data.size() * 2\n\n"
-          "Sample written on the device, not by a model.";
+          "Answer: O(n^2)\n1. **.get(i)** on a LinkedList walks i nodes: O(n)\n"
+          "2. The loop calls it n times, so n \\cdot O(n) = O(n^2)";
       chat.push_back(a);
       ChatMsg mq;
-      mq.text = "And the maths one?";
+      mq.text = "Solve x^2 - 5x + 6 = 0";
       chat.push_back(mq);
       ChatMsg ma;  // LaTeX as models write it, to check the maths display
       ma.user = false;
       ma.text =
-          "Answer: \\(x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}\\)\n"
-          "Steps:\n1. $\\Delta = b^2 - 4ac \\geq 0$\n2. $\\int_0^1 x^2\\,dx = \\frac{1}{3}$, $\\theta = 30^\\circ$\n"
-          "3. $$\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}$$";
+          "Answer: \\(x = 2\\) or \\(x = 3\\)\n"
+          "Steps:\n1. Factor: $(x - 2)(x - 3) = 0$\n"
+          "2. A product is zero when a factor is: $x = 2$ or $x = 3$\n"
+          "3. Check: $2^2 - 5 \\cdot 2 + 6 = 0$ \\checkmark";
       chat.push_back(ma);
       launch(Screen::Ask);
       rebuildChat();
