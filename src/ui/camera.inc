@@ -75,7 +75,7 @@ void analyseGesture(const camera_fb_t *f) {
     if (abs(lastX - trackStartX) > GX * 4 / 10) {
       gestureSwipe = lastX > trackStartX ? 1 : -1;
       ++gestureSeq;
-      Serial.printf("GESTURE swipe=%d\n", gestureSwipe);
+      deviceConsole().printf("GESTURE swipe=%d\n", gestureSwipe);
       cooldownUntil = now + 700;
       armedUntil = now + 1500;  // stay armed briefly for chains
       trackStartX = -1;
@@ -84,7 +84,7 @@ void analyseGesture(const camera_fb_t *f) {
     trackStartX = -1;
   }
   const int state = armed ? 2 : hand ? 1 : 0;
-  if (state != gestureState) Serial.printf("GESTURE state=%d fg=%d motion=%d\n", state, foreground, motion);
+  if (state != gestureState) deviceConsole().printf("GESTURE state=%d fg=%d motion=%d\n", state, foreground, motion);
   gestureState = state;
 }
 volatile bool captureRequested = false;
@@ -142,7 +142,7 @@ void previewTask(void *) {
     xSemaphoreGive(camLock);
     if (!got) {
       static uint32_t misses = 0;
-      if (++misses % 100 == 1) Serial.printf("PREVIEW no frame (%lu)\n", (unsigned long)misses);
+      if (++misses % 100 == 1) deviceConsole().printf("PREVIEW no frame (%lu)\n", (unsigned long)misses);
       vTaskDelay(pdMS_TO_TICKS(10));
       continue;
     }
@@ -203,10 +203,11 @@ void convertPreview(const camera_fb_t *f, uint16_t *out) {
   }
 }
 bool sendAcknowledged(const uint8_t *bytes, size_t length) {
+  if (deviceConsole().wirelessRequest()) return deviceConsole().write(bytes, length) == length;
   size_t offset = 0;
   unsigned long started = millis();
   while (offset < length && millis() - started < 12000) {
-    offset += Serial.write(bytes + offset, min((size_t)256, length - offset));
+    offset += deviceConsole().write(bytes + offset, min((size_t)256, length - offset));
     delay(2);
   }
   return offset == length;

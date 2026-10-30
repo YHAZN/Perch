@@ -160,14 +160,14 @@ void sendFrame() {
     checksum ^= bytes[i];
     checksum *= 16777619u;
   }
-  Serial.printf("SCREEN_BEGIN %u %lu %s %d %d %08lx %s %d %d %d\n", W * H * 2, ++sequence, screenName(), 1, 1,
+  deviceConsole().printf("SCREEN_BEGIN %u %lu %s %d %d %08lx %s %d %d %d\n", W * H * 2, ++sequence, screenName(), 1, 1,
                 (unsigned long)checksum, useGemini ? "gemini" : "gpt", settings.isKey("gemini-key"),
                 settings.isKey("gpt-key"), current == Screen::Camera && !cameraOff);
   if (!sendAcknowledged(bytes, W * H * 2)) {
-    Serial.println("\nSCREEN_ERROR USB write timed out");
+    deviceConsole().println("\nSCREEN_ERROR USB write timed out");
     return;
   }
-  Serial.println("\nSCREEN_END");
+  deviceConsole().println("\nSCREEN_END");
 }
 void injectTap(int x, int y, int holdMs = 80) {
   injectX = x;
@@ -224,7 +224,7 @@ void tuneCamera(char profile) {
   errors |= sensor->set_exposure_ctrl(sensor, profile == '4' ? 0 : 1);
   errors |= sensor->set_gain_ctrl(sensor, 1);
   if (profile == '4') errors |= sensor->set_aec_value(sensor, 300);
-  Serial.printf("TUNING profile=%c errors=%d\n", profile, errors);
+  deviceConsole().printf("TUNING profile=%c errors=%d\n", profile, errors);
   for (int i = 0; i < 3; ++i) {
     camera_fb_t *f = esp_camera_fb_get();
     if (f) esp_camera_fb_return(f);
@@ -233,18 +233,18 @@ void tuneCamera(char profile) {
 }
 void previewToUsb() {
   if (current != Screen::Camera || cameraOff) {
-    Serial.println("CAPTURE FAILED Preview is not active");
+    deviceConsole().println("CAPTURE FAILED Preview is not active");
     return;
   }
   if (!ensurePreviewMode(8000)) {
-    Serial.println("CAPTURE FAILED Preview setup failed");
+    deviceConsole().println("CAPTURE FAILED Preview setup failed");
     return;
   }
   xSemaphoreTake(camLock, portMAX_DELAY);
   camera_fb_t *f = esp_camera_fb_get();
   if (!f) {
     xSemaphoreGive(camLock);
-    Serial.println("CAPTURE FAILED No preview frame");
+    deviceConsole().println("CAPTURE FAILED No preview frame");
     return;
   }
   // Preview frames are raw pixels; compress one for the PC mirror.
@@ -260,13 +260,13 @@ void previewToUsb() {
   esp_camera_fb_return(f);
   xSemaphoreGive(camLock);
   if (!encoded || !jpeg) {
-    Serial.println("CAPTURE FAILED Preview encode failed");
+    deviceConsole().println("CAPTURE FAILED Preview encode failed");
     return;
   }
-  Serial.printf("JPEG_BEGIN %u\n", len);
+  deviceConsole().printf("JPEG_BEGIN %u\n", len);
   const bool sent = sendAcknowledged(jpeg, len);
   free(jpeg);
-  Serial.println(sent ? "\nJPEG_END" : "\nCAPTURE FAILED Preview transfer failed");
+  deviceConsole().println(sent ? "\nJPEG_END" : "\nCAPTURE FAILED Preview transfer failed");
 }
 void restoreLatestPhoto() {
   // The newest stored photo comes back after a reboot, so Ask and the face have it.

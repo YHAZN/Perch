@@ -81,7 +81,7 @@ async function display(result) {
   $('providerInfo').textContent = result.provider
     ? (result.provider === 'gemini' ? 'Gemini' : 'GPT') + ' / requests run on ESP32'
     : 'Update firmware to select an AI provider.';
-  $('connection').textContent = 'ESP32 connected / ' + result.port;
+  $('connection').textContent = 'ESP32 connected / ' + (result.transport === 'wifi' ? 'Wi-Fi' : result.port);
   $('captureInfo').textContent =
     'Frame ' +
     result.sequence +
@@ -118,7 +118,7 @@ $('refresh').onclick = () => operation(async () => display(await request('/api/s
 async function diagnostic(path) {
   const result = await request(path);
   $('log').textContent = result.log;
-  $('connection').textContent = 'ESP32 connected / ' + result.port;
+  $('connection').textContent = 'ESP32 connected / ' + (result.transport === 'wifi' ? 'Wi-Fi' : result.port);
   await display(await request('/api/screen'));
 }
 $('status').onclick = () => operation(() => diagnostic('/api/status'));

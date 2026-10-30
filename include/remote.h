@@ -8,6 +8,7 @@ bool remoteBegin();
 void remoteEnd();
 bool remoteStarted();
 bool remoteConnected();
+uint32_t remoteDisconnectCount();
 // Press and release one key (USB HID usage id), e.g. 0x4F right arrow.
 void remoteKey(uint8_t usage);
 // Press and release one consumer-control key, e.g. 0xCD play/pause.

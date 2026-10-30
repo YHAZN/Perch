@@ -509,6 +509,10 @@ void refreshDynamic() {
                                     : (String(secs / 60) + " min").c_str());
   }
   renderSoftwareStatus(updaterState(), updaterAvailableVersion(), updaterProgress(), updaterError());
+  setText(wirelessValue, wirelessLinkEnabled() ? "On" : "Off");
+  const String linkAddress = wirelessLinkAddress();
+  setText(wirelessSub, wirelessLinkEnabled() ? (wirelessLinkRunning() ? linkAddress.substring(8).c_str() : "Waiting for connection")
+                                           : "Local screen, files and tests");
   const String storageSpace = sdCardAvailable() ? String(double(sdCardCapacity()) / 1e9, 1) + " GB SD"
                                                : freeKbCache ? String(freeKbCache) + " KB free" : "";
   setText(storageValue, storageSpace.c_str());

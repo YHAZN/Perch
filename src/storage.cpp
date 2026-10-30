@@ -1,5 +1,6 @@
 #include "storage.h"
 #include "sd_card.h"
+#include <ArduinoJson.h>
 #include <LittleFS.h>
 #include <dirent.h>
 #include <sys/stat.h>
@@ -527,4 +528,26 @@ int storageMigratePhotos() {
     delay(1);
   }
   return moved;
+}
+
+String storageCatalog() {
+  JsonDocument doc;
+  JsonArray photos = doc["photos"].to<JsonArray>();
+  for (uint32_t id : photoIds()) {
+    JsonObject photo = photos.add<JsonObject>();
+    photo["id"] = id;
+    photo["bytes"] = photoBytes(id);
+    photo["storage"] = photoOnSd(id) ? "sd" : "internal";
+  }
+  JsonArray answers = doc["answers"].to<JsonArray>();
+  for (uint32_t id : ids("/answers", ".txt")) answers.add(id);
+  JsonArray chats = doc["chats"].to<JsonArray>();
+  for (uint32_t id : ids("/chats", ".json")) chats.add(id);
+  JsonArray queue = doc["queue"].to<JsonArray>();
+  for (uint32_t id : ids("/queue", ".q")) queue.add(id);
+  doc["internal_free"] = storageFreeBytes();
+  doc["sd_capacity"] = sdCardCapacity();
+  String result;
+  serializeJson(doc, result);
+  return result;
 }

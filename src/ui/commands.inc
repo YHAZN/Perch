@@ -1,43 +1,96 @@
 // Part of device_ui.cpp (included there, one translation unit). USB serial commands (mirror and developer tools).
 void handleDeviceButton(char command) {
   if (!framebuffer) return;
+  if (command == 'J') {
+    // Export only app-owned records selected by type and numeric ID, never raw paths/NVS.
+    String argument = deviceConsole().readStringUntil('\n');
+    argument.trim();
+    const int comma = argument.indexOf(',');
+    const String kind = comma < 0 ? argument : argument.substring(0, comma);
+    uint32_t id = 0;
+    if (comma >= 0) {
+      const String number = argument.substring(comma + 1);
+      char *end = nullptr;
+      id = strtoul(number.c_str(), &end, 10);
+      if (!number.length() || !id || *end) { deviceConsole().println("DATA_ERROR Invalid ID"); return; }
+    }
+    uint8_t *allocated = nullptr;
+    const uint8_t *data = nullptr;
+    size_t length = 0;
+    String text;
+    const char *mime = "application/octet-stream";
+    bool ok = false;
+    if (kind == "list" && comma < 0) { text = storageCatalog(); mime = "application/json"; ok = true; }
+    else if (kind == "photo" && id) { ok = loadPhoto(id, allocated, length); mime = "image/jpeg"; }
+    else if (kind == "screen" && id) { ok = loadPhotoScreen(id, allocated, length); mime = "image/jpeg"; }
+    else if (kind == "thumb" && id) {
+      allocated = static_cast<uint8_t *>(ps_malloc(THUMB * THUMB * 2));
+      length = THUMB * THUMB * 2;
+      ok = allocated && loadPhotoThumb(id, reinterpret_cast<uint16_t *>(allocated));
+    } else if (kind == "chat" && id) { ok = chatLoad(id, text); mime = "application/json"; }
+    else if (kind == "answer" && id) { AnswerInfo info; ok = loadAnswer(id, text, info); mime = "text/plain"; }
+    else if (kind == "audio" && id) { ok = queueLoadAudio(id, allocated, length); mime = "audio/wav"; }
+    if (text.length()) { data = reinterpret_cast<const uint8_t *>(text.c_str()); length = text.length(); }
+    else data = allocated;
+    if (ok && data && length) {
+      deviceConsole().printf("DATA_BEGIN %u %s\n", unsigned(length), mime);
+      sendAcknowledged(data, length);
+      deviceConsole().println("\nDATA_END");
+    } else deviceConsole().println("DATA_ERROR Not found or unavailable");
+    free(allocated);
+    return;
+  }
+  if (command == '{') {
+    AiOptions options = aiOptions(true);
+    const bool started = !photoSavePending && aiCoexistenceCheck(options);
+    options.key = "";
+    deviceConsole().printf("COEX_LIVE started=%d\n", started);
+    return;
+  }
+  if (command == '_') { wirelessLinkProvision(); return; }
+  if (command == ':') {
+    deviceConsole().printf("COEX wifi=%d bt_started=%d bt_connected=%d bt_drops=%u camera_mode=%d internal_free=%u internal_largest=%u internal_min=%u psram_free=%u\n",
+        networkConnected(), remoteStarted(), remoteConnected(), remoteDisconnectCount(), int(cameraMode()), heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+        heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL), heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL), ESP.getFreePsram());
+    return;
+  }
   if (command == '@') {
     // Render an update state for layout inspection without changing updater state.
-    const int state = Serial.readStringUntil('\n').toInt();
+    const int state = deviceConsole().readStringUntil('\n').toInt();
     if (current == Screen::Settings && state >= 0 && state <= int(UpdateState::Failed)) {
       renderSoftwareStatus(static_cast<UpdateState>(state), "0.5.3", 42, "Connection failed. Tap to retry.");
       sendFrame();
       renderSoftwareStatus(updaterState(), updaterAvailableVersion(), updaterProgress(), updaterError());
-    } else Serial.println("SCREEN_ERROR Open Settings before previewing an update state");
+    } else deviceConsole().println("SCREEN_ERROR Open Settings before previewing an update state");
     return;
   }
   if (command == ')') {
     uint32_t latest = 0;
     if (listPhotos(&latest, 1)) {
-      Serial.printf("PHOTO_STORAGE id=%lu backend=%s bytes=%u\n", (unsigned long)latest,
+      deviceConsole().printf("PHOTO_STORAGE id=%lu backend=%s bytes=%u\n", (unsigned long)latest,
                     photoOnSd(latest) ? "sd" : "internal", unsigned(photoBytes(latest)));
     }
-    Serial.printf("PHOTO_CACHE bytes=%u psram_free=%u internal_free=%u\n", savedJpeg ? unsigned(jpegBytes) : 0, ESP.getFreePsram(), ESP.getFreeHeap());
+    deviceConsole().printf("PHOTO_CACHE bytes=%u psram_free=%u internal_free=%u\n", savedJpeg ? unsigned(jpegBytes) : 0, ESP.getFreePsram(), ESP.getFreeHeap());
     sdCardReport();
     return;
   }
   if (command == ']') {
     if (savesPending || captureRequested || captureProcessing || captureReady || aiBusy() ||
         updaterState() == UpdateState::Installing || updaterState() == UpdateState::Checking) {
-      Serial.println("SD_MIGRATE busy");
+      deviceConsole().println("SD_MIGRATE busy");
       return;
     }
     stopPreview();
     const size_t before = storageFreeBytes();
     const int files = storageMigratePhotos();
     freeKbStale = true;
-    Serial.printf("SD_MIGRATE files=%d before=%u after=%u\n", files, unsigned(before), unsigned(storageFreeBytes()));
+    deviceConsole().printf("SD_MIGRATE files=%d before=%u after=%u\n", files, unsigned(before), unsigned(storageFreeBytes()));
     return;
   }
-  if (command == '&') { Serial.printf("SD_TEST result=%s\n", (sdCardSelfTest() && sdCardPhotoSelfTest()) ? "PASS" : "FAIL"); return; }
+  if (command == '&') { deviceConsole().printf("SD_TEST result=%s\n", (sdCardSelfTest() && sdCardPhotoSelfTest()) ? "PASS" : "FAIL"); return; }
   if (command == '(') {
     const BatteryStatus power = batteryStatus();
-    Serial.printf("POWER level=%d volts=%.3f usb_host=%d source=%d charge=%d sense=%d\n",
+    deviceConsole().printf("POWER level=%d volts=%.3f usb_host=%d source=%d charge=%d sense=%d\n",
                   power.percent, power.volts, power.usbHostConnected, (int)power.source,
                   (int)power.charge, PIN_BATTERY >= 0);
     return;
@@ -46,13 +99,13 @@ void handleDeviceButton(char command) {
     // Display diagnostic: no filesystem, credentials or pin assignments change.
     wakeScreen();
     stopPreview();
-    Serial.println("LCD_TEST begin: backlight blinks, then red/green/blue/white");
+    deviceConsole().println("LCD_TEST begin: backlight blinks, then red/green/blue/white");
     for (int i = 0; i < 3; ++i) {
       displayBrightness(0);
-      Serial.println("LCD_TEST backlight OFF");
+      deviceConsole().println("LCD_TEST backlight OFF");
       delay(5000);
       displayBrightness(255);
-      Serial.println("LCD_TEST backlight ON");
+      deviceConsole().println("LCD_TEST backlight ON");
       delay(5000);
     }
     lv_obj_t *test = lv_obj_create(lv_layer_top());
@@ -67,7 +120,7 @@ void handleDeviceButton(char command) {
       for (int i = 0; i < 4; ++i) {
         lv_obj_set_style_bg_color(test, lv_color_hex(colors[i]), 0);
         lv_refr_now(display);
-        Serial.printf("LCD_TEST %s framebuffer_center=%04x\n", names[i], framebuffer[(H / 2) * W + W / 2]);
+        deviceConsole().printf("LCD_TEST %s framebuffer_center=%04x\n", names[i], framebuffer[(H / 2) * W + W / 2]);
         const uint32_t started = millis();
         while (millis() - started < 3000) { lv_timer_handler(); delay(5); }
       }
@@ -76,15 +129,15 @@ void handleDeviceButton(char command) {
     wakeScreen();
     lv_obj_invalidate(root);
     lv_refr_now(display);
-    Serial.println("LCD_TEST finished: original UI and brightness restored");
+    deviceConsole().println("LCD_TEST finished: original UI and brightness restored");
     return;
   }
   if (command == 'T') {
-    String xy = Serial.readStringUntil('\n');
+    String xy = deviceConsole().readStringUntil('\n');
     // "x,y" taps; "x,y,ms" holds for ms (long-press actions).
     const int comma = xy.indexOf(',');
     if (comma < 1) {
-      Serial.println("SCREEN_ERROR Invalid touch");
+      deviceConsole().println("SCREEN_ERROR Invalid touch");
       return;
     }
     const int comma2 = xy.indexOf(',', comma + 1);
@@ -97,7 +150,7 @@ void handleDeviceButton(char command) {
   }
   if (command == '^') {
     // Developer: "x,y" double tap (photo zoom checks), then a frame.
-    const String xy = Serial.readStringUntil('\n');
+    const String xy = deviceConsole().readStringUntil('\n');
     const int comma = xy.indexOf(',');
     const int x = constrain((int)xy.substring(0, comma).toInt(), 0, W - 1);
     const int y = constrain((int)xy.substring(comma + 1).toInt(), TOP_ZONE, HOME_ZONE - 1);
@@ -108,15 +161,15 @@ void handleDeviceButton(char command) {
   }
   if (command == '$') {
     // Developer: "$<text>" prints text as the answer screen would show it ("<br>" = new line).
-    String in = Serial.readStringUntil('\n');
+    String in = deviceConsole().readStringUntil('\n');
     in.replace("<br>", "\n");
-    Serial.printf("MATH %s\n", cleanMath(in).c_str());
+    deviceConsole().printf("MATH %s\n", cleanMath(in).c_str());
     return;
   }
   if (command == '!') {
     // Developer: "x1,y1,x2,y2,ms" drag, edges included (for gesture checks), then a frame.
     int v[5] = {0, 0, 0, 0, 300};
-    String arg = Serial.readStringUntil('\n');
+    String arg = deviceConsole().readStringUntil('\n');
     for (int i = 0; i < 5 && arg.length(); ++i) {
       const int c = arg.indexOf(',');
       v[i] = arg.substring(0, c < 0 ? arg.length() : c).toInt();
@@ -128,16 +181,16 @@ void handleDeviceButton(char command) {
     return;
   }
   if (command == 'K') {
-    String input = Serial.readStringUntil('\n');
+    String input = deviceConsole().readStringUntil('\n');
     if (input.length() < 1 || input.length() > 513 || (input[0] != 'G' && input[0] != 'O')) {
-      Serial.println("SCREEN_ERROR Invalid key settings");
+      deviceConsole().println("SCREEN_ERROR Invalid key settings");
       return;
     }
     String key = input.substring(1);
     for (size_t i = 0; i < key.length(); ++i) {
       const unsigned char c = key[i];
       if (c < 33 || c > 126) {
-        Serial.println("SCREEN_ERROR Invalid key characters");
+        deviceConsole().println("SCREEN_ERROR Invalid key characters");
         return;
       }
     }
@@ -148,7 +201,7 @@ void handleDeviceButton(char command) {
     key = "";
     input = "";
     if (!ok) {
-      Serial.println("SCREEN_ERROR Key could not be saved");
+      deviceConsole().println("SCREEN_ERROR Key could not be saved");
       return;
     }
     sendFrame();
@@ -156,27 +209,27 @@ void handleDeviceButton(char command) {
   }
   if (command == 'Y') {
     // Screen link speed in MHz, stored, then restart (the clock survives a software restart).
-    const int mhz = Serial.readStringUntil('\n').toInt();
+    const int mhz = deviceConsole().readStringUntil('\n').toInt();
     if (mhz < 5 || mhz > 80) {
-      Serial.println("SCREEN_ERROR Invalid speed");
+      deviceConsole().println("SCREEN_ERROR Invalid speed");
       return;
     }
     settings.putUChar("lcd-mhz", mhz);
-    Serial.printf("LCD_SPEED %d MHz, restarting\n", mhz);
-    Serial.flush();
+    deviceConsole().printf("LCD_SPEED %d MHz, restarting\n", mhz);
+    deviceConsole().flush();
     delay(100);
     ESP.restart();
   }
   if (command == 'm') {
     // Developer: write one sensor register, "m3036=10" (hex), then report preview FPS.
-    const String arg = Serial.readStringUntil('\n');
+    const String arg = deviceConsole().readStringUntil('\n');
     const int eq = arg.indexOf('=');
     if (eq < 1) return;
     const int reg = strtol(arg.substring(0, eq).c_str(), nullptr, 16);
     const int val = strtol(arg.substring(eq + 1).c_str(), nullptr, 16);
     xSemaphoreTake(camLock, portMAX_DELAY);
     sensor_t *sensor = esp_camera_sensor_get();
-    if (sensor) Serial.printf("SETREG %04X=%02X -> %d\n", reg, val, sensor->set_reg(sensor, reg, 0xFF, val));
+    if (sensor) deviceConsole().printf("SETREG %04X=%02X -> %d\n", reg, val, sensor->set_reg(sensor, reg, 0xFF, val));
     xSemaphoreGive(camLock);
     return;
   }
@@ -186,40 +239,57 @@ void handleDeviceButton(char command) {
   }
   if (command == '>') {
     // Developer: ">text" sends a chat message (with any attached photos).
-    String words = Serial.readStringUntil('\n');
+    String words = deviceConsole().readStringUntil('\n');
     launch(Screen::Ask);
     sendMessage(words);
     return;
   }
   if (command == '#') {
     // Developer: "#<sha256 hex>|<base64 signature>" checks a release signature on the device.
-    const String arg = Serial.readStringUntil('\n');
+    const String arg = deviceConsole().readStringUntil('\n');
     const int bar = arg.indexOf('|');
-    Serial.printf("SIGNATURE %s\n",
+    deviceConsole().printf("SIGNATURE %s\n",
                   bar > 0 && updaterVerify(arg.substring(0, bar), arg.substring(bar + 1)) ? "valid" : "INVALID");
     return;
   }
   if (command == '=') {
     // Developer: "=<https manifest url>" sets where updates come from ("=" alone clears it).
-    String url = Serial.readStringUntil('\n');
+    String url = deviceConsole().readStringUntil('\n');
     url.trim();
+    if (url == "status") {
+      deviceConsole().printf("UPDATE_STATUS state=%d progress=%d current=%s available=%s\n", int(updaterState()),
+          updaterProgress(), PERCH_VERSION, updaterAvailableVersion().c_str());
+      return;
+    }
+    if (url == "install") {
+      const bool allowed = networkConnected() && !aiBusy() && !photoSavePending && updaterState() == UpdateState::Available;
+      if (allowed) { stopPreview(); pauseBluetooth(); }
+      deviceConsole().printf("UPDATE_INSTALL started=%d\n", allowed && updaterInstall());
+      return;
+    }
+    if (url == "restart") {
+      const bool ready = updaterState() == UpdateState::Ready;
+      if (ready) softwareRestartAt = millis() + 750;
+      deviceConsole().printf("UPDATE_RESTART scheduled=%d\n", ready);
+      return;
+    }
     if (url == "?") {
       pauseBluetooth();
-      Serial.printf("UPDATE check %s\n", updaterCheck() ? "started" : "not started");
+      deviceConsole().printf("UPDATE check %s\n", updaterCheck() ? "started" : "not started");
       return;
     }
     if (url.length() && !url.startsWith("https://")) {
-      Serial.println("UPDATE url must be https");
+      deviceConsole().println("UPDATE url must be https");
       return;
     }
     updaterSetUrl(url);
-    Serial.printf("UPDATE url %s\n", url.length() ? "saved" : "cleared");
+    deviceConsole().printf("UPDATE url %s\n", url.length() ? "saved" : "cleared");
     return;
   }
   if (command == '%') {
     // Developer: build a request without sending it. "%g2" Gemini 2 pages, "%o1" GPT,
     // "%ot" / "%gt" speech-to-text. Uses the saved model and effort; never the key.
-    const String arg = Serial.readStringUntil('\n');
+    const String arg = deviceConsole().readStringUntil('\n');
     AiOptions o = aiOptions(arg.length() == 0 || arg[0] != 'o');
     o.key = "";
     if (arg.indexOf('c') >= 0) {
@@ -233,36 +303,36 @@ void handleDeviceButton(char command) {
   }
   if (command == 'l') {
     // Developer: "l<KB>" uploads that much to Gemini without a key (rejected, never billed).
-    const int kb = Serial.readStringUntil('\n').toInt();
+    const int kb = deviceConsole().readStringUntil('\n').toInt();
     if (kb > 0 && kb <= 2048) aiUploadTest((size_t)kb * 1024);
     return;
   }
   if (command == '7') {
     // Developer: "7dn=4" style photo tuning (see cameraTune).
-    const String arg = Serial.readStringUntil('\n');
+    const String arg = deviceConsole().readStringUntil('\n');
     const int eq = arg.indexOf('=');
     const bool ok = eq > 0 && cameraTune(arg.substring(0, eq).c_str(), arg.substring(eq + 1).toInt());
-    Serial.printf("TUNE %s %s\n", arg.c_str(), ok ? "ok" : "unknown");
+    deviceConsole().printf("TUNE %s %s\n", arg.c_str(), ok ? "ok" : "unknown");
     return;
   }
   if (command == '6') {
     // Developer: "6<ae>,<frames>" photo brightness target and longest exposure, e.g. "61,2".
-    const String arg = Serial.readStringUntil('\n');
+    const String arg = deviceConsole().readStringUntil('\n');
     const int comma = arg.indexOf(',');
     if (comma > 0) cameraSetStillExposure(arg.substring(0, comma).toInt(), arg.substring(comma + 1).toInt());
-    Serial.printf("STILL_EXPOSURE %s\n", arg.c_str());
+    deviceConsole().printf("STILL_EXPOSURE %s\n", arg.c_str());
     return;
   }
   if (command == 'y') {
     // Developer: gain ceiling for photos, "y2" = 8x (gainceiling_t: 0 = 2x ... 6 = 128x).
-    const int ceiling = Serial.readStringUntil('\n').toInt();
+    const int ceiling = deviceConsole().readStringUntil('\n').toInt();
     if (ceiling >= 0 && ceiling <= 6) cameraSetStillGain(ceiling);
-    Serial.printf("STILL_GAIN %d\n", ceiling);
+    deviceConsole().printf("STILL_GAIN %d\n", ceiling);
     return;
   }
   if (command == 'Z') {
     // PC clock over USB (sent by the bridge when it connects). No screen reply.
-    const uint32_t epoch = strtoul(Serial.readStringUntil('\n').c_str(), nullptr, 10);
+    const uint32_t epoch = strtoul(deviceConsole().readStringUntil('\n').c_str(), nullptr, 10);
     if (epoch > 1700000000) {
       clockSet(epoch);
       refreshDynamic();
@@ -278,7 +348,7 @@ void handleDeviceButton(char command) {
       lv_refr_now(display);
       total += micros() - t;
     }
-    Serial.printf("BENCH full_frame_ms=%.1f fps=%.1f spi=%uMHz\n", total / 10000.0f, 1e7f / total, spiMhz);
+    deviceConsole().printf("BENCH full_frame_ms=%.1f fps=%.1f spi=%uMHz\n", total / 10000.0f, 1e7f / total, spiMhz);
     return;
   }
   if (command == 'F') {
@@ -295,7 +365,7 @@ void handleDeviceButton(char command) {
       uint32_t worst = 0;
       for (int i = 1; i < frameCount; ++i) worst = max(worst, frameStamps[i] - frameStamps[i - 1]);
       const float span = frameCount > 1 ? (frameStamps[frameCount - 1] - frameStamps[0]) / 1000.0f : 0;
-      Serial.printf("ANIM %s frames=%d fps=%.1f worst_gap=%lums first_frame_after=%lums\n", name, frameCount,
+      deviceConsole().printf("ANIM %s frames=%d fps=%.1f worst_gap=%lums first_frame_after=%lums\n", name, frameCount,
                     frameCount > 1 ? (frameCount - 1) * 1000.0f / span : 0, (unsigned long)(worst / 1000),
                     (unsigned long)(frameCount ? (frameStamps[0] - t0) / 1000 : 0));
     };
@@ -306,22 +376,22 @@ void handleDeviceButton(char command) {
     run("open_photos", [] { show(Screen::Photos); });
     uint32_t t = micros();
     showPhoto(photoIndex + 1);
-    Serial.printf("PHOTO_SWIPE %lums (of %d photos)\n", (unsigned long)((micros() - t) / 1000), photoCount);
+    deviceConsole().printf("PHOTO_SWIPE %lums (of %d photos)\n", (unsigned long)((micros() - t) / 1000), photoCount);
     goBack();
     run("open_ask", [] { show(Screen::Ask); });
     if (answerCount) {
       t = micros();
       showAnswer(answerIds[0]);
-      Serial.printf("OPEN_ANSWER %lums (of %d answers)\n", (unsigned long)((micros() - t) / 1000), answerCount);
+      deviceConsole().printf("OPEN_ANSWER %lums (of %d answers)\n", (unsigned long)((micros() - t) / 1000), answerCount);
     }
     leaveTo(Screen::Face, 0);
     t = micros();
     refreshDynamic();
-    Serial.printf("REFRESH_DYNAMIC %lums\n", (unsigned long)((micros() - t) / 1000));
+    deviceConsole().printf("REFRESH_DYNAMIC %lums\n", (unsigned long)((micros() - t) / 1000));
     t = micros();
     volatile size_t freeBytes = storageFreeBytes();
     (void)freeBytes;
-    Serial.printf("STORAGE_FREE_QUERY %lums\n", (unsigned long)((micros() - t) / 1000));
+    deviceConsole().printf("STORAGE_FREE_QUERY %lums\n", (unsigned long)((micros() - t) / 1000));
     return;
   }
   if (command == 'n') {
@@ -330,20 +400,20 @@ void handleDeviceButton(char command) {
   }
   if (command == 'e') {
     stopPreview();
-    Serial.println("PREVIEW_STOPPED");
+    deviceConsole().println("PREVIEW_STOPPED");
     return;
   }
   if (command == 'o') {
     if (!ensureSavedJpeg()) {
-      Serial.println("CAPTURE FAILED Capture a photo first.");
+      deviceConsole().println("CAPTURE FAILED Capture a photo first.");
       return;
     }
-    Serial.printf("JPEG_BEGIN %u\n", jpegBytes);
+    deviceConsole().printf("JPEG_BEGIN %u\n", jpegBytes);
     if (!sendAcknowledged(savedJpeg, jpegBytes)) {
-      Serial.println("\nCAPTURE FAILED USB write timed out");
+      deviceConsole().println("\nCAPTURE FAILED USB write timed out");
       return;
     }
-    Serial.println("\nJPEG_END");
+    deviceConsole().println("\nJPEG_END");
     return;
   }
   String problem;
@@ -378,13 +448,13 @@ void handleDeviceButton(char command) {
         code = http.GET();
         http.end();
       }
-      Serial.printf("NET generate_204 -> %d in %lu ms\n", code, (unsigned long)(millis() - t));
+      deviceConsole().printf("NET generate_204 -> %d in %lu ms\n", code, (unsigned long)(millis() - t));
       for (const char *host : {"generativelanguage.googleapis.com", "api.openai.com", "www.google.com"}) {
         IPAddress ip;
         const int ok = WiFi.hostByName(host, ip);
-        Serial.printf("NET dns %s -> %d %s\n", host, ok, ip.toString().c_str());
+        deviceConsole().printf("NET dns %s -> %d %s\n", host, ok, ip.toString().c_str());
       }
-      Serial.printf("NET dns server %s\n", WiFi.dnsIP().toString().c_str());
+      deviceConsole().printf("NET dns server %s\n", WiFi.dnsIP().toString().c_str());
       break;
     }
     case 'k': {  // developer: OV5640 timing registers (PLL, frame size, exposure limits)
@@ -395,7 +465,7 @@ void handleDeviceButton(char command) {
                                         0x380D, 0x380E, 0x380F, 0x3808, 0x3809, 0x380A, 0x380B, 0x3814, 0x3815,
                                         0x3A00, 0x3A02, 0x3A03, 0x3A14, 0x3A15, 0x3500, 0x3501, 0x3502, 0x350A,
                                         0x350B, 0x3503, 0x5001, 0x3031, 0x3029, 0x3023};
-        for (uint16_t r : regs) Serial.printf("REG %04X=%02X\n", r, sensor->get_reg(sensor, r, 0xFF));
+        for (uint16_t r : regs) deviceConsole().printf("REG %04X=%02X\n", r, sensor->get_reg(sensor, r, 0xFF));
       }
       xSemaphoreGive(camLock);
       break;
@@ -407,13 +477,13 @@ void handleDeviceButton(char command) {
         int x = -1, y = -1;
         const bool down = touchRead(x, y);
         pressedCount += down;
-        Serial.printf("TOUCH %d %d %d int=%d\n", down, x, y, digitalRead(PIN_TP_INT));
+        deviceConsole().printf("TOUCH %d %d %d int=%d\n", down, x, y, digitalRead(PIN_TP_INT));
         delay(50);
       }
-      Serial.printf("TOUCH pressed %d/30\n", pressedCount);
+      deviceConsole().printf("TOUCH pressed %d/30\n", pressedCount);
       int xs[16], ys[16];
       const int n = touchRecent(xs, ys, 16);
-      for (int i = 0; i < n; ++i) Serial.printf("TOUCH recent %d,%d\n", xs[i], ys[i]);
+      for (int i = 0; i < n; ++i) deviceConsole().printf("TOUCH recent %d,%d\n", xs[i], ys[i]);
       break;
     }
     case 'S': {  // developer: a sample exchange in the chat, for layout checks (not sent anywhere)
@@ -444,7 +514,7 @@ void handleDeviceButton(char command) {
     case 'E': launch(Screen::Gestures); break;
     case 'L': {
       if (!micStart()) {
-        Serial.println("MIC_ERROR start failed");
+        deviceConsole().println("MIC_ERROR start failed");
         return;
       }
       const unsigned long t = millis();
@@ -463,17 +533,17 @@ void handleDeviceButton(char command) {
         sumSq += (int32_t)pcm[i] * pcm[i];
         peak = max(peak, abs((int)pcm[i]));
       }
-      Serial.printf("MIC samples=%u rms=%d peak=%d seconds=%.1f\n", (unsigned)n, n ? (int)sqrt((double)sumSq / n) : 0,
+      deviceConsole().printf("MIC samples=%u rms=%d peak=%d seconds=%.1f\n", (unsigned)n, n ? (int)sqrt((double)sumSq / n) : 0,
                     peak, micSeconds());
-      Serial.printf("WAV_BEGIN %u\n", (unsigned)len);
+      deviceConsole().printf("WAV_BEGIN %u\n", (unsigned)len);
       sendAcknowledged(wav, len);
-      Serial.println("\nWAV_END");
+      deviceConsole().println("\nWAV_END");
       return;
     }
     case 'U':  // developer: clear the offline queue (so test questions are never sent)
       for (int i = 0; i < queuedCount; ++i) queueRemove(queued[i].id);
       refreshQueue();
-      Serial.println("QUEUE_CLEARED");
+      deviceConsole().println("QUEUE_CLEARED");
       break;
     case 'V':  // developer: password screen layout check without a real network
       joiningSsid = "Layout check";

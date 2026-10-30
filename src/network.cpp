@@ -1,3 +1,4 @@
+#include "device_console.h"
 #include "network.h"
 #include <Preferences.h>
 #include <WiFi.h>
@@ -164,7 +165,7 @@ void networkRoam(bool allowed) {
     uint8_t bssid[6];
     memcpy(bssid, WiFi.BSSID(best), 6);
     const int channel = WiFi.channel(best);
-    Serial.printf("WIFI roam %d -> %d dBm (channel %d)\n", now, WiFi.RSSI(best), channel);
+    deviceConsole().printf("WIFI roam %d -> %d dBm (channel %d)\n", now, WiFi.RSSI(best), channel);
     WiFi.scanDelete();
     WiFi.disconnect();
     if (password.length()) WiFi.begin(ssid.c_str(), password.c_str(), channel, bssid);

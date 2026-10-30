@@ -1,3 +1,4 @@
+#include "device_console.h"
 #include "camera.h"
 #include <Arduino.h>
 #include <esp_camera.h>
@@ -29,13 +30,13 @@ bool afLoad(sensor_t *s) {
   // Before loading, the status register can read anything; only trust it after a load.
   if (afLoaded && status != 0x7F && status != 0x7E) return true;
   if (!autofocus.start(s)) {
-    Serial.println("CAMERA af: sensor id check failed");
+    deviceConsole().println("CAMERA af: sensor id check failed");
     return false;
   }
   const uint32_t t = millis();
   const uint8_t rc = autofocus.focusInit();
   afLoaded = rc == 0;
-  Serial.printf("CAMERA af firmware %s in %lums (status was %02X, now %02X)\n", afLoaded ? "loaded" : "FAILED",
+  deviceConsole().printf("CAMERA af firmware %s in %lums (status was %02X, now %02X)\n", afLoaded ? "loaded" : "FAILED",
                 (unsigned long)(millis() - t), status, s->get_reg(s, 0x3029, 0xFF));
   return afLoaded;
 }
@@ -95,7 +96,7 @@ bool cameraSetMode(CameraMode next) {
         if (status == 0x10 || status == 0x20) break;
         delay(30);
       }
-      Serial.printf("CAMERA prefocus %02X in %lums\n", status, (unsigned long)(millis() - t));
+      deviceConsole().printf("CAMERA prefocus %02X in %lums\n", status, (unsigned long)(millis() - t));
     }
   }
   lensHeld = false;
@@ -106,8 +107,8 @@ bool cameraSetMode(CameraMode next) {
     const uint8_t status = s ? s->get_reg(s, 0x3029, 0xFF) : 0;
     lensHeld = s && (status == 0x10 || status == 0x20);
     if (lensHeld && !afCommand(s, 0x06, 1000))
-      Serial.println("CAMERA focus pause not acknowledged");  // keep lens position
-    Serial.printf("CAMERA focus %s from live view (status %02X)\n", lensHeld ? "held" : "not locked", status);
+      deviceConsole().println("CAMERA focus pause not acknowledged");  // keep lens position
+    deviceConsole().printf("CAMERA focus %s from live view (status %02X)\n", lensHeld ? "held" : "not locked", status);
   }
   if (mode != CameraMode::Off) {
     // The Sense board wires no power-down pin, so without this the sensor stays powered and
@@ -147,13 +148,13 @@ bool cameraSetMode(CameraMode next) {
   esp_log_level_set("gdma", ESP_LOG_NONE);  // harmless "no peripheral is connected" on every stop
   const esp_err_t result = esp_camera_init(&config);
   if (result != ESP_OK) {
-    Serial.printf("CAMERA INIT FAILED: %s (0x%x)\n", esp_err_to_name(result), result);
+    deviceConsole().printf("CAMERA INIT FAILED: %s (0x%x)\n", esp_err_to_name(result), result);
     return false;
   }
   sensor_t *sensor = esp_camera_sensor_get();
   sensorPid = sensor->id.PID;
   if (sensorPid == OV5640_PID) sensor->set_reg(sensor, 0x3008, 0x40, 0x00);  // wake from standby
-  Serial.printf("CAMERA mode %d sensor PID 0x%04x\n", (int)next, sensor->id.PID);
+  deviceConsole().printf("CAMERA mode %d sensor PID 0x%04x\n", (int)next, sensor->id.PID);
   // Correct the mirrored worksheet in the sensor, so photos and preview match the scene.
   sensor->set_hmirror(sensor, !sensor->status.hmirror);
   if (next == CameraMode::Still && sensor->id.PID == OV5640_PID) {
@@ -163,7 +164,7 @@ bool cameraSetMode(CameraMode next) {
     stillVts = vts;
     int maxLines = vts * stillExposureFrames;
     if (stillMaxExposureMs > 0) maxLines = min(maxLines, max(16, (int)(stillMaxExposureMs * 1000 / stillLineUs)));
-    Serial.printf("CAMERA photo exposure cap %d lines (%.0f ms)\n", maxLines, maxLines * stillLineUs / 1000);
+    deviceConsole().printf("CAMERA photo exposure cap %d lines (%.0f ms)\n", maxLines, maxLines * stillLineUs / 1000);
     sensor->set_reg(sensor, 0x3A02, 0xFF, maxLines >> 8);
     sensor->set_reg(sensor, 0x3A03, 0xFF, maxLines & 0xFF);
     sensor->set_reg(sensor, 0x3A14, 0xFF, maxLines >> 8);
@@ -235,7 +236,7 @@ void cameraReport() {
   const int gain = ((s->get_reg(s, 0x350A, 0x03) << 8) | s->get_reg(s, 0x350B, 0xFF));
   const int ceiling = ((s->get_reg(s, 0x3A18, 0x03) << 8) | s->get_reg(s, 0x3A19, 0xFF));
   const int vts = (s->get_reg(s, 0x380E, 0xFF) << 8) | s->get_reg(s, 0x380F, 0xFF);
-  Serial.printf("CAMERA exposure=%d lines (frame %d) gain=%.1fx ceiling=%.1fx\n", exposure, vts, gain / 16.0f,
+  deviceConsole().printf("CAMERA exposure=%d lines (frame %d) gain=%.1fx ceiling=%.1fx\n", exposure, vts, gain / 16.0f,
                 ceiling / 16.0f);
 }
 

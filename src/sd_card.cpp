@@ -1,3 +1,4 @@
+#include "device_console.h"
 #include "sd_card.h"
 #include "board_pins.h"
 #include "display.h"
@@ -168,11 +169,11 @@ uint64_t sdCardCapacity() { return ready ? uint64_t(card.csd.capacity) * card.cs
 void sdCardReport() {
   Lock lock;
   if (!ready) {
-    Serial.printf("SD_CARD ready=0 error=%s\n", esp_err_to_name(lastError));
+    deviceConsole().printf("SD_CARD ready=0 error=%s\n", esp_err_to_name(lastError));
     return;
   }
   const uint64_t bytes = uint64_t(card.csd.capacity) * card.csd.sector_size;
-  Serial.printf("SD_CARD ready=1 capacity_bytes=%llu filesystem=%s volume_sector=%lu mounted=%d root_entries=%lu photo_operation=%s\n",
+  deviceConsole().printf("SD_CARD ready=1 capacity_bytes=%llu filesystem=%s volume_sector=%lu mounted=%d root_entries=%lu photo_operation=%s\n",
                 (unsigned long long)bytes, filesystem, (unsigned long)volumeStart, mounted, (unsigned long)entries, lastPhotoOperation);
 }
 
@@ -199,7 +200,7 @@ bool sdCardSelfTest() {
   }
   file.close();
   const bool removed = volume.remove(name.c_str());  // Only the file created above.
-  Serial.printf("SD_TEST bytes=%u readback=%s cleanup=%s\n", unsigned(length), ok ? "PASS" : "FAIL",
+  deviceConsole().printf("SD_TEST bytes=%u readback=%s cleanup=%s\n", unsigned(length), ok ? "PASS" : "FAIL",
                 removed ? "PASS" : "FAIL");
   return ok && removed;
 }
@@ -208,7 +209,7 @@ bool sdPhotoSave(uint32_t id, const uint8_t *data, size_t length, uint32_t &chec
   Lock lock;
   auto fail = [](const char *stage) {
     lastPhotoOperation = stage;
-    Serial.printf("SD_WRITE failed stage=%s error=%s\n", stage, esp_err_to_name(lastError));
+    deviceConsole().printf("SD_WRITE failed stage=%s error=%s\n", stage, esp_err_to_name(lastError));
     return false;
   };
   if (!id || !data || !length || !sdCardAvailable() || !makeRoot()) return fail("root");
@@ -216,7 +217,7 @@ bool sdPhotoSave(uint32_t id, const uint8_t *data, size_t length, uint32_t &chec
   if (volume.exists(name.c_str()) || volume.exists(temp.c_str())) return fail("exists");
   FsFile file;
   if (!file.open(&volume, temp.c_str(), O_WRONLY | O_CREAT | O_EXCL)) {
-    Serial.printf("SD_WRITE path=%s heap=%u\n", temp.c_str(), ESP.getFreeHeap());
+    deviceConsole().printf("SD_WRITE path=%s heap=%u\n", temp.c_str(), ESP.getFreeHeap());
     return fail("open");
   }
   bool ok = file.write(data, length) == length;
@@ -318,6 +319,6 @@ bool sdCardPhotoSelfTest() {
   ok = sdPhotoLoad(id, length, checksum, loaded);
   free(loaded);
   const bool removed = sdPhotoRemove(id);
-  Serial.printf("SD_TEST photo_readback=%s cleanup=%s\n", ok ? "PASS" : "FAIL", removed ? "PASS" : "FAIL");
+  deviceConsole().printf("SD_TEST photo_readback=%s cleanup=%s\n", ok ? "PASS" : "FAIL", removed ? "PASS" : "FAIL");
   return ok && removed;
 }

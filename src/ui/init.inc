@@ -21,7 +21,7 @@ void initDeviceUi() {
   cameraOff = settings.getBool("camera-off", false);
   brightnessPct = constrain(settings.getUChar("bright-pct", 100), 5, 100);
   gestureFlip = settings.getBool("gesture-flip", false);
-  if (!storageBegin()) Serial.println("STORAGE_ERROR Flash filesystem unavailable");
+  if (!storageBegin()) deviceConsole().println("STORAGE_ERROR Flash filesystem unavailable");
   framebuffer = (uint16_t *)ps_malloc(W * H * 2);
   for (auto &b : liveBuf) b = (uint16_t *)ps_calloc(W * H, 2);
   livePixels = liveBuf[0];
@@ -39,10 +39,10 @@ void initDeviceUi() {
   const bool lcd = displayBegin(spiMhz * 1000000UL, drawDone);
   for (auto &b : drawBuffers)
     b = (uint16_t *)heap_caps_malloc(W * DISPLAY_CHUNK_ROWS * 2, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
-  Serial.printf("DISPLAY lcd=%d touch=%d spi=%uMHz\n", lcd, touchAvailable(), spiMhz);
+  deviceConsole().printf("DISPLAY lcd=%d touch=%d spi=%uMHz\n", lcd, touchAvailable(), spiMhz);
   if (!framebuffer || !captureScreen || !liveBuf[1] || !liveBuf[2] || !livePixels || !photoPixels || !galleryPixels ||
       !drawBuffers[0] || !drawBuffers[1]) {
-    Serial.println("DISPLAY_ERROR Out of PSRAM");
+    deviceConsole().println("DISPLAY_ERROR Out of PSRAM");
     framebuffer = nullptr;
     return;
   }
@@ -221,13 +221,13 @@ void initDeviceUi() {
   lv_obj_remove_flag(topBar, LV_OBJ_FLAG_CLICKABLE);
   setBrightness(brightnessPct, false);
 
-  Serial.printf("BOOT answers %lu ms, photo %lu ms, queue+lvgl %lu ms, screens %lu ms\n",
+  deviceConsole().printf("BOOT answers %lu ms, photo %lu ms, queue+lvgl %lu ms, screens %lu ms\n",
                 (unsigned long)(bootT1 - bootT0), (unsigned long)(bootT2 - bootT1), (unsigned long)(bootT3 - bootT2),
                 (unsigned long)(millis() - bootT3));
   lv_obj_remove_flag(layer(Screen::Face), LV_OBJ_FLAG_HIDDEN);
   enter(Screen::Face);
   const uint32_t start = micros();
   lv_refr_now(display);
-  Serial.printf("DISPLAY first frame %lu us\n", (unsigned long)(micros() - start));
+  deviceConsole().printf("DISPLAY first frame %lu us\n", (unsigned long)(micros() - start));
   if (lcd) displayBrightness(brightnessPct * 255 / 100);
 }

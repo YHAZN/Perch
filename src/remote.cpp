@@ -23,6 +23,7 @@ const uint8_t REPORT_MAP[] = {
 
 bool started = false;
 volatile bool connected = false;
+volatile uint32_t disconnects = 0;
 NimBLEHIDDevice *hid = nullptr;
 NimBLECharacteristic *keyboard = nullptr, *consumer = nullptr;
 
@@ -30,6 +31,7 @@ class Callbacks : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer *) override { connected = true; }
   void onDisconnect(NimBLEServer *) override {
     connected = false;
+    ++disconnects;
     NimBLEDevice::startAdvertising();  // stay pairable for the next computer
   }
 };
@@ -62,6 +64,7 @@ bool remoteBegin() {
 
 bool remoteStarted() { return started; }
 bool remoteConnected() { return connected; }
+uint32_t remoteDisconnectCount() { return disconnects; }
 
 void remoteKey(uint8_t usage) {
   if (!connected || !keyboard) return;

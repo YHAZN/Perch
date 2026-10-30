@@ -1,3 +1,4 @@
+#include "device_console.h"
 #include <Arduino.h>
 
 #include <esp_system.h>
@@ -18,42 +19,43 @@ static const char WIFI_TEST_PASSWORD[] = "";
 #include "clock.h"
 #include "camera.h"
 #include "remote.h"
+#include "updater.h"
 
 void testWifi(const char *ssid = WIFI_TEST_SSID, const char *password = WIFI_TEST_PASSWORD) {
   WiFi.mode(WIFI_STA);
-  Serial.println("\n=== Wi-Fi test: scanning ===");
+  deviceConsole().println("\n=== Wi-Fi test: scanning ===");
   const int count = WiFi.scanNetworks(false, true, false, 600);
-  Serial.printf("Scan found %d networks\n", count);
+  deviceConsole().printf("Scan found %d networks\n", count);
   bool targetFound = false;
   for (int i = 0; i < count; ++i) {
-    Serial.printf("SSID: %s | RSSI: %d dBm | channel: %d | %s\n", WiFi.SSID(i).c_str(), WiFi.RSSI(i), WiFi.channel(i),
+    deviceConsole().printf("SSID: %s | RSSI: %d dBm | channel: %d | %s\n", WiFi.SSID(i).c_str(), WiFi.RSSI(i), WiFi.channel(i),
                   WiFi.encryptionType(i) == WIFI_AUTH_OPEN ? "open" : "secured");
     if (WiFi.SSID(i) == ssid) targetFound = true;
   }
   WiFi.scanDelete();
   if (!targetFound) {
-    Serial.println("Cannot join: configured test network not visible on this board.");
+    deviceConsole().println("Cannot join: configured test network not visible on this board.");
     return;
   }
-  Serial.printf("Connecting to %s...\n", ssid);
+  deviceConsole().printf("Connecting to %s...\n", ssid);
   WiFi.begin(ssid, password);
   const unsigned long start = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - start < 20000) delay(100);
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.printf("Wi-Fi connection timed out. Status: %d\n", WiFi.status());
+    deviceConsole().printf("Wi-Fi connection timed out. Status: %d\n", WiFi.status());
     return;
   }
-  Serial.printf("Wi-Fi CONNECTED | IP: %s | RSSI: %d dBm\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
+  deviceConsole().printf("Wi-Fi CONNECTED | IP: %s | RSSI: %d dBm\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
   IPAddress address;
   const int resolved = WiFi.hostByName("example.com", address);
-  Serial.printf("DNS example.com: %s | %s\n", resolved ? "PASS" : "FAIL", address.toString().c_str());
-  Serial.println("Wi-Fi test complete. Internet HTTPS and captive portal checks remain.");
+  deviceConsole().printf("DNS example.com: %s | %s\n", resolved ? "PASS" : "FAIL", address.toString().c_str());
+  deviceConsole().println("Wi-Fi test complete. Internet HTTPS and captive portal checks remain.");
 }
 
 void capture(bool sendImage = false) {
   // Diagnostic capture in still mode (the UI may have the camera off or in preview).
   if (!cameraSetMode(CameraMode::Still)) {
-    Serial.println("Camera unavailable; check initialization report.");
+    deviceConsole().println("Camera unavailable; check initialization report.");
     return;
   }
   // Discard the queued frame so the command captures the current scene; focus like a photo.
@@ -65,17 +67,17 @@ void capture(bool sendImage = false) {
   }
   camera_fb_t *frame = esp_camera_fb_get();
   if (!frame) {
-    Serial.println("CAPTURE FAILED: no frame returned.");
+    deviceConsole().println("CAPTURE FAILED: no frame returned.");
     return;
   }
   const bool jpeg = frame->format == PIXFORMAT_JPEG && frame->len >= 4 && frame->buf[0] == 0xff &&
                     frame->buf[1] == 0xd8 && frame->buf[frame->len - 2] == 0xff && frame->buf[frame->len - 1] == 0xd9;
   if (sendImage && jpeg) {
-    Serial.printf("JPEG_BEGIN %u\n", static_cast<unsigned>(frame->len));
-    Serial.write(frame->buf, frame->len);
-    Serial.println("\nJPEG_END");
+    deviceConsole().printf("JPEG_BEGIN %u\n", static_cast<unsigned>(frame->len));
+    deviceConsole().write(frame->buf, frame->len);
+    deviceConsole().println("\nJPEG_END");
   } else {
-    Serial.printf("Capture: %ux%u | %u bytes | JPEG markers: %s\n", static_cast<unsigned>(frame->width),
+    deviceConsole().printf("Capture: %ux%u | %u bytes | JPEG markers: %s\n", static_cast<unsigned>(frame->width),
                   static_cast<unsigned>(frame->height), static_cast<unsigned>(frame->len), jpeg ? "PASS" : "FAIL");
   }
   cameraReport();
@@ -84,21 +86,21 @@ void capture(bool sendImage = false) {
 }
 
 void printStatus() {
-  Serial.println("\n=== Tiny AI: USB diagnostic ===");
-  Serial.printf("Chip: %s, revision %d, %d cores\n", ESP.getChipModel(), ESP.getChipRevision(), ESP.getChipCores());
-  Serial.printf("Flash: %u bytes\n", ESP.getFlashChipSize());
-  Serial.printf("Free heap: %u bytes\n", ESP.getFreeHeap());
-  Serial.printf("Internal: %u free, largest %u\n", heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+  deviceConsole().println("\n=== Tiny AI: USB diagnostic ===");
+  deviceConsole().printf("Chip: %s, revision %d, %d cores\n", ESP.getChipModel(), ESP.getChipRevision(), ESP.getChipCores());
+  deviceConsole().printf("Flash: %u bytes\n", ESP.getFlashChipSize());
+  deviceConsole().printf("Free heap: %u bytes\n", ESP.getFreeHeap());
+  deviceConsole().printf("Internal: %u free, largest %u\n", heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                 heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
-  Serial.printf("Bluetooth: %s\n", remoteStarted() ? "on" : "off");
-  Serial.printf("PSRAM: %s, total %u bytes, free %u bytes\n", psramFound() ? "FOUND" : "NOT FOUND", ESP.getPsramSize(),
+  deviceConsole().printf("Bluetooth: %s\n", remoteStarted() ? "on" : "off");
+  deviceConsole().printf("PSRAM: %s, total %u bytes, free %u bytes\n", psramFound() ? "FOUND" : "NOT FOUND", ESP.getPsramSize(),
                 ESP.getFreePsram());
-  Serial.printf("Reset reason: %d\n", static_cast<int>(esp_reset_reason()));
-  Serial.println("Type s to print this report again.");
-  Serial.printf("Wi-Fi status: %d | IP: %s | %s %d dBm\n", WiFi.status(), WiFi.localIP().toString().c_str(),
+  deviceConsole().printf("Reset reason: %d\n", static_cast<int>(esp_reset_reason()));
+  deviceConsole().println("Type s to print this report again.");
+  deviceConsole().printf("Wi-Fi status: %d | IP: %s | %s %d dBm\n", WiFi.status(), WiFi.localIP().toString().c_str(),
                 WiFi.SSID().c_str(), WiFi.RSSI());
-  Serial.println("Type w to scan and test configured Wi-Fi.");
-  Serial.println("Type g to scan and test an open guest network.");
+  deviceConsole().println("Type w to scan and test configured Wi-Fi.");
+  deviceConsole().println("Type g to scan and test an open guest network.");
 }
 
 void setup() {
@@ -118,12 +120,14 @@ void setup() {
   printStatus();
   initDeviceUi();
   networkBegin();
+  wirelessLinkBegin();
 }
 
 void loop() {
-  while (Serial.available()) {
+  wirelessLinkPoll();
+  while (deviceConsole().available()) {
     deviceNoteSerial();
-    const char command = Serial.read();
+    const char command = deviceConsole().read();
     if (command == 's') printStatus();
     if (command == 'c') capture();
     if (command == 'j') capture(true);
@@ -131,12 +135,14 @@ void loop() {
     if (command == 'g') testWifi("guest", "");
     handleDeviceButton(command);
   }
+  wirelessLinkFinishCommand();
+  wirelessLinkTick(aiUploadTestBusy() || aiBusy() || updaterState() == UpdateState::Checking || updaterState() == UpdateState::Installing);
   deviceTick();
   networkTick();
   static unsigned long lastHeartbeat = 0;
   if (millis() - lastHeartbeat >= 10000) {
     lastHeartbeat = millis();
-    Serial.printf("Alive: %lu seconds | free heap: %u bytes\n", millis() / 1000, ESP.getFreeHeap());
+    deviceConsole().printf("Alive: %lu seconds | free heap: %u bytes\n", millis() / 1000, ESP.getFreeHeap());
   }
   // Rest until something is due: the processor idles instead of spinning.
   delay(deviceIdleMs());

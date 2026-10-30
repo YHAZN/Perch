@@ -80,3 +80,6 @@ std::vector<String> storageTakeForgottenUploads();
 // Copy existing photo files to SD, verify every byte, then remove internal copies.
 // Run only while captures, requests and updates are idle. Returns files moved.
 int storageMigratePhotos();
+
+// IDs and sizes for app-owned data; never exports preferences or credentials.
+String storageCatalog();

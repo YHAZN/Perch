@@ -2,6 +2,7 @@
 void deviceTick() {
   if (!framebuffer) return;
   const unsigned long now = millis();
+  if (softwareRestartAt && int32_t(now - softwareRestartAt) >= 0) ESP.restart();
   networkRoam(!aiBusy() && current != Screen::Wifi && updaterState() != UpdateState::Installing);
   {
     // Never sleep while something is happening; the USB mirror counts as use.
@@ -71,7 +72,7 @@ void deviceTick() {
     const bool haveThumb = pendingPhotoId && th && loadPhotoThumb(pendingPhotoId, th);
     const uint32_t when = clockKnown() ? (uint32_t)time(nullptr) : 0;
     if (!saveAnswer(result, pendingGemini, pendingPhotoId, when, haveThumb ? th : nullptr))
-      Serial.println("STORAGE_ERROR Answer not saved");
+      deviceConsole().println("STORAGE_ERROR Answer not saved");
     loadLatestAnswer();
     chatFinished(true, result);
     refreshDynamic();
@@ -200,7 +201,7 @@ void deviceTick() {
     if (now - lastFpsReport >= 5000) {
       const uint32_t converted = framesConverted;
       if (lastFpsReport && converted > convertedAtReport)
-        Serial.printf("PREVIEW_FPS %.1f camera=%.1f convert=%lums\n", shown * 1000.0f / (now - lastFpsReport),
+        deviceConsole().printf("PREVIEW_FPS %.1f camera=%.1f convert=%lums\n", shown * 1000.0f / (now - lastFpsReport),
                       (converted - convertedAtReport) * 1000.0f / (now - lastFpsReport),
                       (unsigned long)(convertMicros / (converted - convertedAtReport) / 1000));
       lastFpsReport = now;

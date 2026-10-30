@@ -146,9 +146,21 @@ void buildSettings() {
     aiSetDailyLimit(DAILY_CHOICES[dailyChoice]);
     refreshDynamic();
   });
+  lv_obj_t *link = row(s, dailyY + detailRowHeight, "Wireless link", &wirelessValue, detailRowHeight);
+  lv_obj_align(lv_obj_get_child(link, 0), LV_ALIGN_TOP_LEFT, 22, 12);
+  lv_obj_align(wirelessValue, LV_ALIGN_TOP_RIGHT, -22, 12);
+  wirelessSub = text(link, "", F_SMALL, MIST);
+  lv_obj_set_pos(wirelessSub, 22, 36);
+  lv_obj_set_width(wirelessSub, 196);
+  lv_label_set_long_mode(wirelessSub, LV_LABEL_LONG_DOT);
+  onClick(link, [] {
+    if (!networkConnected()) { toast("Connect Wi-Fi first"); return; }
+    wirelessLinkSetEnabled(!wirelessLinkEnabled());
+    refreshDynamic();
+  });
   lv_obj_t *spacer = plain(s);
   lv_obj_set_size(spacer, 1, 1);
-  lv_obj_set_pos(spacer, 0, dailyY + 120);
+  lv_obj_set_pos(spacer, 0, dailyY + detailRowHeight + 120);
 }
 
 // AI settings: which provider answers, and for each provider its model and effort.

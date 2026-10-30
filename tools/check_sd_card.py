@@ -52,8 +52,12 @@ def main():
     parser.add_argument("--photo-test", action="store_true", help="Save a new camera photo, restart, compare its original")
     parser.add_argument("--existing-photo", action="store_true", help="Verify the newest original without taking another photo")
     parser.add_argument("--migrate", action="store_true", help="Verify and move existing photo files to SD")
+    parser.add_argument("--wireless-identity")
+    parser.add_argument("--host")
     args = parser.parse_args()
     server.PORT = args.port
+    server.WIRELESS_IDENTITY = args.wireless_identity
+    server.WIRELESS_HOST = args.host
     try:
         report, _ = diagnostic(")", "SD_CARD ")
         assert "ready=1" in report and "mounted=1" in report, "Card must be mounted"

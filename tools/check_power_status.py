@@ -15,20 +15,32 @@ import server
 def settled_screen(command):
     try:
         server.exchange(command, screen=True)
-    except RuntimeError as error:
+    except (RuntimeError, OSError) as error:
         recoverable = ("payload stalled", "transfer incomplete", "checksum", "transfer ending")
-        if not any(message in str(error) for message in recoverable):
+        if isinstance(error, RuntimeError) and not any(message in str(error) for message in recoverable):
             raise
         print("Recovering current screen without replaying the action:", error)
     time.sleep(0.4)
-    return server.exchange("f", screen=True)
+    deadline = time.monotonic() + 30
+    while True:
+        try:
+            return server.exchange("f", screen=True)
+        except OSError:
+            if not server.WIRELESS_IDENTITY or time.monotonic() >= deadline:
+                raise
+            time.sleep(1)  # HTTPS link resumes after update checks and diagnostic uploads
+
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", default="COM6")
+    parser.add_argument("--wireless-identity")
+    parser.add_argument("--host")
     args = parser.parse_args()
     server.PORT = args.port
+    server.WIRELESS_IDENTITY = args.wireless_identity
+    server.WIRELESS_HOST = args.host
     try:
         with server.device_lock(), server.device_connection(args.port) as connection:
             time.sleep(0.5)

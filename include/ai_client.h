@@ -66,6 +66,9 @@ void aiBegin();
 void aiDryRun(const AiOptions &options, int pages, const String &question, bool transcribe, const String &history = "");
 // Developer: unauthenticated upload of `bytes` to the Gemini endpoint (nothing billed).
 void aiUploadTest(size_t bytes);
+bool aiUploadTestBusy();
+// One isolated, capped Gemini request; no photos, no history changes, no retries.
+bool aiCoexistenceCheck(const AiOptions &options);
 // Developer: free check that the key is valid and can see the model.
 void aiKeyCheck(const String &key);
 // The UI reports when flash is busy (photo still saving); requests wait for it.

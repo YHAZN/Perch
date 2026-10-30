@@ -297,7 +297,7 @@ void zoomTask(void *) {
     }
     const uint32_t t = millis();
     ok = zoomPixels && jpg2rgb565(jpeg, len, (uint8_t *)zoomPixels, JPG_SCALE_2X);
-    Serial.printf("ZOOM decode %lums\n", (unsigned long)(millis() - t));
+    deviceConsole().printf("ZOOM decode %lums\n", (unsigned long)(millis() - t));
     zoomW = w / 2;
     zoomH = h / 2;
   }

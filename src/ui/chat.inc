@@ -337,7 +337,7 @@ void rebuildChat() {
   refreshAttachments();
   refreshChat();
   if (!chatShowAll || !from) scrollChatToEnd(false);
-  Serial.printf("CHAT_DRAW %u messages in %lu ms (maths %lu ms)\n", (unsigned)chat.size(),
+  deviceConsole().printf("CHAT_DRAW %u messages in %lu ms (maths %lu ms)\n", (unsigned)chat.size(),
                 (unsigned long)(millis() - t0), (unsigned long)(mathMicros / 1000));
   mathMicros = 0;
 }
@@ -499,7 +499,7 @@ void chatPartial(const String &text) {
   static uint32_t logged = 0;
   if (millis() - logged > 3000) {
     logged = millis();
-    Serial.printf("CHAT_STREAM %u chars drawn in %lu ms\n", text.length(), (unsigned long)(millis() - t0));
+    deviceConsole().printf("CHAT_STREAM %u chars drawn in %lu ms\n", text.length(), (unsigned long)(millis() - t0));
   }
   if (atEnd) scrollChatToEnd(false);
 }

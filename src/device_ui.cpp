@@ -1,3 +1,4 @@
+#include "device_console.h"
 // Perch OS shell on LVGL 9. Design source of truth: design/index.html.
 // Face (clock + Smart Stack), app grid, Control Center, Camera, Ask (chats), Answer, Photos,
 // Settings, AI settings, Wi-Fi, Remote and Gestures. All apps are layers on one screen.
@@ -131,6 +132,7 @@ uint8_t *savedJpeg = nullptr, *rgbScratch = nullptr;
 size_t jpegBytes = 0, jpegCapacity = 0, rgbCapacity = 0;
 uint32_t latestPhotoId = 0;
 uint32_t cachedCaptureToken = 0;
+uint32_t softwareRestartAt = 0;
 volatile uint32_t durableCaptureToken = 0;
 uint32_t photoIds[MAX_PHOTOS];
 int photoCount = 0, photoIndex = 0;
@@ -187,6 +189,7 @@ unsigned long scanStartedAt = 0;
 lv_obj_t *modelValue, *wifiValue, *brightSlider, *storageValue, *storageSub, *softwareSub;
 lv_obj_t *softwareRow, *softwareAction, *softwareAccent, *softwareProgress;
 lv_obj_t *settingsUpdateBadge, *settingsUpdateLabel;
+lv_obj_t *wirelessValue, *wirelessSub;
 lv_obj_t *noticeText;
 lv_obj_t *passwordEye, *newChatBtn, *pageBanner, *micBtn;
 bool pageCamera = false;  // the camera was opened from Ask ("New photo" / "+ Page"); return after the shot

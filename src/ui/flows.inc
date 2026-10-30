@@ -127,9 +127,9 @@ void saveTask(void *) {
     const uint32_t id = savePhoto(job->jpeg, job->len, job->thumb);
     if (id && job->small) savePhotoScreen(id, job->small, job->smallLen);
     if (id) { durableCaptureToken = job->token; savedPhotoId = id; }
-    else Serial.println("STORAGE_ERROR Photo not saved");
+    else deviceConsole().println("STORAGE_ERROR Photo not saved");
     freeKbCache = storageFreeBytes() / 1024;
-    Serial.printf("PHOTO_SAVED id=%lu in %lums storage=%s\n", (unsigned long)id,
+    deviceConsole().printf("PHOTO_SAVED id=%lu in %lums storage=%s\n", (unsigned long)id,
                   (unsigned long)(millis() - t), photoOnSd(id) ? "sd" : "internal");
     free(job->jpeg);
     free(job->small);
@@ -163,7 +163,7 @@ void captureInTask() {
       if (!frame) continue;
       const int64_t stamp = (int64_t)frame->timestamp.tv_sec * 1000000 + frame->timestamp.tv_usec;
       if (lastStamp) {
-        Serial.printf("BURST frame time %lu us\n", (unsigned long)(stamp - lastStamp));
+        deviceConsole().printf("BURST frame time %lu us\n", (unsigned long)(stamp - lastStamp));
         cameraNoteFrameTime((uint32_t)(stamp - lastStamp));
       }
       lastStamp = stamp;
@@ -171,7 +171,7 @@ void captureInTask() {
                          frame->buf[1] == 0xd8 && frame->buf[frame->len - 2] == 0xff &&
                          frame->buf[frame->len - 1] == 0xd9;
       const uint32_t score = valid ? sharpness(frame->buf, frame->len, frame->width, frame->height) : 0;
-      Serial.printf("BURST %d sharpness=%lu luma=%d at %lums\n", shot, (unsigned long)score, lastLuma,
+      deviceConsole().printf("BURST %d sharpness=%lu luma=%d at %lums\n", shot, (unsigned long)score, lastLuma,
                     (unsigned long)(millis() - t0));
       if (valid && (!r.jpeg || score > best + best / 4)) {
         uint8_t *copy = (uint8_t *)ps_malloc(frame->len);
@@ -192,7 +192,7 @@ void captureInTask() {
     if (!r.jpeg) r.problem = "No usable photo. Try again.";
     const int luma = max(bestLuma, 25);  // very dark frames: do not demand the impossible
     const uint32_t fair = (uint32_t)((uint64_t)best * 10000 / (luma * luma));
-    Serial.printf("BURST kept sharpness=%lu (fair %lu, floor %lu)\n", (unsigned long)best, (unsigned long)fair,
+    deviceConsole().printf("BURST kept sharpness=%lu (fair %lu, floor %lu)\n", (unsigned long)best, (unsigned long)fair,
                   (unsigned long)BLUR_FLOOR);
     r.blurry = r.jpeg && fair < BLUR_FLOOR;
   }
@@ -228,7 +228,7 @@ void captureInTask() {
     captureOut = r;
     captureReady = true;
   }
-  Serial.printf("SHUTTER frames=%lums back-to-live=%lums\n", (unsigned long)(t1 - t0), (unsigned long)(millis() - t1));
+  deviceConsole().printf("SHUTTER frames=%lums back-to-live=%lums\n", (unsigned long)(t1 - t0), (unsigned long)(millis() - t1));
 }
 bool requestCapture(String &problem) {
   if (cameraOff) {
@@ -301,7 +301,7 @@ void setModel(bool gemini) {
 }
 void wakeScreen() {
   if (getCpuFrequencyMhz() != 240) setCpuFrequencyMhz(240);
-  if (screenAsleep) Serial.println("SCREEN wake");
+  if (screenAsleep) deviceConsole().println("SCREEN wake");
   screenAsleep = false;
   screenDim = false;
   lastActivity = millis();
@@ -312,7 +312,7 @@ void sleepScreen() {
   displayBrightness(0);
   // Nothing to draw: run the processor at 80 MHz (the lowest Wi-Fi allows) until woken.
   setCpuFrequencyMhz(80);
-  Serial.println("SCREEN sleep");
+  deviceConsole().println("SCREEN sleep");
 }
 // Brightness follows the finger; it is saved when the finger lifts (flash wears on writes).
 void setBrightness(int pct, bool save) {

@@ -1,3 +1,4 @@
+#include "device_console.h"
 #include "updater.h"
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
@@ -36,10 +37,10 @@ int openGet(String url, HTTPClient &http, std::unique_ptr<WiFiClientSecure> &cli
     if (!http.begin(*client, url)) return -1;
     const uint32_t started = millis();
     const int status = http.GET();
-    Serial.printf("UPDATE GET %d in %lums (hop %d)\n", status, (unsigned long)(millis() - started), hop);
+    deviceConsole().printf("UPDATE GET %d in %lums (hop %d)\n", status, (unsigned long)(millis() - started), hop);
     if (status < 300 || status >= 400) return status;
     url = http.getLocation();
-    Serial.printf("UPDATE redirect -> %s\n", url.substring(0, 160).c_str());
+    deviceConsole().printf("UPDATE redirect -> %s\n", url.substring(0, 160).c_str());
     if (!url.startsWith("https://")) return -2;  // never leave HTTPS
   }
   return -3;
@@ -47,7 +48,7 @@ int openGet(String url, HTTPClient &http, std::unique_ptr<WiFiClientSecure> &cli
 
 void fail(const String &why) {
   error = why;
-  Serial.printf("UPDATE failed: %s\n", why.c_str());
+  deviceConsole().printf("UPDATE failed: %s\n", why.c_str());
   state = UpdateState::Failed;
 }
 
@@ -75,7 +76,7 @@ void checkTask(void *) {
   imageSig = doc["signature"] | "";
   imageSize = doc["size"] | 0;
   imageSha.toLowerCase();
-  Serial.printf("UPDATE newest %s, this %s\n", available.c_str(), PERCH_VERSION);
+  deviceConsole().printf("UPDATE newest %s, this %s\n", available.c_str(), PERCH_VERSION);
   state = versionNewer(available, PERCH_VERSION) ? UpdateState::Available : UpdateState::UpToDate;
   vTaskDelete(nullptr);
 }
@@ -169,7 +170,7 @@ void installTask(void *) {
     vTaskDelete(nullptr);
     return;
   }
-  Serial.printf("UPDATE ready: %s (%d bytes, sha256 ok)\n", available.c_str(), written);
+  deviceConsole().printf("UPDATE ready: %s (%d bytes, sha256 ok)\n", available.c_str(), written);
   state = UpdateState::Ready;  // the UI restarts the device when the user agrees
   vTaskDelete(nullptr);
 }

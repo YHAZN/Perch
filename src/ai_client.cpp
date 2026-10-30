@@ -1,3 +1,4 @@
+#include "device_console.h"
 #include "ai_client.h"
 #include "math_text.h"
 #include <algorithm>
@@ -14,6 +15,8 @@
 #include <vector>
 #include "ai_root_certs.h"
 #include "storage.h"
+#include "remote.h"
+#include <atomic>
 
 const AiModel GEMINI_MODELS[] = {
     {"gemini-3.8-flash", "Gemini 3.8 Flash", "Newest. Small free daily limit"},
@@ -417,7 +420,7 @@ bool geminiUpload(const String &key, const uint8_t *data, size_t length, String 
     const int status = http.POST("{\"file\":{\"display_name\":\"perch-photo\"}}");
     uploadUrl = http.header("x-goog-upload-url");
     http.end();
-    Serial.printf("AI_UPLOAD start %d\n", status);
+    deviceConsole().printf("AI_UPLOAD start %d\n", status);
     if (status != 200 || !uploadUrl.startsWith("https://")) return false;
   }
   WiFiClientSecure client;
@@ -436,7 +439,7 @@ bool geminiUpload(const String &key, const uint8_t *data, size_t length, String 
   JsonDocument doc;
   if (status != 200 || deserializeJson(doc, reply)) return false;
   uri = (const char *)(doc["file"]["uri"] | "");
-  Serial.printf("AI_UPLOAD %u bytes in %lums: %s\n", (unsigned)length, (unsigned long)(millis() - t),
+  deviceConsole().printf("AI_UPLOAD %u bytes in %lums: %s\n", (unsigned)length, (unsigned long)(millis() - t),
                 uri.length() ? "ok" : "no link");
   return uri.length() > 0;
 }
@@ -609,7 +612,7 @@ bool request(Job &j) {
   if (flashBusy) {
     const uint32_t waitStart = millis();
     while (flashBusy() && millis() - waitStart < 10000 && !cancelled) delay(50);
-    Serial.printf("AI_WAIT photo save %lu ms\n", (unsigned long)(millis() - waitStart));
+    deviceConsole().printf("AI_WAIT photo save %lu ms\n", (unsigned long)(millis() - waitStart));
   }
   // Which models to try, in order. Gemini starts with the chosen model, then the others
   // (daily free limits are per model). GPT uses only the chosen model: it is paid.
@@ -624,7 +627,7 @@ bool request(Job &j) {
         if (models[0] != GEMINI_MODELS[i].id && i < 3) models.push_back(GEMINI_MODELS[i].id);
       std::stable_partition(models.begin(), models.end(), [](const String &m) { return !modelBusy(m); });
       if (models[0] != (j.options.model.length() ? j.options.model : String(GEMINI_MODELS[0].id)))
-        Serial.printf("AI_MODEL starting with %s (recently overloaded models last)\n", models[0].c_str());
+        deviceConsole().printf("AI_MODEL starting with %s (recently overloaded models last)\n", models[0].c_str());
     }
   } else models.push_back(j.kind == Kind::Transcribe ? String("gpt-transcribe") : j.options.model);
   // Only requests the provider cannot have processed are retried:
@@ -670,7 +673,7 @@ bool request(Job &j) {
     }
     http.addHeader("Content-Type", contentType);
     http.addHeader(gemini ? "x-goog-api-key" : "Authorization", gemini ? j.options.key : "Bearer " + j.options.key);
-    Serial.printf("AI_SEND try %d %s %s %u bytes, internal heap %u free, largest %u\n", tries, models[model].c_str(),
+    deviceConsole().printf("AI_SEND try %d %s %s %u bytes, internal heap %u free, largest %u\n", tries, models[model].c_str(),
                   j.kind == Kind::Transcribe ? "transcribe" : j.options.effort.c_str(), (unsigned)total,
                   heap_caps_get_free_size(MALLOC_CAP_INTERNAL), heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
     if (dailyLimit > 0 && aiRequestsToday(true) + aiRequestsToday(false) >= dailyLimit) {
@@ -683,14 +686,14 @@ bool request(Job &j) {
     const uint32_t sendStart = millis();
     countRequest(gemini);
     status = http.POST(payload, total);
-    Serial.printf("AI_STATUS %d after %lu ms\n", status, (unsigned long)(millis() - sendStart));
+    deviceConsole().printf("AI_STATUS %d after %lu ms\n", status, (unsigned long)(millis() - sendStart));
     if (status == 200) break;
     // Error bodies are small JSON and never contain the key.
     errorBody = status > 0 ? http.getString().substring(0, 2000) : String("");
     String flat = errorBody.substring(0, 600);
     flat.replace("\n", " ");
     flat.replace("  ", " ");
-    Serial.printf("AI_HTTP %d %s\n", status, flat.c_str());
+    deviceConsole().printf("AI_HTTP %d %s\n", status, flat.c_str());
     if ((status == 400 || status == 403 || status == 404) && gemini && !inlineRetry) {
       bool usedLinks = false;
       for (int i = 0; i < j.pages; ++i)
@@ -708,7 +711,7 @@ bool request(Job &j) {
           free(payload);
           payload = inlinePayload;
           waitMs = 0;
-          Serial.println("AI_RETRY photos inline");
+          deviceConsole().println("AI_RETRY photos inline");
           continue;
         }
       }
@@ -759,7 +762,7 @@ bool request(Job &j) {
             free(payload);
             payload = smaller;
           }
-          Serial.printf("AI_RETRY smaller photos: %u bytes\n", (unsigned)total);
+          deviceConsole().printf("AI_RETRY smaller photos: %u bytes\n", (unsigned)total);
         }
       }
       continue;
@@ -797,7 +800,7 @@ bool request(Job &j) {
     if (status < 0) {
       char tlsError[100] = "";
       if (client) client->lastError(tlsError, sizeof tlsError);
-      Serial.printf("AI_TLS %s\n", tlsError);
+      deviceConsole().printf("AI_TLS %s\n", tlsError);
       answer = String("Connection lost (") + HTTPClient::errorToString(status) +
                "). The photo may or may not have reached the provider; it was not resent.";
       return false;
@@ -930,11 +933,11 @@ bool launch() {
 
 }  // namespace
 
-bool aiBusy() { return state != AiState::Idle; }
+bool aiBusy() { return state != AiState::Idle || aiUploadTestBusy(); }
 
 bool aiStart(const AiOptions &options, const uint8_t *const *jpegs, const size_t *lengths, int pages,
              const String &question, const String &history, const uint8_t *wav, size_t wavLength) {
-  if (state != AiState::Idle || pages < 0 || pages > AI_MAX_PAGES) return false;
+  if (aiBusy() || pages < 0 || pages > AI_MAX_PAGES) return false;
   if (!job) job = new Job();
   job->release();
   job->kind = Kind::Answer;
@@ -966,7 +969,7 @@ bool aiStart(const AiOptions &options, const uint8_t *const *jpegs, const size_t
 
 bool aiChat(const AiOptions &options, const AiTurn *turns, int turnCount, const uint8_t *const *jpegs,
             const size_t *lengths, const uint32_t *photoIds, int images, const uint8_t *wav, size_t wavLength) {
-  if (state != AiState::Idle || turnCount < 1 || images < 0 || images > AI_MAX_PAGES) return false;
+  if (aiBusy() || turnCount < 1 || images < 0 || images > AI_MAX_PAGES) return false;
   if (!job) job = new Job();
   job->release();
   job->kind = Kind::Answer;
@@ -996,7 +999,7 @@ bool aiChat(const AiOptions &options, const AiTurn *turns, int turnCount, const 
 }
 
 bool aiTranscribe(const AiOptions &options, const uint8_t *wav, size_t wavLength) {
-  if (state != AiState::Idle || !wav || !wavLength) return false;
+  if (aiBusy() || !wav || !wavLength) return false;
   if (!job) job = new Job();
   job->release();
   job->kind = Kind::Transcribe;
@@ -1055,13 +1058,13 @@ void aiDryRun(const AiOptions &options, int pages, const String &question, bool 
   if (transcribe && !options.gemini) {
     size_t total = 0;
     uint8_t *body = multipartWav(fakeWav, sizeof fakeWav, "gpt-transcribe", "----perch7f3a9c", total);
-    Serial.printf("DRYRUN POST https://api.openai.com/v1/audio/transcriptions multipart %u bytes\n", (unsigned)total);
+    deviceConsole().printf("DRYRUN POST https://api.openai.com/v1/audio/transcriptions multipart %u bytes\n", (unsigned)total);
     if (body) {
       for (size_t i = 0; i < total; ++i) {
         const char c = body[i];
-        Serial.print(c >= 32 && c < 127 ? c : (c == '\n' ? '|' : '.'));
+        deviceConsole().print(c >= 32 && c < 127 ? c : (c == '\n' ? '|' : '.'));
       }
-      Serial.println();
+      deviceConsole().println();
     }
     free(body);
     j.wav = nullptr;
@@ -1073,7 +1076,7 @@ void aiDryRun(const AiOptions &options, int pages, const String &question, bool 
   size_t total = 0;
   uint8_t *buf = body.build(total);
   if (!buf) {
-    Serial.println("DRYRUN build failed");
+    deviceConsole().println("DRYRUN build failed");
     return;
   }
   JsonDocument doc;
@@ -1085,8 +1088,8 @@ void aiDryRun(const AiOptions &options, int pages, const String &question, bool 
                          ? String("https://generativelanguage.googleapis.com/v1beta/models/") +
                                (transcribe ? "gemini-3.5-flash-lite" : options.model.c_str()) + ":generateContent"
                          : String("https://api.openai.com/v1/chat/completions");
-  Serial.printf("DRYRUN POST %s json %s, %u bytes\n", url.c_str(), err ? err.c_str() : "valid", (unsigned)total);
-  Serial.printf("DRYRUN %s\n", shape.substring(0, 1500).c_str());
+  deviceConsole().printf("DRYRUN POST %s json %s, %u bytes\n", url.c_str(), err ? err.c_str() : "valid", (unsigned)total);
+  deviceConsole().printf("DRYRUN %s\n", shape.substring(0, 1500).c_str());
   for (int i = 0; i < AI_MAX_PAGES; ++i) j.jpegs[i] = nullptr;
   j.wav = nullptr;
 }
@@ -1094,15 +1097,29 @@ void aiDryRun(const AiOptions &options, int pages, const String &question, bool 
 // Developer: the photo upload path without an API key. Google rejects it unauthenticated,
 // so no model runs and nothing is billed; it shows whether TLS and a large upload succeed.
 size_t uploadTestBytes = 0;
-void uploadTestTask(void *) {
+std::atomic_bool uploadTestRunning{false};
+uint32_t uploadTestSequence = 0;
+bool aiUploadTestBusy() { return uploadTestRunning.load(); }
+void runUploadTest() {
   const size_t bytes = uploadTestBytes;
+  const uint32_t sequence = ++uploadTestSequence;
+  const uint32_t wait = millis();
+  while (wirelessLinkRunning() && millis() - wait < 5000) vTaskDelay(pdMS_TO_TICKS(10));
+  if (wirelessLinkRunning()) {
+    deviceConsole().println("UPLOAD_TEST busy: wireless link has not suspended");
+    return;
+  }
+  const bool connectedBefore = remoteConnected();
+  const uint32_t dropsBefore = remoteDisconnectCount();
+  deviceConsole().printf("COEX_TEST begin sequence=%u bytes=%u wifi=%d bt_started=%d bt_connected=%d internal_free=%u internal_largest=%u\n",
+      unsigned(sequence), unsigned(bytes), WiFi.status() == WL_CONNECTED, remoteStarted(), connectedBefore,
+      heap_caps_get_free_size(MALLOC_CAP_INTERNAL), heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
   const char *head = "{\"contents\":[{\"parts\":[{\"inline_data\":{\"mime_type\":\"image/jpeg\",\"data\":\"";
   const char *tail = "\"}}]}]}";
   const size_t total = strlen(head) + bytes + strlen(tail);
   uint8_t *payload = (uint8_t *)ps_malloc(total);
   if (!payload) {
-    Serial.println("UPLOAD_TEST no memory");
-    vTaskDelete(nullptr);
+    deviceConsole().println("UPLOAD_TEST no memory");
     return;
   }
   memcpy(payload, head, strlen(head));
@@ -1122,14 +1139,76 @@ void uploadTestTask(void *) {
     http.end();
   }
   free(payload);
-  Serial.printf("UPLOAD_TEST status %d (%s) in %lu ms\n", status,
+  deviceConsole().printf("UPLOAD_TEST status %d (%s) in %lu ms\n", status,
                 status < 0 ? HTTPClient::errorToString(status).c_str() : "http", (unsigned long)(millis() - t));
+  deviceConsole().printf("COEX_TEST end sequence=%u status=%d before_connected=%d bt_started=%d bt_connected=%d bt_drops=%u internal_free=%u internal_largest=%u internal_min=%u psram_free=%u\n",
+      unsigned(sequence), status, connectedBefore, remoteStarted(), remoteConnected(), remoteDisconnectCount() - dropsBefore,
+      heap_caps_get_free_size(MALLOC_CAP_INTERNAL), heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+      heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL), ESP.getFreePsram());
+}
+void uploadTestTask(void *) {
+  runUploadTest();  // return through C++ destructors before deleting the FreeRTOS task
+  uploadTestRunning = false;
   vTaskDelete(nullptr);
 }
 // Same core, priority and stack as a real request, so it meets the same conditions.
 void aiUploadTest(size_t bytes) {
+  if (aiBusy() || uploadTestRunning.exchange(true)) { deviceConsole().println("UPLOAD_TEST busy"); return; }
   uploadTestBytes = bytes;
-  xTaskCreatePinnedToCore(uploadTestTask, "upload-test", 16384, nullptr, 1, nullptr, 0);
+  if (xTaskCreatePinnedToCore(uploadTestTask, "upload-test", 16384, nullptr, 1, nullptr, 0) != pdPASS) {
+    uploadTestRunning = false;
+    deviceConsole().println("UPLOAD_TEST no task memory");
+  }
+}
+
+namespace {
+void coexistenceLiveTask(void *raw) {
+  {
+    std::unique_ptr<AiOptions> options(static_cast<AiOptions *>(raw));
+    const uint32_t wait = millis();
+    while (wirelessLinkRunning() && millis() - wait < 5000) vTaskDelay(pdMS_TO_TICKS(10));
+    const bool connected = remoteConnected();
+    const uint32_t drops = remoteDisconnectCount();
+    int status = -100;
+    if (!wirelessLinkRunning() && connected && WiFi.status() == WL_CONNECTED) {
+      WiFiClientSecure client;
+      client.setCACert(AI_ROOT_CERTS);
+      client.setHandshakeTimeout(12);
+      HTTPClient http;
+      http.setConnectTimeout(12000);
+      http.setTimeout(30000);
+      const String url = "https://generativelanguage.googleapis.com/v1beta/models/" + options->model + ":generateContent";
+      if (http.begin(client, url)) {
+        http.addHeader("Content-Type", "application/json");
+        http.addHeader("x-goog-api-key", options->key);
+        countRequest(true);
+        char body[] = R"({"contents":[{"parts":[{"text":"Reply with only OK."}]}],"generationConfig":{"maxOutputTokens":64}})";
+        status = http.POST(reinterpret_cast<uint8_t *>(body), strlen(body));
+        http.end();
+      }
+    }
+    options->key = "";
+    deviceConsole().printf("COEX_LIVE status=%d before_connected=%d bt_connected=%d bt_drops=%u internal_free=%u internal_largest=%u\n",
+        status, connected, remoteConnected(), remoteDisconnectCount() - drops,
+        heap_caps_get_free_size(MALLOC_CAP_INTERNAL), heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+  }
+  uploadTestRunning = false;
+  vTaskDelete(nullptr);
+}
+}
+
+bool aiCoexistenceCheck(const AiOptions &options) {
+  if (!options.gemini || options.key.isEmpty() || !remoteConnected() || aiBusy() ||
+      (dailyLimit > 0 && aiRequestsToday(true) + aiRequestsToday(false) >= dailyLimit)) return false;
+  if (uploadTestRunning.exchange(true)) return false;
+  AiOptions *copy = new AiOptions(options);
+  if (xTaskCreatePinnedToCore(coexistenceLiveTask, "coex-live", 16384, copy, 1, nullptr, 0) != pdPASS) {
+    copy->key = "";
+    delete copy;
+    uploadTestRunning = false;
+    return false;
+  }
+  return true;
 }
 
 // The prebuilt Arduino SDK forces every TLS allocation into internal RAM, which camera,
@@ -1176,9 +1255,9 @@ void forgetTask(void *arg) {
     const int status = http.sendRequest("DELETE");
     http.end();
     if (status == 200 || status == 204 || status == 404) ++deleted;  // 404: already gone
-    Serial.printf("AI_FORGET %d\n", status);
+    deviceConsole().printf("AI_FORGET %d\n", status);
   }
-  Serial.printf("AI_FORGET %d of %u uploads deleted\n", deleted, (unsigned)f->uris.size());
+  deviceConsole().printf("AI_FORGET %d of %u uploads deleted\n", deleted, (unsigned)f->uris.size());
   f->key = "";
   delete f;
   vTaskDelete(nullptr);
@@ -1199,7 +1278,7 @@ void aiKeyCheck(const String &key) {
   http.setConnectTimeout(12000);
   http.setTimeout(20000);
   if (!http.begin(client, "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash")) {
-    Serial.println("KEYCHECK begin failed");
+    deviceConsole().println("KEYCHECK begin failed");
     return;
   }
   http.addHeader("x-goog-api-key", key);
@@ -1208,7 +1287,7 @@ void aiKeyCheck(const String &key) {
   http.end();
   body = body.substring(0, 400);
   body.replace("\n", " ");
-  Serial.printf("KEYCHECK %d %s\n", status, body.c_str());
+  deviceConsole().printf("KEYCHECK %d %s\n", status, body.c_str());
 }
 
 void aiSetFlashBusy(bool (*busy)()) { flashBusy = busy; }
@@ -1219,7 +1298,7 @@ void aiShrinkTest(const uint8_t *jpeg, size_t len) {
   uint8_t *out = nullptr;
   size_t outLen = 0;
   const bool ok = shrinkJpeg(jpeg, len, out, outLen);
-  Serial.printf("SHRINK %s %u -> %u bytes in %lums\n", ok ? "ok" : "failed", (unsigned)len, (unsigned)outLen,
+  deviceConsole().printf("SHRINK %s %u -> %u bytes in %lums\n", ok ? "ok" : "failed", (unsigned)len, (unsigned)outLen,
                 (unsigned long)(millis() - t));
   free(out);
 }
@@ -1252,7 +1331,7 @@ void aiDryRunChat(const AiOptions &options) {
   uint8_t *buf = body.build(total);
   for (int i = 0; i < AI_MAX_PAGES; ++i) j.jpegs[i] = nullptr;
   if (!buf) {
-    Serial.println("DRYRUN build failed");
+    deviceConsole().println("DRYRUN build failed");
     return;
   }
   JsonDocument doc;
@@ -1260,7 +1339,7 @@ void aiDryRunChat(const AiOptions &options) {
   String shape;
   serializeJson(doc, shape);
   free(buf);
-  Serial.printf("DRYRUN chat %s json %s, %u bytes\n", options.gemini ? "gemini" : "gpt", err ? err.c_str() : "valid",
+  deviceConsole().printf("DRYRUN chat %s json %s, %u bytes\n", options.gemini ? "gemini" : "gpt", err ? err.c_str() : "valid",
                 (unsigned)total);
-  Serial.printf("DRYRUN %s\n", shape.substring(0, 1800).c_str());
+  deviceConsole().printf("DRYRUN %s\n", shape.substring(0, 1800).c_str());
 }

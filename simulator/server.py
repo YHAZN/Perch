@@ -1,4 +1,4 @@
-"""Local USB bridge for the temporary Tiny AI screen. Standard library + pyserial."""
+"""Local USB or paired-HTTPS bridge for the device screen."""
 
 import argparse
 import base64
@@ -17,6 +17,8 @@ ROOT = Path(__file__).resolve().parents[1]
 WEB = Path(__file__).resolve().parent
 LOCK = threading.Lock()
 PORT = None
+WIRELESS_IDENTITY = None
+WIRELESS_HOST = None
 CONNECTION = None
 PREVIEW_LOCK = threading.Lock()
 PREVIEW_CACHE = None
@@ -27,6 +29,12 @@ PREVIEW_TIME = 0.0
 def device_connection(name):
     # Keep USB open between button presses: closing/reopening can reset the ESP32.
     global CONNECTION
+    if WIRELESS_IDENTITY:
+        if CONNECTION is None or not CONNECTION.is_open:
+            from wireless import WirelessConnection
+            CONNECTION = WirelessConnection(WIRELESS_IDENTITY, WIRELESS_HOST)
+        yield CONNECTION
+        return
     if CONNECTION is None or not CONNECTION.is_open:
         CONNECTION = serial.Serial()
         CONNECTION.port = name
@@ -48,6 +56,8 @@ def device_connection(name):
 
 
 def board_port():
+    if WIRELESS_IDENTITY:
+        return WIRELESS_HOST or "Trusted wireless device"
     if PORT:
         return PORT
     candidates = [p.device for p in list_ports.comports() if p.vid in (0x303A, 0x2886)]
@@ -128,7 +138,7 @@ def exchange(command, capture=False, screen=False):
         with device_connection(name) as connection:
             connection.dtr = True
             connection.reset_input_buffer()
-            connection.write(command.encode('ascii'))
+            connection.write(command.encode('utf-8'))
             deadline = time.monotonic() + (
                 110 if command in ('a', 'q', 'Q') or command.startswith('T') else 45 if command in ('w', 'g') else 25
             )
@@ -161,6 +171,7 @@ def exchange(command, capture=False, screen=False):
                     output.write_bytes(result)
                     return {
                         'port': name,
+                        'transport': 'wifi' if WIRELESS_IDENTITY else 'usb',
                         'bytes': length,
                         'sequence': int(fields[2]),
                         'live': len(fields) == 11 and fields[10] == b'1',
@@ -193,6 +204,7 @@ def exchange(command, capture=False, screen=False):
                         output.write_bytes(data)
                     return {
                         'port': name,
+                        'transport': 'wifi' if WIRELESS_IDENTITY else 'usb',
                         'bytes': length,
                         'image': 'data:image/jpeg;base64,' + base64.b64encode(data).decode('ascii'),
                     }
@@ -201,11 +213,14 @@ def exchange(command, capture=False, screen=False):
                 if 'unavailable' in line or 'CAPTURE FAILED' in line:
                     raise RuntimeError(line)
                 if command == 'e' and line == 'PREVIEW_STOPPED':
-                    return {'port': name, 'stopped': True}
+                    return {'port': name,
+                        'transport': 'wifi' if WIRELESS_IDENTITY else 'usb', 'stopped': True}
                 if command == 's' and 'Type g' in line:
-                    return {'port': name, 'log': '\n'.join(log)}
+                    return {'port': name,
+                        'transport': 'wifi' if WIRELESS_IDENTITY else 'usb', 'log': '\n'.join(log)}
                 if command in ('w', 'g') and any(s in line for s in ('test complete', 'Cannot join', 'timed out')):
-                    return {'port': name, 'log': '\n'.join(log)}
+                    return {'port': name,
+                        'transport': 'wifi' if WIRELESS_IDENTITY else 'usb', 'log': '\n'.join(log)}
         raise RuntimeError('No complete board response. Close other serial monitors and retry.\n' + '\n'.join(log))
 
 
@@ -243,7 +258,7 @@ class Handler(BaseHTTPRequestHandler):
         }
         if path == '/api/health':
             return self.reply(
-                200, {'ready': True, 'ports': [p.device for p in list_ports.comports() if p.vid in (0x303A, 0x2886)]}
+                200, {'ready': True, 'transport': 'wifi' if WIRELESS_IDENTITY else 'usb', 'ports': [p.device for p in list_ports.comports() if p.vid in (0x303A, 0x2886)]}
             )
         if path not in files:
             return self.reply(404, {'error': 'Not found.'})
@@ -265,7 +280,7 @@ class Handler(BaseHTTPRequestHandler):
                     result = PREVIEW_CACHE
                 return self.reply(200, result)
             except (serial.SerialException, RuntimeError, OSError, ValueError):
-                return self.reply(503, {'error': 'Preview interrupted. Check USB and retry.'})
+                return self.reply(503, {'error': 'Preview interrupted. Check the device connection and retry.'})
         if self.path == '/api/doubletap':
             try:
                 length = int(self.headers.get('Content-Length', '0'))
@@ -329,7 +344,7 @@ class Handler(BaseHTTPRequestHandler):
                     result['recovered'] = True
                 return self.reply(200, result)
             except (ValueError, AttributeError, serial.SerialException, RuntimeError, OSError):
-                return self.reply(503, {'error': 'Touch request failed. Check USB and retry.'})
+                return self.reply(503, {'error': 'Touch request failed. Check the device connection and retry.'})
         if self.path == '/api/ai/key':
             try:
                 length = int(self.headers.get('Content-Length', '0'))
@@ -428,6 +443,11 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--port', help='Override automatic XIAO port detection')
-    PORT = parser.parse_args().port
+    parser.add_argument('--wireless-identity', help='Local device identity from tools/pair_wireless.py')
+    parser.add_argument('--host', help='Override the device DHCP address')
+    args = parser.parse_args()
+    PORT = args.port
+    WIRELESS_IDENTITY = args.wireless_identity
+    WIRELESS_HOST = args.host
     print('Tiny AI screen: http://127.0.0.1:8765', flush=True)
     ThreadingHTTPServer(('127.0.0.1', 8765), Handler).serve_forever()
