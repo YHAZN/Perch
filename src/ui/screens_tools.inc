@@ -105,7 +105,7 @@ lv_obj_t *remoteButton(lv_obj_t *parent, int x, int y, int size, const char *sym
   } else remoteTap(b, fn);
   return b;
 }
-// The touch panel senses one finger. A separate scroll rail avoids ambiguous gestures.
+// The touch panel senses one finger. Scroll mode reuses the full touch surface.
 struct RemotePadTouch {
   bool active = false, moved = false;
   int x = 0, y = 0, startX = 0, startY = 0, scroll = 0;
@@ -118,11 +118,11 @@ void remotePointerReset() {
   if (!remoteDragging) return;
   remoteDragging = false;
   remoteMouseButtons(0);
-  if (remoteDragLabel) setText(remoteDragLabel, "Drag");
+  if (remotePadHint) setText(remotePadHint, "");
 }
 void remotePadEvent(lv_event_t *e) {
   const lv_event_code_t code = lv_event_get_code(e);
-  const bool scroll = lv_event_get_user_data(e) != nullptr;
+  const bool scroll = remoteScrollMode;
   lv_indev_t *input = lv_indev_active();
   if (!input) return;
   lv_point_t point;
@@ -131,8 +131,8 @@ void remotePadEvent(lv_event_t *e) {
   const uint32_t now = millis();
   if (code == LV_EVENT_PRESSED) {
     t = {};
-    if (!remoteConnected()) {
-      toast("Connect Perch in PC Bluetooth settings");
+    if (!remoteMouseReady()) {
+      toast("Remove Perch in PC Bluetooth, then pair again");
       return;
     }
     t.active = true;
@@ -162,11 +162,15 @@ void remotePadEvent(lv_event_t *e) {
         t.sent = now;
       }
     }
+  } else if (code == LV_EVENT_LONG_PRESSED && t.active && !scroll && !t.moved && remoteMouseReady()) {
+    remoteDragging = true;
+    remoteMouseButtons(RemoteMouse::Left);
+    setText(remotePadHint, "Dragging");
   } else if ((code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) && t.active) {
     if (!scroll && (t.pendingX || t.pendingY)) remoteMouseMove(t.pendingX, t.pendingY);
     if (code == LV_EVENT_RELEASED && !scroll && !t.moved && now - t.started < 300 && !remoteDragging)
       remoteMouseClick(RemoteMouse::Left);
-    t = {};
+    remotePointerReset();
   }
 }
 lv_obj_t *remoteTile(lv_obj_t *p, int x, int y, int w, int h, const char *label, void (*fn)()) {
@@ -188,88 +192,112 @@ void setRemoteMode(uint8_t mode) {
   hide(remoteMediaPanel, mode != 1);
   hide(remoteSlides, mode != 2);
   hide(remotePcPanel, mode != 3);
-  for (int i = 0; i < 4; ++i) {
-    lv_obj_set_style_text_color(remoteModeLabel[i], i == mode ? INK : MIST, 0);
-    lv_obj_set_style_bg_opa(remoteModeButton[i], i == mode ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
-  }
+  const char *names[] = {"Trackpad", "Media", "Slides", "Shortcuts"};
+  setText(remoteModeTitle, names[mode]);
+  hide(remoteModes, true);
+  remoteScrollMode = false;
+  setText(remoteScrollLabel, "Scroll");
+  lv_obj_set_style_bg_color(remoteScrollButton, GRAPHITE, 0);
 }
 void buildRemote() {
   lv_obj_t *s = scr[(int)Screen::Remote] = screenBase();
   remoteStatus = text(s, "", F_SMALL, MIST);
-  lv_obj_set_width(remoteStatus, W - 70);
-  lv_obj_set_style_text_align(remoteStatus, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_width(remoteStatus, 94);
+  lv_obj_set_style_text_align(remoteStatus, LV_TEXT_ALIGN_RIGHT, 0);
   lv_label_set_long_mode(remoteStatus, LV_LABEL_LONG_WRAP);
-  lv_obj_align(remoteStatus, LV_ALIGN_TOP_MID, 0, 14);
-  remotePadPanel = plain(s);
-  lv_obj_set_size(remotePadPanel, W, 220);
-  for (int i = 0; i < 2; ++i) {
-    lv_obj_t *pad = plain(remotePadPanel);
-    lv_obj_set_pos(pad, i ? 204 : 14, 48);
-    lv_obj_set_size(pad, i ? 22 : 182, 126);
-    lv_obj_set_style_radius(pad, i ? 11 : 20, 0);
-    lv_obj_set_style_bg_color(pad, GRAPHITE, 0);
-    lv_obj_set_style_bg_opa(pad, LV_OPA_COVER, 0);
-    lv_obj_t *hint = text(pad, i ? LV_SYMBOL_UP "\n\n" LV_SYMBOL_DOWN : "Tap to click", F_SMALL, MIST);
-    lv_obj_center(hint);
-    lv_obj_add_flag(pad, LV_OBJ_FLAG_CLICKABLE);
-    for (lv_event_code_t event : {LV_EVENT_PRESSED, LV_EVENT_PRESSING, LV_EVENT_RELEASED, LV_EVENT_PRESS_LOST})
-      lv_obj_add_event_cb(pad, remotePadEvent, event, i ? (void *)1 : nullptr);
-  }
-  remoteTile(remotePadPanel, 14, 184, 64, 34, "Click", [] { remoteMouseClick(RemoteMouse::Left); });
-  remoteTile(remotePadPanel, 88, 184, 64, 34, "Right", [] { remoteMouseClick(RemoteMouse::Right); });
-  lv_obj_t *drag = remoteTile(remotePadPanel, 162, 184, 64, 34, "Drag", [] {
-    remoteDragging = !remoteDragging;
-    remoteMouseButtons(remoteDragging ? RemoteMouse::Left : 0);
-    setText(remoteDragLabel, remoteDragging ? "Drop" : "Drag");
+  lv_obj_align(remoteStatus, LV_ALIGN_TOP_RIGHT, -14, 27);
+  lv_obj_t *modePicker = plain(s);
+  lv_obj_set_pos(modePicker, 12, 14);
+  lv_obj_set_size(modePicker, 126, 44);
+  remoteModeTitle = text(modePicker, "Trackpad", F_BODY, INK);
+  lv_obj_align(remoteModeTitle, LV_ALIGN_LEFT_MID, 6, 0);
+  lv_obj_t *chevron = text(modePicker, LV_SYMBOL_DOWN, F_SMALL, MIST);
+  lv_obj_align(chevron, LV_ALIGN_RIGHT_MID, -2, 0);
+  onClick(modePicker, [] {
+    remotePointerReset();
+    hide(remoteModes, false);
   });
-  remoteDragLabel = lv_obj_get_child(drag, 0);
+  remotePadPanel = plain(s);
+  lv_obj_set_size(remotePadPanel, W, 260);
+  lv_obj_t *pad = plain(remotePadPanel);
+  lv_obj_set_pos(pad, 12, 66);
+  lv_obj_set_size(pad, 216, 154);
+  lv_obj_set_style_radius(pad, 22, 0);
+  lv_obj_set_style_bg_color(pad, GRAPHITE, 0);
+  lv_obj_set_style_bg_opa(pad, LV_OPA_COVER, 0);
+  remotePadHint = text(pad, "", F_SMALL, MIST);
+  lv_obj_center(remotePadHint);
+  lv_obj_add_flag(pad, LV_OBJ_FLAG_CLICKABLE);
+  for (lv_event_code_t event :
+       {LV_EVENT_PRESSED, LV_EVENT_PRESSING, LV_EVENT_LONG_PRESSED, LV_EVENT_RELEASED, LV_EVENT_PRESS_LOST})
+    lv_obj_add_event_cb(pad, remotePadEvent, event, nullptr);
+  remoteScrollButton = remoteTile(remotePadPanel, 12, 230, 102, 30, "Scroll", [] {
+    remotePointerReset();
+    remoteScrollMode = !remoteScrollMode;
+    setText(remoteScrollLabel, remoteScrollMode ? "Scroll on" : "Scroll");
+    lv_obj_set_style_bg_color(remoteScrollButton, remoteScrollMode ? ICON_BG : GRAPHITE, 0);
+  });
+  remoteScrollLabel = lv_obj_get_child(remoteScrollButton, 0);
+  remoteTile(remotePadPanel, 126, 230, 102, 30, "Right click", [] {
+    if (remoteMouseReady()) remoteMouseClick(RemoteMouse::Right);
+    else toast("Remove Perch in PC Bluetooth, then pair again");
+  });
   // Slides retain direct arrows, with explicit presentation start and exit.
 
   remoteSlides = plain(s);
-  lv_obj_set_size(remoteSlides, W, 220);
+  lv_obj_set_size(remoteSlides, W, 260);
   remoteZone(remoteSlides, 14, 102, LV_SYMBOL_LEFT, [] { remoteKey(RemoteKey::Left); });
   remoteZone(remoteSlides, 124, 102, LV_SYMBOL_RIGHT, [] { remoteKey(RemoteKey::Right); });
   remoteTile(remoteSlides, 14, 184, 102, 34, "Present", [] { remoteKey(RemoteKey::F5); });
   remoteTile(remoteSlides, 124, 184, 102, 34, "Exit", [] { remoteKey(RemoteKey::Escape); });
   remotePcPanel = plain(s);
-  lv_obj_set_size(remotePcPanel, W, 220);
+  lv_obj_set_size(remotePcPanel, W, 260);
   lv_obj_t *windowsLabel = text(remotePcPanel, "Windows", F_SMALL, MIST);
-  lv_obj_align(windowsLabel, LV_ALIGN_TOP_MID, 0, 40);
-  remoteTile(remotePcPanel, 14, 62, 102, 46, "Switch app", [] { remoteKey(RemoteKey::Tab, RemoteModifier::Alt); });
-  remoteTile(remotePcPanel, 124, 62, 102, 46, "Desktop", [] { remoteKey(RemoteKey::D, RemoteModifier::Windows); });
-  remoteTile(remotePcPanel, 14, 116, 102, 46, "Tasks", [] { remoteKey(RemoteKey::Tab, RemoteModifier::Windows); });
-  remoteTile(remotePcPanel, 124, 116, 102, 46, "Search", [] { remoteKey(RemoteKey::S, RemoteModifier::Windows); });
-  remoteTile(remotePcPanel, 14, 170, 102, 46, "Copy", [] { remoteKey(RemoteKey::C, RemoteModifier::Control); });
-  remoteTile(remotePcPanel, 124, 170, 102, 46, "Paste", [] { remoteKey(RemoteKey::V, RemoteModifier::Control); });
+  lv_obj_align(windowsLabel, LV_ALIGN_TOP_MID, 0, 58);
+  remoteTile(remotePcPanel, 14, 84, 102, 46, "Switch app", [] { remoteKey(RemoteKey::Tab, RemoteModifier::Alt); });
+  remoteTile(remotePcPanel, 124, 84, 102, 46, "Desktop", [] { remoteKey(RemoteKey::D, RemoteModifier::Windows); });
+  remoteTile(remotePcPanel, 14, 140, 102, 46, "Tasks", [] { remoteKey(RemoteKey::Tab, RemoteModifier::Windows); });
+  remoteTile(remotePcPanel, 124, 140, 102, 46, "Search", [] { remoteKey(RemoteKey::S, RemoteModifier::Windows); });
+  remoteTile(remotePcPanel, 14, 196, 102, 46, "Copy", [] { remoteKey(RemoteKey::C, RemoteModifier::Control); });
+  remoteTile(remotePcPanel, 124, 196, 102, 46, "Paste", [] { remoteKey(RemoteKey::V, RemoteModifier::Control); });
   // Media: play/pause in the middle, tracks either side, volume below.
   remoteMediaPanel = plain(s);
-  lv_obj_set_size(remoteMediaPanel, W, 220);
+  lv_obj_set_size(remoteMediaPanel, W, 260);
   remoteButton(remoteMediaPanel, 120, 104, 72, LV_SYMBOL_PLAY, [] { remoteMedia(RemoteMedia::PlayPause); });
   remoteButton(remoteMediaPanel, 46, 104, 52, LV_SYMBOL_PREV, [] { remoteMedia(RemoteMedia::Previous); });
   remoteButton(remoteMediaPanel, 194, 104, 52, LV_SYMBOL_NEXT, [] { remoteMedia(RemoteMedia::Next); });
   remoteButton(remoteMediaPanel, 58, 174, 46, LV_SYMBOL_MINUS, [] { remoteMedia(RemoteMedia::VolumeDown); }, true);
   remoteButton(remoteMediaPanel, 120, 174, 46, LV_SYMBOL_MUTE, [] { remoteMedia(RemoteMedia::Mute); });
   remoteButton(remoteMediaPanel, 182, 174, 46, LV_SYMBOL_PLUS, [] { remoteMedia(RemoteMedia::VolumeUp); }, true);
-  // Four views share one compact switch; each screen exposes only its own controls.
-  lv_obj_t *mode = plain(s);
-  lv_obj_set_size(mode, 216, 36);
-  lv_obj_align(mode, LV_ALIGN_BOTTOM_MID, 0, -ABOVE_HOME + 6);
-  lv_obj_set_style_radius(mode, 18, 0);
-  lv_obj_set_style_bg_color(mode, GRAPHITE, 0);
-  lv_obj_set_style_bg_opa(mode, LV_OPA_COVER, 0);
-  const char *names[4] = {"Pad", "Media", "Slides", "PC"};
+  // Choosing a tool is a separate sheet, rather than four permanent tiny tabs.
+  remoteModes = plain(s);
+  lv_obj_add_flag(remoteModes, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_set_size(remoteModes, W, H);
+  lv_obj_set_style_bg_color(remoteModes, VOID_, 0);
+  lv_obj_set_style_bg_opa(remoteModes, LV_OPA_COVER, 0);
+  lv_obj_t *title = text(remoteModes, "Controls", F_BODY, INK);
+  lv_obj_set_pos(title, 22, 25);
+  const char *names[] = {"Trackpad", "Media", "Slides", "Shortcuts"};
+  const char *symbols[] = {LV_SYMBOL_GPS, LV_SYMBOL_PLAY, LV_SYMBOL_RIGHT, LV_SYMBOL_KEYBOARD};
   for (int i = 0; i < 4; ++i) {
-    lv_obj_t *half = remoteModeButton[i] = pressedFeedback(plain(mode));
-    lv_obj_set_size(half, 54, 36);
-    lv_obj_set_pos(half, i * 54, 0);
-    lv_obj_set_style_radius(half, 18, 0);
-    lv_obj_set_style_bg_color(half, ICON_BG, 0);
-    remoteModeLabel[i] = text(half, names[i], F_SMALL, MIST);
-    lv_obj_center(remoteModeLabel[i]);
-    lv_obj_add_flag(half, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_t *tile = pressedFeedback(plain(remoteModes));
+    lv_obj_set_pos(tile, 16 + (i % 2) * 108, 68 + (i / 2) * 82);
+    lv_obj_set_size(tile, 100, 72);
+    lv_obj_set_style_radius(tile, 20, 0);
+    lv_obj_set_style_bg_color(tile, GRAPHITE, 0);
+    lv_obj_set_style_bg_opa(tile, LV_OPA_COVER, 0);
+    lv_obj_t *icon = text(tile, symbols[i], F_BODY, INK);
+    lv_obj_align(icon, LV_ALIGN_TOP_MID, 0, 12);
+    lv_obj_t *label = text(tile, names[i], F_SMALL, MIST);
+    lv_obj_align(label, LV_ALIGN_BOTTOM_MID, 0, -12);
+    lv_obj_add_flag(tile, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(
-        half, [](lv_event_t *e) { setRemoteMode(uintptr_t(lv_event_get_user_data(e))); }, LV_EVENT_CLICKED,
+        tile, [](lv_event_t *e) { setRemoteMode(uintptr_t(lv_event_get_user_data(e))); }, LV_EVENT_CLICKED,
         (void *)(uintptr_t)i);
   }
+  lv_obj_t *done = pill(remoteModes, "Done", 144);
+  lv_obj_set_size(done, 144, 36);
+  lv_obj_set_pos(done, 48, 226);
+  onClick(done, [] { hide(remoteModes, true); });
   setRemoteMode(0);
 }
