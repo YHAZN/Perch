@@ -26,6 +26,7 @@
 #include "display.h"
 #include "remote.h"
 #include "remote_profiles.h"
+#include "remote_gestures.h"
 #include "storage.h"
 #include "sd_card.h"
 #include "math_text.h"
@@ -171,11 +172,18 @@ lv_image_dsc_t zoomDsc;
 int zoomW = 0, zoomH = 0;
 unsigned long lastPhotoTap = 0;
 lv_obj_t *remoteStatus, *remoteSlides, *remoteMediaPanel, *remotePadPanel, *remotePcPanel;
-lv_obj_t *remoteModeTitle, *remoteModes, *remoteScrollLabel, *remoteScrollButton, *remotePadHint;
+lv_obj_t *remoteModeTitle, *remoteModes, *remotePadHint;
 lv_obj_t *remotePlatformSheet, *remotePlatformLabel, *remoteShortcutTitle, *remoteShortcutButtons[6];
-lv_obj_t *remotePresentButton, *remoteExitButton;
+lv_obj_t *remotePresentButton, *remoteExitButton, *remoteSlideOptions, *remoteMoreButton;
+void setRemoteMode(uint8_t mode);
 RemotePlatform remotePlatform = RemotePlatform::Windows;
-bool remoteScrollMode = false;
+lv_obj_t *remoteMediaGlyph, *remoteSlideGlyph;
+uint32_t remoteFeedbackUntil = 0;
+bool remoteNavigationMode();
+bool remoteNavigationReady();
+bool remoteControlReady();
+bool remotePhonePointer = false;
+lv_obj_t *remotePhoneOptions;
 uint8_t remoteMode = 0;
 bool remoteDragging = false;
 void remotePointerReset();

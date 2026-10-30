@@ -3,6 +3,7 @@ void deviceTick() {
   if (!framebuffer) return;
   const unsigned long now = millis();
   remoteTick();
+  remoteFeedbackTick(now);
   if (remoteDragging && !remoteConnected()) remotePointerReset();
   if (softwareRestartAt && int32_t(now - softwareRestartAt) >= 0) ESP.restart();
   networkRoam(!aiBusy() && current != Screen::Wifi && updaterState() != UpdateState::Installing);
@@ -14,7 +15,10 @@ void deviceTick() {
     const unsigned long after = SLEEP_CHOICES[sleepChoice] * 1000UL;
     if (after && !screenAsleep) {
       const unsigned long idle = now - lastActivity;
-      if (idle > after) sleepScreen();
+      // A linked remote dims, but the next touch must act immediately instead of
+      // being swallowed as a wake-only touch during a presentation or playback.
+      const bool activeRemote = current == Screen::Remote && remoteConnected() && !ccOpen;
+      if (idle > after && !activeRemote) sleepScreen();
       else if (idle + 10000 > after && !screenDim) {
         screenDim = true;
         displayBrightness(max(8, brightnessPct * 255 / 100 / 4));

@@ -445,6 +445,7 @@ void onEnter(Screen s) {
   } else if (s == Screen::Picker) {
     refreshPicker();
   } else if (s == Screen::Remote) {
+    setRemoteMode(remoteMode);
     if (!bluetoothOn) {
       setBluetooth(true);
       toast("Bluetooth on");

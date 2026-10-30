@@ -519,21 +519,22 @@ void refreshDynamic() {
   const String storageNote = sdCardAvailable() ? "SD photos / " + String(freeKbCache) + " KB internal"
                                               : String(photoCount) + " photos, " + answerCount + " answers on the device";
   setText(storageSub, storageNote.c_str());
+  const char *setupState = remoteNavigationMode() ? "Keyboard setup"
+                            : remotePlatform == RemotePlatform::IPhone ? "AssistiveTouch" : "Pair again";
   const char *remoteConnection = !remoteStarted() ? "Bluetooth off"
                                  : !remoteConnected() ? "Not connected"
-                                 : remoteMode == 0 && !remoteMouseReady()
-                                     ? (remotePlatform == RemotePlatform::IPhone ? "AssistiveTouch" : "Pair again")
-                                     : "Connected";
+                                 : remoteMode == 0 && !remoteControlReady() ? setupState : "Connected";
   setText(remoteStatus, remoteConnection);
+  if (remoteMode == 0) setText(remoteModeTitle, remoteNavigationMode() ? "Navigate" : "Trackpad");
   lv_obj_set_style_opa(remoteSlides, remoteConnected() ? LV_OPA_COVER : LV_OPA_40, 0);
   lv_obj_set_style_opa(remoteMediaPanel, remoteConnected() ? LV_OPA_COVER : LV_OPA_40, 0);
+  const char *setupHint = remoteNavigationMode() ? "Enable Full Keyboard Access"
+                           : remotePlatform == RemotePlatform::IPhone ? "Enable AssistiveTouch"
+                                                                     : "Pair Perch again on the host";
   const char *pointerHint = !remoteConnected() ? "Pair Perch in Bluetooth"
-                            : !remoteMouseReady()
-                                ? (remotePlatform == RemotePlatform::IPhone ? "Enable AssistiveTouch"
-                                                                          : "Pair Perch again on the host")
-                                : remoteDragging ? "Dragging" : "";
+                            : !remoteControlReady() ? setupHint : remoteDragging ? "Dragging" : "";
   setText(remotePadHint, pointerHint);
-  lv_obj_set_style_opa(remotePadPanel, remoteMouseReady() ? LV_OPA_COVER : LV_OPA_40, 0);
+  lv_obj_set_style_opa(remotePadPanel, remoteControlReady() ? LV_OPA_COVER : LV_OPA_40, 0);
   lv_obj_set_style_opa(remotePcPanel, remoteConnected() ? LV_OPA_COVER : LV_OPA_40, 0);
   // Control Center: restyle only when a toggle actually changed.
   const String cc =

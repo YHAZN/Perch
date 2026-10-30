@@ -63,7 +63,7 @@ void readTouch(lv_indev_t *, lv_indev_data_t *data) {
              : (downY >= HOME_ZONE && abs(downX - W / 2) <= HOME_HALF_WIDTH) ? Edge::Home
              : downY >= HOME_ZONE                                            ? Edge::Corner
              : (downY < TOP_ZONE && !ccOpen)                                 ? Edge::Control
-             : (downX < BACK_ZONE && !ccOpen && current != Screen::Face)     ? Edge::Back
+             : (downX < BACK_ZONE && !ccOpen && current != Screen::Face && !(current == Screen::Remote && remoteMode < 3))     ? Edge::Back
                                                                              : Edge::None;
     } else if (now > moveAt) {
       speed = (speed + (lastY - y) * 1000 / (int)(now - moveAt)) / 2;

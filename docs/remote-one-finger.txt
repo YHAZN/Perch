@@ -1,0 +1,45 @@
+ONE-FINGER REMOTE
+
+TRACKPAD
+Move slowly for precision; faster strokes accelerate the pointer.
+Tap for a primary click. Two quick taps give a double click.
+Hold still for about 0.55 seconds for a secondary click. Lifting afterward does not click again.
+Double-tap and keep the second touch down to drag. Lift to drop.
+Start a vertical stroke within the rightmost 40 pixels for scrolling. The region is latched
+for that touch, so crossing back into the pad does not switch to pointer movement.
+The thin right-edge marker identifies this region; it is not a narrow button to hit.
+
+MEDIA
+Tap anywhere on the surface: play/pause.
+Swipe left: next track. Swipe right: previous track.
+Swipe up/down: volume up/down, with repeated steps as the finger moves.
+Hold still: mute. A held gesture does not trigger another action on release.
+The glyph briefly confirms an accepted gesture, not the host's playback state.
+
+SLIDES
+Tap anywhere: next slide.
+Swipe left: next slide. Swipe right: previous slide.
+Hold still: previous slide.
+Presentation start/exit are behind the header's three-dot menu, away from the main surface.
+
+IPHONE KEYBOARD NAVIGATION
+Select iPhone > Keyboard navigation in the key-layout picker. The choice is saved.
+Full Keyboard Access must be enabled on the phone; Perch cannot enable or detect it remotely.
+Swipe left/right: Next/Previous keyboard focus. Swipe up/down: Up/Down arrow keys.
+Tap: Activate (Space). Hold: Enter.
+Select iPhone > Pointer to use AssistiveTouch mouse control instead. Perch does not guess the input mode from mouse subscriptions.
+This is keyboard navigation, not direct touchscreen or Apple Pencil emulation.
+
+DAILY USE
+Remote remembers the selected tool. The header opens the tool chooser; Help explains its gestures.
+While Remote is visible and Bluetooth is linked, the display can dim but does not sleep and
+consume the next tap only as a wake action. Normal sleep returns after leaving or disconnecting.
+Home and Control Center edge gestures remain available. The left-edge Back gesture is suppressed
+inside the gesture tools so a horizontal control stroke does not accidentally leave Remote.
+Any active drag releases on finger lift, cancellation, leaving Remote or Bluetooth disconnect.
+
+VERIFICATION
+The gesture state-machine tests cover tap jitter, double-tap drag, cancelled touches, edge-scroll
+latching, one-shot holds, media axis locking, navigation and millisecond-counter rollover.
+Physical comfort, timing and behavior on Apple devices still need hands-on verification.
+There is no vibration motor; this update does not add haptic feedback.

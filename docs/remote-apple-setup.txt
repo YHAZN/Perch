@@ -25,7 +25,9 @@ Start a presentation in its app on the iPad; Perch's arrows can then advance sup
 No global mobile presentation-start shortcut is assumed.
 
 IPHONE
-In Settings > Accessibility > Touch, turn on AssistiveTouch.
+Choose iPhone in the key-layout picker, then choose Keyboard navigation or Pointer.
+Keyboard navigation is the default and does not require AssistiveTouch.
+For Pointer mode, in Settings > Accessibility > Touch, turn on AssistiveTouch.
 Use AssistiveTouch > Devices > Bluetooth Devices to pair Perch.
 Enable Full Keyboard Access in Settings > Accessibility > Keyboards for keyboard navigation.
 The iPhone layout provides Next (Tab), Previous (Shift-Tab), Activate (Space), Enter, Copy and Paste.
