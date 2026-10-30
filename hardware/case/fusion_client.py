@@ -40,7 +40,19 @@ class FusionClient:
         return result.get("result")
 
     def call(self, name, arguments):
-        return self.request("tools/call", {"name": name, "arguments": arguments})
+        result = self.request("tools/call", {"name": name, "arguments": arguments})
+        if result.get("isError"):
+            raise RuntimeError(result)
+        for block in result.get("content", []):
+            if block.get("type") != "text":
+                continue
+            try:
+                payload = json.loads(block["text"])
+            except (json.JSONDecodeError, KeyError):
+                continue
+            if payload.get("success") is False:
+                raise RuntimeError(payload)
+        return result
 
 
 if __name__ == "__main__":
