@@ -89,7 +89,14 @@ def main():
             (captures / "sd-photo-before.jpg").write_bytes(before)
             # Persisted 40 MHz is the normal display speed, also restored after reset.
             with server.device_lock(), server.device_connection(args.port) as connection:
-                connection.write(b"Y40\n")
+                try:
+                    connection.write(b"Y40\n")
+                except ConnectionResetError:
+                    if not server.WIRELESS_IDENTITY:
+                        raise
+                    # A restart can close HTTPS before the reply. Do not replay it;
+                    # the stored photo must still reload and compare after reconnecting.
+                    print("Device restarting; reconnecting without replaying the command")
                 time.sleep(0.5)
             time.sleep(6)
             _, lines = diagnostic(")", "SD_CARD ")
