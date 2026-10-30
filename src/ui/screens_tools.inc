@@ -66,6 +66,17 @@ void renderGestures() {
 }
 
 // ---------- Remote: Bluetooth keyboard for slides and media ----------
+void remoteAction(lv_event_t *e) {
+  if (!remoteConnected()) {
+    toast("Connect Perch in PC Bluetooth settings");
+    return;
+  }
+  ((void (*)())lv_event_get_user_data(e))();
+}
+void remoteTap(lv_obj_t *o, void (*fn)()) {
+  lv_obj_add_flag(o, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(o, remoteAction, LV_EVENT_CLICKED, (void *)fn);
+}
 lv_obj_t *remoteZone(lv_obj_t *parent, int x, int w, const char *symbol, void (*fn)()) {
   lv_obj_t *z = plain(parent);
   lv_obj_set_size(z, w, 146);
@@ -75,17 +86,22 @@ lv_obj_t *remoteZone(lv_obj_t *parent, int x, int w, const char *symbol, void (*
   lv_obj_set_style_bg_opa(z, LV_OPA_COVER, 0);
   lv_obj_set_style_bg_color(z, ICON_BG, LV_STATE_PRESSED);
   lv_obj_center(text(z, symbol, F_LARGE, INK));
-  onClick(z, fn);
+  remoteTap(z, fn);
   return z;
 }
-lv_obj_t *remoteButton(lv_obj_t *parent, int x, int y, int size, const char *symbol, void (*fn)()) {
+lv_obj_t *remoteButton(lv_obj_t *parent, int x, int y, int size, const char *symbol, void (*fn)(), bool repeat = false) {
   lv_obj_t *b = circle(parent, size, ICON_BG, 0, ICON_BG, LV_OPA_COVER);
   lv_obj_set_pos(b, x - size / 2, y - size / 2);
   lv_obj_set_style_bg_color(b, INK, LV_STATE_PRESSED);
   lv_obj_t *l = text(b, symbol, size > 56 ? F_LARGE : F_BODY, INK);
   lv_obj_set_style_text_color(l, VOID_, LV_STATE_PRESSED);
   lv_obj_center(l);
-  onClick(b, fn);
+  if (repeat) {
+    // Volume acts immediately, repeats while held, and sends no extra click on release.
+    lv_obj_add_flag(b, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(b, remoteAction, LV_EVENT_PRESSED, (void *)fn);
+    lv_obj_add_event_cb(b, remoteAction, LV_EVENT_LONG_PRESSED_REPEAT, (void *)fn);
+  } else remoteTap(b, fn);
   return b;
 }
 void setRemoteMode(bool media) {
@@ -113,8 +129,9 @@ void buildRemote() {
   remoteButton(remoteMediaPanel, 120, 104, 72, LV_SYMBOL_PLAY, [] { remoteMedia(RemoteMedia::PlayPause); });
   remoteButton(remoteMediaPanel, 46, 104, 52, LV_SYMBOL_PREV, [] { remoteMedia(RemoteMedia::Previous); });
   remoteButton(remoteMediaPanel, 194, 104, 52, LV_SYMBOL_NEXT, [] { remoteMedia(RemoteMedia::Next); });
-  remoteButton(remoteMediaPanel, 92, 164, 40, LV_SYMBOL_MINUS, [] { remoteMedia(RemoteMedia::VolumeDown); });
-  remoteButton(remoteMediaPanel, 148, 164, 40, LV_SYMBOL_PLUS, [] { remoteMedia(RemoteMedia::VolumeUp); });
+  remoteButton(remoteMediaPanel, 58, 174, 46, LV_SYMBOL_MINUS, [] { remoteMedia(RemoteMedia::VolumeDown); }, true);
+  remoteButton(remoteMediaPanel, 120, 174, 46, LV_SYMBOL_MUTE, [] { remoteMedia(RemoteMedia::Mute); });
+  remoteButton(remoteMediaPanel, 182, 174, 46, LV_SYMBOL_PLUS, [] { remoteMedia(RemoteMedia::VolumeUp); }, true);
   // Mode switch: one quiet segmented pill.
   lv_obj_t *mode = plain(s);
   lv_obj_set_size(mode, 170, 36);

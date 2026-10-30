@@ -88,8 +88,8 @@ void remoteMedia(uint16_t usage) {
   consumer->notify();
 }
 
-// Bluetooth holds ~100 KB of internal RAM; HTTPS needs it back. Reopening Remote restarts
-// advertising and a bonded computer reconnects by itself.
+// Disabling Bluetooth releases its internal allocations. Reopening Remote restarts
+// advertising and a bonded computer can reconnect without pairing again.
 void remoteEnd() {
   if (!started) return;
   delete hid;

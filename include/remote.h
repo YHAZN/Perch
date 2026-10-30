@@ -4,7 +4,7 @@
 // Bluetooth LE keyboard + media keys. Any computer or phone pairs with "Perch" from its
 // own Bluetooth settings; no app is needed. Started on first use (it costs ~40 KB RAM).
 bool remoteBegin();
-// Stop Bluetooth and free its memory (needed before HTTPS requests).
+// Stop Bluetooth and free its memory when disabled or needed by the low-memory fallback.
 void remoteEnd();
 bool remoteStarted();
 bool remoteConnected();
@@ -18,5 +18,5 @@ namespace RemoteKey {
 constexpr uint8_t Right = 0x4F, Left = 0x50, Space = 0x2C;
 }
 namespace RemoteMedia {
-constexpr uint16_t PlayPause = 0xCD, Next = 0xB5, Previous = 0xB6, VolumeUp = 0xE9, VolumeDown = 0xEA;
+constexpr uint16_t PlayPause = 0xCD, Next = 0xB5, Previous = 0xB6, Mute = 0xE2, VolumeUp = 0xE9, VolumeDown = 0xEA;
 }
