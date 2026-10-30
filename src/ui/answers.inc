@@ -519,12 +519,20 @@ void refreshDynamic() {
   const String storageNote = sdCardAvailable() ? "SD photos / " + String(freeKbCache) + " KB internal"
                                               : String(photoCount) + " photos, " + answerCount + " answers on the device";
   setText(storageSub, storageNote.c_str());
-  setText(remoteStatus, !remoteStarted()    ? ""
-                        : remoteConnected() ? (remoteMode == 0 && !remoteMouseReady() ? "Pair again" : "Connected")
-                                            : "Pair \"Perch\" in your computer's Bluetooth");
+  const char *remoteConnection = !remoteStarted() ? "Bluetooth off"
+                                 : !remoteConnected() ? "Not connected"
+                                 : remoteMode == 0 && !remoteMouseReady()
+                                     ? (remotePlatform == RemotePlatform::IPhone ? "AssistiveTouch" : "Pair again")
+                                     : "Connected";
+  setText(remoteStatus, remoteConnection);
   lv_obj_set_style_opa(remoteSlides, remoteConnected() ? LV_OPA_COVER : LV_OPA_40, 0);
   lv_obj_set_style_opa(remoteMediaPanel, remoteConnected() ? LV_OPA_COVER : LV_OPA_40, 0);
-  setText(remotePadHint, !remoteConnected() ? "Connect in PC Bluetooth" : !remoteMouseReady() ? "Pair Perch again on PC" : remoteDragging ? "Dragging" : "");
+  const char *pointerHint = !remoteConnected() ? "Pair Perch in Bluetooth"
+                            : !remoteMouseReady()
+                                ? (remotePlatform == RemotePlatform::IPhone ? "Enable AssistiveTouch"
+                                                                          : "Pair Perch again on the host")
+                                : remoteDragging ? "Dragging" : "";
+  setText(remotePadHint, pointerHint);
   lv_obj_set_style_opa(remotePadPanel, remoteMouseReady() ? LV_OPA_COVER : LV_OPA_40, 0);
   lv_obj_set_style_opa(remotePcPanel, remoteConnected() ? LV_OPA_COVER : LV_OPA_40, 0);
   // Control Center: restyle only when a toggle actually changed.

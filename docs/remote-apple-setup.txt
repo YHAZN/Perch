@@ -1,0 +1,41 @@
+PERCH REMOTE: HOST SETUP
+
+Perch sends standard Bluetooth LE mouse, keyboard and consumer-control reports.
+It is a one-finger relative touchpad, not an Apple Magic Trackpad or Apple Pencil.
+No pressure, tilt, Pencil pairing, native multitouch gestures or PencilKit input is provided.
+
+Select Remote > header menu > current key layout > Windows, Mac, iPad or iPhone.
+This saves the shortcut layout on Perch. It does not connect to a different host,
+identify the host OS automatically or create a simultaneous multi-device connection.
+Disconnect the old host before pairing Perch from the new host's Bluetooth settings.
+An existing host with a stale HID definition may need Perch removed and paired again.
+
+MAC
+Pair Perch in System Settings > Bluetooth. Use the Mac layout for Command shortcuts.
+Shortcuts: Command-Tab, Command-Space, Control-Up, Command-A/C/V.
+Slides > Keynote sends Option-Command-P, which is specific to Keynote.
+Pointer movement, primary/secondary click, hold-to-drag and scrolling use the shared mouse report.
+System remappings and app keyboard shortcuts can change how a host responds.
+
+IPAD
+Pair Perch in Settings > Bluetooth. Select the iPad layout on Perch.
+The layout uses Command-Tab, Command-Space, Command-A/Z/C/V.
+If pointer assistance is needed, use Settings > Accessibility > Touch > AssistiveTouch.
+Start a presentation in its app on the iPad; Perch's arrows can then advance supported slides.
+No global mobile presentation-start shortcut is assumed.
+
+IPHONE
+In Settings > Accessibility > Touch, turn on AssistiveTouch.
+Use AssistiveTouch > Devices > Bluetooth Devices to pair Perch.
+Enable Full Keyboard Access in Settings > Accessibility > Keyboards for keyboard navigation.
+The iPhone layout provides Next (Tab), Previous (Shift-Tab), Activate (Space), Enter, Copy and Paste.
+In AssistiveTouch > Devices > Perch, assign the secondary mouse button as desired.
+Pointer control operates the phone's accessibility interface; it is not direct touchscreen emulation.
+App support varies. These Apple layouts require physical testing on the user's devices.
+
+SOURCES
+Apple pointer setup: https://support.apple.com/en-us/111775
+Mac shortcuts: https://support.apple.com/en-us/102650
+iPad shortcuts: https://support.apple.com/en-us/102393
+iPhone Full Keyboard Access: https://support.apple.com/en-ke/guide/iphone/ipha4375873f/ios
+Keynote shortcuts: https://support.apple.com/en-bh/guide/keynote/tanfde4a3e6d/mac

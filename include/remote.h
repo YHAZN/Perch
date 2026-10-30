@@ -25,9 +25,12 @@ void remoteMouseButtons(uint8_t buttons);
 namespace RemoteKey {
 constexpr uint8_t Right = 0x4F, Left = 0x50, Space = 0x2C;
 constexpr uint8_t Tab = 0x2B, Escape = 0x29, F5 = 0x3E, C = 0x06, D = 0x07, S = 0x16, V = 0x19;
+constexpr uint8_t A = 0x04, Z = 0x1D, P = 0x13, Up = 0x52;
 }  // namespace RemoteKey
 namespace RemoteModifier {
 constexpr uint8_t Control = 0x01, Alt = 0x04, Windows = 0x08;
+constexpr uint8_t Command = 0x08;
+constexpr uint8_t Shift = 0x02;
 }
 namespace RemoteMouse {
 constexpr uint8_t Left = 0x01, Right = 0x02;

@@ -25,6 +25,7 @@
 #include "board_pins.h"
 #include "display.h"
 #include "remote.h"
+#include "remote_profiles.h"
 #include "storage.h"
 #include "sd_card.h"
 #include "math_text.h"
@@ -171,6 +172,9 @@ int zoomW = 0, zoomH = 0;
 unsigned long lastPhotoTap = 0;
 lv_obj_t *remoteStatus, *remoteSlides, *remoteMediaPanel, *remotePadPanel, *remotePcPanel;
 lv_obj_t *remoteModeTitle, *remoteModes, *remoteScrollLabel, *remoteScrollButton, *remotePadHint;
+lv_obj_t *remotePlatformSheet, *remotePlatformLabel, *remoteShortcutTitle, *remoteShortcutButtons[6];
+lv_obj_t *remotePresentButton, *remoteExitButton;
+RemotePlatform remotePlatform = RemotePlatform::Windows;
 bool remoteScrollMode = false;
 uint8_t remoteMode = 0;
 bool remoteDragging = false;

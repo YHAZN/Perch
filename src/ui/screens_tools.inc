@@ -68,7 +68,7 @@ void renderGestures() {
 // ---------- Remote: Bluetooth keyboard for slides and media ----------
 void remoteAction(lv_event_t *e) {
   if (!remoteConnected()) {
-    toast("Connect Perch in PC Bluetooth settings");
+    toast("Pair Perch in Bluetooth settings");
     return;
   }
   ((void (*)())lv_event_get_user_data(e))();
@@ -132,7 +132,8 @@ void remotePadEvent(lv_event_t *e) {
   if (code == LV_EVENT_PRESSED) {
     t = {};
     if (!remoteMouseReady()) {
-      toast("Remove Perch in PC Bluetooth, then pair again");
+      toast(remotePlatform == RemotePlatform::IPhone ? "Enable AssistiveTouch, then pair Perch"
+                                                     : "Remove Perch in host Bluetooth, then pair again");
       return;
     }
     t.active = true;
@@ -199,6 +200,35 @@ void setRemoteMode(uint8_t mode) {
   setText(remoteScrollLabel, "Scroll");
   lv_obj_set_style_bg_color(remoteScrollButton, GRAPHITE, 0);
 }
+void refreshRemotePlatform() {
+  setText(remotePlatformLabel, remotePlatformName(remotePlatform));
+  setText(remoteShortcutTitle, remotePlatformName(remotePlatform));
+  for (int i = 0; i < 6; ++i) {
+    const RemoteShortcut *shortcut = remoteShortcut(remotePlatform, i);
+    hide(remoteShortcutButtons[i], !shortcut);
+    if (shortcut) setText(lv_obj_get_child(remoteShortcutButtons[i], 0), shortcut->label);
+  }
+  const RemoteShortcut present = remotePresentationShortcut(remotePlatform);
+  hide(remotePresentButton, !present.key);
+  if (present.key) setText(lv_obj_get_child(remotePresentButton, 0), present.label);
+  lv_obj_set_width(remoteExitButton, present.key ? 102 : 212);
+  lv_obj_set_x(remoteExitButton, present.key ? 124 : 14);
+}
+void selectRemotePlatform(RemotePlatform platform) {
+  if (platform >= RemotePlatform::Count) return;
+  remotePointerReset();
+  remotePlatform = platform;
+  settings.putUChar("remote-layout", static_cast<uint8_t>(platform));
+  refreshRemotePlatform();
+  hide(remotePlatformSheet, true);
+  if (platform == RemotePlatform::IPhone) {
+    hide(remoteModes, true);
+    notice(
+        "On iPhone, enable AssistiveTouch for the pointer and Full Keyboard Access for navigation in Settings > "
+        "Accessibility. Pair Perch from the phone.",
+        Screen::Remote);
+  } else toast("Key layout saved");
+}
 void buildRemote() {
   lv_obj_t *s = scr[(int)Screen::Remote] = screenBase();
   remoteStatus = text(s, "", F_SMALL, MIST);
@@ -240,7 +270,9 @@ void buildRemote() {
   remoteScrollLabel = lv_obj_get_child(remoteScrollButton, 0);
   remoteTile(remotePadPanel, 126, 230, 102, 30, "Right click", [] {
     if (remoteMouseReady()) remoteMouseClick(RemoteMouse::Right);
-    else toast("Remove Perch in PC Bluetooth, then pair again");
+    else
+      toast(remotePlatform == RemotePlatform::IPhone ? "Enable AssistiveTouch, then pair Perch"
+                                                     : "Remove Perch in host Bluetooth, then pair again");
   });
   // Slides retain direct arrows, with explicit presentation start and exit.
 
@@ -248,18 +280,31 @@ void buildRemote() {
   lv_obj_set_size(remoteSlides, W, 260);
   remoteZone(remoteSlides, 14, 102, LV_SYMBOL_LEFT, [] { remoteKey(RemoteKey::Left); });
   remoteZone(remoteSlides, 124, 102, LV_SYMBOL_RIGHT, [] { remoteKey(RemoteKey::Right); });
-  remoteTile(remoteSlides, 14, 184, 102, 34, "Present", [] { remoteKey(RemoteKey::F5); });
-  remoteTile(remoteSlides, 124, 184, 102, 34, "Exit", [] { remoteKey(RemoteKey::Escape); });
+  remotePresentButton = remoteTile(remoteSlides, 14, 184, 102, 34, "Present", [] {
+    const auto shortcut = remotePresentationShortcut(remotePlatform);
+    if (shortcut.key) remoteKey(shortcut.key, shortcut.modifiers);
+  });
+  remoteExitButton = remoteTile(remoteSlides, 124, 184, 102, 34, "Exit", [] { remoteKey(RemoteKey::Escape); });
   remotePcPanel = plain(s);
   lv_obj_set_size(remotePcPanel, W, 260);
-  lv_obj_t *windowsLabel = text(remotePcPanel, "Windows", F_SMALL, MIST);
-  lv_obj_align(windowsLabel, LV_ALIGN_TOP_MID, 0, 58);
-  remoteTile(remotePcPanel, 14, 84, 102, 46, "Switch app", [] { remoteKey(RemoteKey::Tab, RemoteModifier::Alt); });
-  remoteTile(remotePcPanel, 124, 84, 102, 46, "Desktop", [] { remoteKey(RemoteKey::D, RemoteModifier::Windows); });
-  remoteTile(remotePcPanel, 14, 140, 102, 46, "Tasks", [] { remoteKey(RemoteKey::Tab, RemoteModifier::Windows); });
-  remoteTile(remotePcPanel, 124, 140, 102, 46, "Search", [] { remoteKey(RemoteKey::S, RemoteModifier::Windows); });
-  remoteTile(remotePcPanel, 14, 196, 102, 46, "Copy", [] { remoteKey(RemoteKey::C, RemoteModifier::Control); });
-  remoteTile(remotePcPanel, 124, 196, 102, 46, "Paste", [] { remoteKey(RemoteKey::V, RemoteModifier::Control); });
+  remoteShortcutTitle = text(remotePcPanel, "", F_SMALL, MIST);
+  lv_obj_align(remoteShortcutTitle, LV_ALIGN_TOP_MID, 0, 58);
+  for (int i = 0; i < 6; ++i) {
+    lv_obj_t *button = remoteShortcutButtons[i] =
+        remoteTile(remotePcPanel, 14 + (i % 2) * 110, 84 + (i / 2) * 56, 102, 46, "", nullptr);
+    lv_obj_remove_event_cb(button, remoteAction);
+    lv_obj_add_event_cb(
+        button,
+        [](lv_event_t *e) {
+          if (!remoteConnected()) {
+            toast("Pair Perch in Bluetooth settings");
+            return;
+          }
+          const auto shortcut = remoteShortcut(remotePlatform, uintptr_t(lv_event_get_user_data(e)));
+          if (shortcut) remoteKey(shortcut->key, shortcut->modifiers);
+        },
+        LV_EVENT_CLICKED, (void *)(uintptr_t)i);
+  }
   // Media: play/pause in the middle, tracks either side, volume below.
   remoteMediaPanel = plain(s);
   lv_obj_set_size(remoteMediaPanel, W, 260);
@@ -277,6 +322,14 @@ void buildRemote() {
   lv_obj_set_style_bg_opa(remoteModes, LV_OPA_COVER, 0);
   lv_obj_t *title = text(remoteModes, "Controls", F_BODY, INK);
   lv_obj_set_pos(title, 22, 25);
+  lv_obj_t *platform = pressedFeedback(plain(remoteModes));
+  lv_obj_set_pos(platform, 128, 14);
+  lv_obj_set_size(platform, 98, 44);
+  remotePlatformLabel = text(platform, "", F_SMALL, MIST);
+  lv_obj_align(remotePlatformLabel, LV_ALIGN_LEFT_MID, 4, 0);
+  lv_obj_t *platformArrow = text(platform, LV_SYMBOL_DOWN, F_SMALL, MIST);
+  lv_obj_align(platformArrow, LV_ALIGN_RIGHT_MID, -2, 0);
+  onClick(platform, [] { hide(remotePlatformSheet, false); });
   const char *names[] = {"Trackpad", "Media", "Slides", "Shortcuts"};
   const char *symbols[] = {LV_SYMBOL_GPS, LV_SYMBOL_PLAY, LV_SYMBOL_RIGHT, LV_SYMBOL_KEYBOARD};
   for (int i = 0; i < 4; ++i) {
@@ -299,5 +352,34 @@ void buildRemote() {
   lv_obj_set_size(done, 144, 36);
   lv_obj_set_pos(done, 48, 226);
   onClick(done, [] { hide(remoteModes, true); });
+  remotePlatformSheet = plain(s);
+  lv_obj_set_size(remotePlatformSheet, W, H);
+  lv_obj_add_flag(remotePlatformSheet, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_set_style_bg_color(remotePlatformSheet, VOID_, 0);
+  lv_obj_set_style_bg_opa(remotePlatformSheet, LV_OPA_COVER, 0);
+  lv_obj_t *platformTitle = text(remotePlatformSheet, "Key layout", F_BODY, INK);
+  lv_obj_set_pos(platformTitle, 22, 25);
+  lv_obj_t *close = pressedFeedback(plain(remotePlatformSheet));
+  lv_obj_set_pos(close, 166, 14);
+  lv_obj_set_size(close, 60, 44);
+  lv_obj_center(text(close, "Done", F_SMALL, MIST));
+  onClick(close, [] { hide(remotePlatformSheet, true); });
+  for (int i = 0; i < int(RemotePlatform::Count); ++i) {
+    lv_obj_t *row = pressedFeedback(plain(remotePlatformSheet));
+    lv_obj_set_pos(row, 16, 64 + i * 48);
+    lv_obj_set_size(row, 208, 42);
+    lv_obj_set_style_radius(row, 16, 0);
+    lv_obj_set_style_bg_color(row, GRAPHITE, 0);
+    lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+    lv_obj_t *label = text(row, remotePlatformName(static_cast<RemotePlatform>(i)), F_BODY, INK);
+    lv_obj_align(label, LV_ALIGN_LEFT_MID, 16, 0);
+    lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(
+        row,
+        [](lv_event_t *e) { selectRemotePlatform(static_cast<RemotePlatform>(uintptr_t(lv_event_get_user_data(e)))); },
+        LV_EVENT_CLICKED, (void *)(uintptr_t)i);
+  }
+  hide(remotePlatformSheet, true);
+  refreshRemotePlatform();
   setRemoteMode(0);
 }

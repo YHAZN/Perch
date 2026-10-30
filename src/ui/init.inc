@@ -5,6 +5,7 @@ void initDeviceUi() {
   settings.begin("tiny-ai", false);
   useGemini = settings.getBool("gemini", true);
   bluetoothOn = settings.getBool("bt-on", false);
+  remotePlatform = static_cast<RemotePlatform>(constrain(settings.getUChar("remote-layout", 0), 0, 3));
   confirmWords = settings.getBool("words-first", true);
   sleepChoice = settings.getUChar("sleep", 1) % (sizeof(SLEEP_CHOICES) / sizeof(SLEEP_CHOICES[0]));
   dailyChoice = settings.getUChar("daily", 0) % (sizeof(DAILY_CHOICES) / sizeof(DAILY_CHOICES[0]));
