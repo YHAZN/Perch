@@ -40,6 +40,7 @@ volatile bool cancelled = false;
 // the cache Wi-Fi runs from, and an upload started meanwhile failed mid-send.
 bool (*flashBusy)() = nullptr;
 void countRequest(bool gemini);
+extern int dailyLimit;
 
 class BoundedResponse : public Stream {
  public:
@@ -637,7 +638,7 @@ bool request(Job &j) {
   int status = -1, tries = 0;
   size_t model = 0;
   uint32_t waitMs = 0;
-  bool dailyLimit = false;
+  bool providerDailyLimit = false;
   int retryAfterS = 0;
   bool resent = false;
   bool inlineRetry = false;
@@ -713,10 +714,10 @@ bool request(Job &j) {
       }
     }
     if (status == 429) {
-      dailyLimit = errorBody.indexOf("PerDay") >= 0;
+      providerDailyLimit = errorBody.indexOf("PerDay") >= 0;
       const int at = errorBody.indexOf("\"retryDelay\"");
       retryAfterS = at >= 0 ? errorBody.substring(errorBody.indexOf('"', at + 13) + 1).toInt() : 0;
-      if (!dailyLimit && retryAfterS > 0 && retryAfterS <= 20) {
+      if (!providerDailyLimit && retryAfterS > 0 && retryAfterS <= 20) {
         waitMs = retryAfterS * 1000UL + 500;
         continue;
       }
@@ -775,7 +776,7 @@ bool request(Job &j) {
     if (status == 403) return fail("Access denied for this API key.");
     if (status == 429) {
       if (body.indexOf("insufficient_quota") >= 0) return fail("The OpenAI account has no credit left.");
-      if (dailyLimit)
+      if (providerDailyLimit)
         return fail(
             "Today's free Gemini limit is used up on every model. It resets at midnight Pacific time; a paid key "
             "removes the cap.");
