@@ -185,6 +185,8 @@ String joiningSsid;
 bool scanShown = false;
 unsigned long scanStartedAt = 0;
 lv_obj_t *modelValue, *wifiValue, *brightSlider, *storageValue, *storageSub, *softwareSub;
+lv_obj_t *softwareRow, *softwareAction, *softwareAccent, *softwareProgress;
+lv_obj_t *settingsUpdateBadge, *settingsUpdateLabel;
 lv_obj_t *noticeText;
 lv_obj_t *passwordEye, *newChatBtn, *pageBanner, *micBtn;
 bool pageCamera = false;  // the camera was opened from Ask ("New photo" / "+ Page"); return after the shot

@@ -368,6 +368,47 @@ int keyCache = -1;  // bit 0 = Gemini key, bit 1 = GPT key; -1 = unknown
 volatile uint32_t freeKbCache = 0;
 volatile bool freeKbStale = false;
 String ccSignature;
+void renderSoftwareStatus(UpdateState state, const String &version, int progress, const String &error) {
+  if (!softwareRow) return;
+  const bool available = state == UpdateState::Available;
+  const bool restart = state == UpdateState::Ready;
+  const bool installing = state == UpdateState::Installing;
+  const bool checking = state == UpdateState::Checking;
+  const bool attention = available || restart || installing;
+  const lv_color_t accent = lv_color_hex(restart ? 0xFF9F0A : 0x0A84FF);
+  String detail = String(PERCH_VERSION) + " / Tap to check";
+  String action = "Check";
+  switch (state) {
+    case UpdateState::Checking: detail = "Checking for updates..."; action = ""; break;
+    case UpdateState::UpToDate: detail = String(PERCH_VERSION) + " / Up to date"; break;
+    case UpdateState::Available: detail = version + " is ready to install"; action = "Install"; break;
+    case UpdateState::Installing:
+      detail = "Installing. Keep device powered.";
+      action = String(constrain(progress, 0, 100)) + "%";
+      break;
+    case UpdateState::Ready: detail = "Restart to finish the update"; action = "Restart"; break;
+    case UpdateState::Failed: detail = error; action = "Retry"; break;
+    default: break;
+  }
+  setText(softwareSub, detail.c_str());
+  setText(softwareAction, action.c_str());
+  lv_obj_set_style_text_color(softwareAction, accent, 0);
+  lv_obj_set_style_text_color(softwareSub, attention ? INK : MIST, 0);
+  lv_obj_set_style_bg_color(softwareRow, accent, 0);
+  lv_obj_set_style_bg_opa(softwareRow, attention ? 24 : LV_OPA_TRANSP, 0);
+  lv_obj_set_style_bg_color(softwareAccent, accent, 0);
+  hide(softwareAccent, !attention);
+  hide(softwareProgress, !installing);
+  lv_obj_set_style_bg_color(softwareProgress, accent, LV_PART_INDICATOR);
+  lv_bar_set_value(softwareProgress, constrain(progress, 0, 100), LV_ANIM_OFF);
+  hide(settingsUpdateBadge, !(attention || checking));
+  const String badge = restart ? "Restart" : installing ? action : checking ? "Checking" : "Update";
+  setText(settingsUpdateLabel, badge.c_str());
+  lv_obj_set_style_bg_color(settingsUpdateBadge, accent, 0);
+  lv_obj_set_style_text_color(settingsUpdateLabel, restart ? VOID_ : INK, 0);
+  lv_obj_center(settingsUpdateLabel);
+}
+
 void refreshDynamic() {
   const bool online = networkConnected();
   const time_t now = time(nullptr);
@@ -467,21 +508,7 @@ void refreshDynamic() {
                         : secs < 60 ? (String(secs) + " s").c_str()
                                     : (String(secs / 60) + " min").c_str());
   }
-  {
-    String line = String("Perch ") + PERCH_VERSION + ", built " + __DATE__;
-    switch (updaterState()) {
-      case UpdateState::Checking: line = "Checking for updates..."; break;
-      case UpdateState::UpToDate: line = String("Perch ") + PERCH_VERSION + " is up to date"; break;
-      case UpdateState::Available:
-        line = String("Perch ") + updaterAvailableVersion() + " available: tap to install";
-        break;
-      case UpdateState::Installing: line = String("Installing ") + updaterProgress() + "%..."; break;
-      case UpdateState::Ready: line = "Installed: tap to restart"; break;
-      case UpdateState::Failed: line = updaterError(); break;
-      default: break;
-    }
-    setText(softwareSub, line.c_str());
-  }
+  renderSoftwareStatus(updaterState(), updaterAvailableVersion(), updaterProgress(), updaterError());
   const String storageSpace = sdCardAvailable() ? String(double(sdCardCapacity()) / 1e9, 1) + " GB SD"
                                                : freeKbCache ? String(freeKbCache) + " KB free" : "";
   setText(storageValue, storageSpace.c_str());

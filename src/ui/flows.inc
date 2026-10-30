@@ -408,7 +408,18 @@ void onEnter(Screen s) {
     aiScreenSignature = "";
     lv_obj_scroll_to_y(lv_obj_get_child(layer(Screen::Model), 1), 0, LV_ANIM_OFF);
   }
-  if (s == Screen::Settings) lv_obj_scroll_to_y(layer(Screen::Settings), 0, LV_ANIM_OFF);
+  if (s == Screen::Settings) {
+    lv_obj_scroll_to_y(layer(Screen::Settings), 0, LV_ANIM_OFF);
+    static uint32_t lastCheck = 0;
+    const UpdateState state = updaterState();
+    const bool idle = state == UpdateState::Idle || state == UpdateState::UpToDate || state == UpdateState::Failed;
+    if (idle && networkConnected() && !aiBusy() && !photoSavePending &&
+        (!lastCheck || millis() - lastCheck >= 300000)) {
+      lastCheck = millis();
+      pauseBluetooth();
+      updaterCheck();
+    }
+  }
   if (s == Screen::Photos) {
     if (zoomView) lv_obj_add_flag(zoomView, LV_OBJ_FLAG_HIDDEN);
     hide(photoDelete, false);

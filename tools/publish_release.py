@@ -18,6 +18,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("repository", help="owner/repository")
     parser.add_argument("--publish", action="store_true")
+    parser.add_argument("--notes", default="Software update.", help="Plain-text release notes")
     args = parser.parse_args()
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", args.repository):
         raise SystemExit("Invalid repository name")
@@ -66,7 +67,7 @@ def main():
     revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
     release = request(api, "POST", {
         "tag_name": "v" + version, "target_commitish": revision, "name": version, "draft": True,
-        "body": "Move photo assets to microSD and enable signed software updates over Wi-Fi.",
+        "body": args.notes,
     })
     upload_url = release["upload_url"].split("{", 1)[0]
     for path, mime in ((image, "application/octet-stream"), (manifest_path, "application/json")):

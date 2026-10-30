@@ -5,6 +5,16 @@ void buildSettings() {
   lv_obj_set_scroll_dir(s, LV_DIR_VER);
   lv_obj_set_scrollbar_mode(s, LV_SCROLLBAR_MODE_OFF);
   title(s, "Settings");
+  settingsUpdateBadge = pressedFeedback(plain(s));
+  lv_obj_set_size(settingsUpdateBadge, 72, 28);
+  lv_obj_set_pos(settingsUpdateBadge, 144, 22);
+  lv_obj_set_style_radius(settingsUpdateBadge, 14, 0);
+  lv_obj_set_style_bg_opa(settingsUpdateBadge, LV_OPA_COVER, 0);
+  lv_obj_set_ext_click_area(settingsUpdateBadge, 8);
+  settingsUpdateLabel = text(settingsUpdateBadge, "", F_SMALL, INK);
+  lv_obj_center(settingsUpdateLabel);
+  lv_obj_add_flag(settingsUpdateBadge, LV_OBJ_FLAG_HIDDEN);
+  onClick(settingsUpdateBadge, [] { lv_obj_scroll_to_view(softwareRow, LV_ANIM_ON); });
   lv_obj_t *wifiRow = row(s, 58, "Wi-Fi", &wifiValue);
   onClick(wifiRow, [] { show(Screen::Wifi); });
   lv_obj_t *model = row(s, 110, "AI", &modelValue);
@@ -64,10 +74,29 @@ void buildSettings() {
   // Software: version and updates. Tap to check; then to install; then to restart.
   constexpr int softwareY = 446;
   constexpr int detailRowHeight = 64;
-  lv_obj_t *about = row(s, softwareY, "Software", nullptr, detailRowHeight);
+  lv_obj_t *about = softwareRow = row(s, softwareY, "Software", nullptr, detailRowHeight);
   lv_obj_align(lv_obj_get_child(about, 0), LV_ALIGN_TOP_LEFT, 22, 12);
   softwareSub = text(about, "", F_SMALL, MIST);
   lv_obj_set_pos(softwareSub, 22, 36);
+  lv_obj_set_width(softwareSub, 196);
+  lv_label_set_long_mode(softwareSub, LV_LABEL_LONG_DOT);
+  softwareAction = text(about, "", F_SMALL, INK);
+  lv_obj_align(softwareAction, LV_ALIGN_TOP_RIGHT, -22, 12);
+  softwareAccent = plain(about);
+  lv_obj_set_size(softwareAccent, 3, 32);
+  lv_obj_set_pos(softwareAccent, 8, 16);
+  lv_obj_set_style_radius(softwareAccent, 2, 0);
+  lv_obj_set_style_bg_opa(softwareAccent, LV_OPA_COVER, 0);
+  softwareProgress = lv_bar_create(about);
+  lv_obj_remove_style_all(softwareProgress);
+  lv_obj_set_size(softwareProgress, 196, 3);
+  lv_obj_set_pos(softwareProgress, 22, 58);
+  lv_obj_set_style_bg_color(softwareProgress, GRAPHITE, LV_PART_MAIN);
+  lv_obj_set_style_bg_opa(softwareProgress, LV_OPA_COVER, LV_PART_MAIN);
+  lv_obj_set_style_bg_opa(softwareProgress, LV_OPA_COVER, LV_PART_INDICATOR);
+  lv_obj_set_style_radius(softwareProgress, 2, LV_PART_MAIN);
+  lv_obj_set_style_radius(softwareProgress, 2, LV_PART_INDICATOR);
+  lv_bar_set_range(softwareProgress, 0, 100);
   onClick(about, [] {
     switch (updaterState()) {
       case UpdateState::Checking: toast("Checking for updates"); return;

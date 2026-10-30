@@ -1,6 +1,16 @@
 // Part of device_ui.cpp (included there, one translation unit). USB serial commands (mirror and developer tools).
 void handleDeviceButton(char command) {
   if (!framebuffer) return;
+  if (command == '@') {
+    // Render an update state for layout inspection without changing updater state.
+    const int state = Serial.readStringUntil('\n').toInt();
+    if (current == Screen::Settings && state >= 0 && state <= int(UpdateState::Failed)) {
+      renderSoftwareStatus(static_cast<UpdateState>(state), "0.5.3", 42, "Connection failed. Tap to retry.");
+      sendFrame();
+      renderSoftwareStatus(updaterState(), updaterAvailableVersion(), updaterProgress(), updaterError());
+    } else Serial.println("SCREEN_ERROR Open Settings before previewing an update state");
+    return;
+  }
   if (command == ')') {
     uint32_t latest = 0;
     if (listPhotos(&latest, 1)) {
