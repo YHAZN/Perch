@@ -169,8 +169,11 @@ uint16_t *zoomPixels = nullptr;
 lv_image_dsc_t zoomDsc;
 int zoomW = 0, zoomH = 0;
 unsigned long lastPhotoTap = 0;
-lv_obj_t *remoteStatus, *remoteSlides, *remoteMediaPanel, *remoteModeLabel[2];
-bool remoteMediaMode = false;
+lv_obj_t *remoteStatus, *remoteSlides, *remoteMediaPanel, *remotePadPanel, *remotePcPanel;
+lv_obj_t *remoteModeLabel[4], *remoteModeButton[4], *remoteDragLabel;
+uint8_t remoteMode = 0;
+bool remoteDragging = false;
+void remotePointerReset();
 // Offline queue state (see storage.h). queueInFlight is the item being asked right now.
 QueuedAsk queued[16];
 int queuedCount = 0;

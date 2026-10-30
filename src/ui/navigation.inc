@@ -34,6 +34,7 @@ std::vector<Screen> backStack;
 extern std::vector<std::pair<lv_obj_t *, lv_obj_t *>> screenTitles;
 lv_obj_t *backButton = nullptr;
 void enter(Screen next) {
+  if (next != Screen::Remote) remotePointerReset();
   // Automatic Wi-Fi retries would cancel scans; pause them while choosing a network.
   networkPauseRetries(next == Screen::Wifi || next == Screen::Password);
   if (next != Screen::Camera) stopPreview();
@@ -185,6 +186,7 @@ void ccClosed(lv_anim_t *) {
   if (topBar) lv_obj_remove_flag(topBar, LV_OBJ_FLAG_HIDDEN);
 }
 void openControl(int fromY = -H) {
+  remotePointerReset();
   ccOpen = true;
   if (topBar) lv_obj_add_flag(topBar, LV_OBJ_FLAG_HIDDEN);
   refreshDynamic();

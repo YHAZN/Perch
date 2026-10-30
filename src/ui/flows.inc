@@ -308,6 +308,7 @@ void wakeScreen() {
   displayBrightness(brightnessPct * 255 / 100);
 }
 void sleepScreen() {
+  remotePointerReset();
   screenAsleep = true;
   displayBrightness(0);
   // Nothing to draw: run the processor at 80 MHz (the lowest Wi-Fi allows) until woken.

@@ -524,6 +524,8 @@ void refreshDynamic() {
                                             : "Pair \"Perch\" in your computer's Bluetooth");
   lv_obj_set_style_opa(remoteSlides, remoteConnected() ? LV_OPA_COVER : LV_OPA_40, 0);
   lv_obj_set_style_opa(remoteMediaPanel, remoteConnected() ? LV_OPA_COVER : LV_OPA_40, 0);
+  lv_obj_set_style_opa(remotePadPanel, remoteConnected() ? LV_OPA_COVER : LV_OPA_40, 0);
+  lv_obj_set_style_opa(remotePcPanel, remoteConnected() ? LV_OPA_COVER : LV_OPA_40, 0);
   // Control Center: restyle only when a toggle actually changed.
   const String cc =
       String(networkEnabled()) + online + cameraOff + useGemini + bluetoothOn + remoteConnected() + btPaused;
