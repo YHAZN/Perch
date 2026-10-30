@@ -17,3 +17,7 @@ bool touchAvailable();
 int touchRecent(int *xs, int *ys, int max);
 // Returns true while a finger is down; x/y are screen coordinates.
 bool touchRead(int &x, int &y);
+
+// Serialize SD polling transactions against asynchronous LCD DMA on the shared bus.
+void displayBusAcquire();
+void displayBusRelease();

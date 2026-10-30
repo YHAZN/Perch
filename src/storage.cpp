@@ -1,9 +1,11 @@
 #include "storage.h"
+#include "sd_card.h"
 #include <LittleFS.h>
 #include <dirent.h>
 #include <sys/stat.h>
 #include <algorithm>
 #include <vector>
+#include <freertos/semphr.h>
 
 namespace {
 bool mounted = false;
@@ -11,18 +13,24 @@ constexpr size_t THUMB_BYTES = THUMB * THUMB * 2;
 // Leave room for answers and filesystem overhead when making space for a photo.
 constexpr size_t PHOTO_RESERVE = 160 * 1024;
 
+SemaphoreHandle_t sequenceMutex = nullptr;
+bool writeFile(const String &name, const uint8_t *data, size_t length);
+
 uint32_t nextId() {
-  uint32_t id = 1;
+  if (!sequenceMutex) return 0;
+  xSemaphoreTake(sequenceMutex, portMAX_DELAY);
+  uint32_t previous = 0;
   File f = LittleFS.open("/seq", "r");
   if (f) {
-    id = f.parseInt() + 1;
+    previous = strtoul(f.readString().c_str(), nullptr, 10);
     f.close();
   }
-  f = LittleFS.open("/seq", "w");
-  if (f) {
-    f.print(id);
-    f.close();
+  uint32_t id = previous + 1;
+  if (id) {
+    const String value(id);
+    if (!writeFile("/seq", reinterpret_cast<const uint8_t *>(value.c_str()), value.length())) id = 0;
   }
+  xSemaphoreGive(sequenceMutex);
   return id;
 }
 
@@ -45,6 +53,37 @@ std::vector<uint32_t> ids(const char *dir, const char *suffix) {
 }
 
 String path(const char *dir, uint32_t id, const char *suffix) { return String(dir) + "/" + id + suffix; }
+
+std::vector<uint32_t> photoIds() {
+  std::vector<uint32_t> out = ids("/photos", ".jpg");
+  const std::vector<uint32_t> card = ids("/photos", ".sdi");
+  out.insert(out.end(), card.begin(), card.end());
+  std::sort(out.begin(), out.end(), [](uint32_t a, uint32_t b) { return a > b; });
+  out.erase(std::unique(out.begin(), out.end()), out.end());
+  return out;
+}
+
+bool sdReference(uint32_t id, size_t &length, uint32_t &checksum) {
+  File f = LittleFS.open(path("/photos", id, ".sdi"), "r");
+  if (!f || f.size() > 48) return false;
+  const String line = f.readStringUntil('\n');
+  unsigned long bytes = 0, hash = 0;
+  if (sscanf(line.c_str(), "%lu %lx", &bytes, &hash) != 2 || !bytes || bytes > 2 * 1024 * 1024)
+    return false;
+  length = bytes;
+  checksum = hash;
+  return true;
+}
+
+bool removeOriginal(uint32_t id) {
+  const String ref = path("/photos", id, ".sdi");
+  if (LittleFS.exists(ref)) {
+    // Keep the reference when a missing/failed card prevents deleting its original.
+    if (!sdPhotoRemove(id) || !LittleFS.remove(ref)) return false;
+  }
+  const String local = path("/photos", id, ".jpg");
+  return !LittleFS.exists(local) || LittleFS.remove(local);
+}
 
 bool writeFile(const String &name, const uint8_t *data, size_t length) {
   // Write-then-rename: a power cut never leaves a half-written file under the real name.
@@ -70,6 +109,8 @@ bool readThumb(const String &name, uint16_t *thumb) {
 }  // namespace
 
 bool storageBegin() {
+  if (!sequenceMutex) sequenceMutex = xSemaphoreCreateMutex();
+  if (!sequenceMutex) return false;
   // Formats only if the partition holds no LittleFS yet.
   mounted = LittleFS.begin(true);
   if (mounted) {
@@ -94,7 +135,7 @@ size_t storageFreeBytes() { return mounted ? LittleFS.totalBytes() - LittleFS.us
 uint32_t savePhoto(const uint8_t *jpeg, size_t length, const uint16_t *thumb) {
   if (!mounted) return 0;
   // Make room by removing the oldest photos first, except ones still waiting in the queue.
-  std::vector<uint32_t> existing = ids("/photos", ".jpg");
+  std::vector<uint32_t> existing = photoIds();
   QueuedAsk queued[16];
   const int queuedCount = queueList(queued, 16);
   auto isQueued = [&](uint32_t id) {
@@ -102,17 +143,30 @@ uint32_t savePhoto(const uint8_t *jpeg, size_t length, const uint16_t *thumb) {
       if (queued[i].photoId == id) return true;
     return false;
   };
-  while (storageFreeBytes() < length + THUMB_BYTES + PHOTO_RESERVE && !existing.empty()) {
-    const uint32_t oldest = existing.back();
-    existing.pop_back();
-    if (isQueued(oldest)) continue;
-    LittleFS.remove(path("/photos", oldest, ".jpg"));
-    LittleFS.remove(path("/photos", oldest, ".thm"));
-    LittleFS.remove(path("/photos", oldest, ".scr"));
-    LittleFS.remove(path("/photos", oldest, ".gfu"));
-  }
+  auto makeRoom = [&](size_t required) {
+    while (storageFreeBytes() < required && !existing.empty()) {
+      const uint32_t oldest = existing.back();
+      existing.pop_back();
+      if (isQueued(oldest)) continue;
+      if (!removeOriginal(oldest)) continue;
+      LittleFS.remove(path("/photos", oldest, ".thm"));
+      LittleFS.remove(path("/photos", oldest, ".scr"));
+      LittleFS.remove(path("/photos", oldest, ".gfu"));
+    }
+  };
+  makeRoom(THUMB_BYTES + PHOTO_RESERVE + (sdCardAvailable() ? 0 : length));
   const uint32_t id = nextId();
+  if (!id) return 0;
   if (!writeFile(path("/photos", id, ".thm"), reinterpret_cast<const uint8_t *>(thumb), THUMB_BYTES)) return 0;
+  uint32_t checksum = 0;
+  if (sdPhotoSave(id, jpeg, length, checksum)) {
+    const String ref = String(length) + " " + String(checksum, HEX) + "\n";
+    if (writeFile(path("/photos", id, ".sdi"), reinterpret_cast<const uint8_t *>(ref.c_str()), ref.length()))
+      return id;
+    sdPhotoRemove(id);
+  }
+  // Reserve space for the full JPEG if the card could not accept it.
+  makeRoom(length + PHOTO_RESERVE);
   if (!writeFile(path("/photos", id, ".jpg"), jpeg, length)) {
     LittleFS.remove(path("/photos", id, ".thm"));
     return 0;
@@ -122,7 +176,7 @@ uint32_t savePhoto(const uint8_t *jpeg, size_t length, const uint16_t *thumb) {
 
 int listPhotos(uint32_t *out, int max) {
   if (!mounted) return 0;
-  const std::vector<uint32_t> all = ids("/photos", ".jpg");
+  const std::vector<uint32_t> all = photoIds();
   const int n = std::min<int>(max, all.size());
   for (int i = 0; i < n; ++i) out[i] = all[i];
   return n;
@@ -132,6 +186,12 @@ bool loadPhoto(uint32_t id, uint8_t *&jpeg, size_t &length) {
   jpeg = nullptr;
   length = 0;
   if (!mounted) return false;
+  uint32_t checksum = 0;
+  if (sdReference(id, length, checksum)) {
+    const bool ok = sdPhotoLoad(id, length, checksum, jpeg);
+    if (!ok) length = 0;
+    return ok;
+  }
   File f = LittleFS.open(path("/photos", id, ".jpg"), "r");
   if (!f) return false;
   length = f.size();
@@ -148,6 +208,9 @@ bool loadPhoto(uint32_t id, uint8_t *&jpeg, size_t &length) {
 
 size_t photoBytes(uint32_t id) {
   if (!mounted) return 0;
+  size_t length = 0;
+  uint32_t checksum = 0;
+  if (sdReference(id, length, checksum)) return length;
   struct stat info;
   return stat((String("/littlefs") + path("/photos", id, ".jpg")).c_str(), &info) == 0 ? (size_t)info.st_size : 0;
 }
@@ -253,6 +316,7 @@ uint32_t saveAnswer(const String &text, bool gemini, uint32_t photoId, uint32_t 
     LittleFS.remove(path("/answers", oldest, ".thm"));
   }
   const uint32_t id = nextId();
+  if (!id) return 0;
   const String body = String(gemini ? "gemini " : "gpt ") + photoId + " " + when + "\n" + text;
   if (thumb) writeFile(path("/answers", id, ".thm"), reinterpret_cast<const uint8_t *>(thumb), THUMB_BYTES);
   if (!writeFile(path("/answers", id, ".txt"), reinterpret_cast<const uint8_t *>(body.c_str()), body.length()))
@@ -289,6 +353,7 @@ bool loadAnswerThumb(uint32_t id, uint16_t *thumb) { return mounted && readThumb
 uint32_t queueAdd(uint32_t photoId, bool gemini, uint32_t when) {
   if (!mounted) return 0;
   const uint32_t id = nextId();
+  if (!id) return 0;
   const String body = String(gemini ? "gemini " : "gpt ") + photoId + " " + when + " 0";
   return writeFile(path("/queue", id, ".q"), reinterpret_cast<const uint8_t *>(body.c_str()), body.length()) ? id : 0;
 }
@@ -359,14 +424,21 @@ bool queueSetFailed(uint32_t id, bool failed) {
 int storageForgetSince(time_t since) {
   if (!mounted) return 0;
   int removed = 0;
-  const char *dirs[] = {"/answers", "/photos", "/queue"};
+  const char *dirs[] = {"/queue", "/photos", "/answers"};
   for (const char *dir : dirs) {
     std::vector<String> doomed;
     File d = LittleFS.open(dir);
     if (!d) continue;
-    for (File f = d.openNextFile(); f; f = d.openNextFile())
-      if (f.getLastWrite() >= since) doomed.push_back(String(dir) + "/" + f.name());
+    std::vector<uint32_t> photos;
+    for (File f = d.openNextFile(); f; f = d.openNextFile()) {
+      if (f.getLastWrite() < since) continue;
+      if (!strcmp(dir, "/photos")) {
+        const uint32_t id = strtoul(f.name(), nullptr, 10);
+        if (id && std::find(photos.begin(), photos.end(), id) == photos.end()) photos.push_back(id);
+      } else doomed.push_back(String(dir) + "/" + f.name());
+    }
     d.close();
+    for (uint32_t id : photos) removed += deletePhoto(id);
     for (const String &path : doomed) {
       if (path.endsWith(".gfu")) noteUpload(path);
       removed += LittleFS.remove(path);
@@ -376,17 +448,21 @@ int storageForgetSince(time_t since) {
 }
 
 bool deletePhoto(uint32_t id) {
-  if (!mounted) return false;
+  if (!mounted || !id || (!LittleFS.exists(path("/photos", id, ".jpg")) &&
+                          !LittleFS.exists(path("/photos", id, ".sdi")))) return false;
   QueuedAsk queued[16];
   const int n = queueList(queued, 16);
   for (int i = 0; i < n; ++i)
     if (queued[i].photoId == id) return false;
+  if (!removeOriginal(id)) return false;
   LittleFS.remove(path("/photos", id, ".thm"));
   LittleFS.remove(path("/photos", id, ".scr"));
   noteUpload(path("/photos", id, ".gfu"));
   LittleFS.remove(path("/photos", id, ".gfu"));
-  return LittleFS.remove(path("/photos", id, ".jpg"));
+  return true;
 }
+
+bool photoOnSd(uint32_t id) { return mounted && LittleFS.exists(path("/photos", id, ".sdi")); }
 
 bool deleteAnswer(uint32_t id) {
   if (!mounted) return false;

@@ -6,6 +6,8 @@
 #include <esp_lcd_panel_ops.h>
 #include <esp_lcd_panel_vendor.h>
 #include "board_pins.h"
+#include "sd_card.h"
+#include <freertos/semphr.h>
 
 namespace {
 constexpr int W = 240;
@@ -17,10 +19,13 @@ constexpr int BL_CHANNEL = 7;
 esp_lcd_panel_handle_t panel = nullptr;
 void (*drawDone)() = nullptr;
 bool touchFound = false;
+SemaphoreHandle_t busGate = nullptr;
 
 bool IRAM_ATTR transferDone(esp_lcd_panel_io_handle_t, esp_lcd_panel_io_event_data_t *, void *) {
+  BaseType_t woken = pdFALSE;
   if (drawDone) drawDone();
-  return false;
+  if (busGate) xSemaphoreGiveFromISR(busGate, &woken);
+  return woken == pdTRUE;
 }
 
 bool touchWrite(uint8_t reg, uint8_t value) {
@@ -33,6 +38,9 @@ bool touchWrite(uint8_t reg, uint8_t value) {
 
 bool displayBegin(uint32_t spiHz, void (*onDrawDone)()) {
   drawDone = onDrawDone;
+  busGate = xSemaphoreCreateBinary();
+  if (!busGate) return false;
+  xSemaphoreGive(busGate);
   // Keep the microSD card deselected so LCD traffic on the shared bus is ignored.
   pinMode(PIN_SD_CS, OUTPUT);
   digitalWrite(PIN_SD_CS, HIGH);
@@ -48,6 +56,8 @@ bool displayBegin(uint32_t spiHz, void (*onDrawDone)()) {
   bus.quadhd_io_num = -1;
   bus.max_transfer_sz = W * DISPLAY_CHUNK_ROWS * 2 + 8;
   if (spi_bus_initialize(SPI2_HOST, &bus, SPI_DMA_CH_AUTO) != ESP_OK) return false;
+  sdCardBegin();
+  sdCardReport();
 
   esp_lcd_panel_io_handle_t io = nullptr;
   esp_lcd_panel_io_spi_config_t ioConfig = {};
@@ -92,7 +102,12 @@ bool displayBegin(uint32_t spiHz, void (*onDrawDone)()) {
 void displayBrightness(uint8_t level) { ledcWrite(BL_CHANNEL, level); }
 
 void displayDraw(int x1, int y1, int x2, int y2, const uint16_t *pixels) {
-  if (panel) esp_lcd_panel_draw_bitmap(panel, x1, y1, x2, y2, pixels);
+  if (!panel) return;
+  displayBusAcquire();
+  if (esp_lcd_panel_draw_bitmap(panel, x1, y1, x2, y2, pixels) != ESP_OK) {
+    displayBusRelease();
+    if (drawDone) drawDone();
+  }
 }
 
 bool touchAvailable() { return touchFound; }
@@ -134,3 +149,6 @@ bool touchRead(int &x, int &y) {
   y = min(y, 283);
   return true;
 }
+
+void displayBusAcquire() { if (busGate) xSemaphoreTake(busGate, portMAX_DELAY); }
+void displayBusRelease() { if (busGate) xSemaphoreGive(busGate); }

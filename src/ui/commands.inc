@@ -1,6 +1,60 @@
 // Part of device_ui.cpp (included there, one translation unit). USB serial commands (mirror and developer tools).
 void handleDeviceButton(char command) {
   if (!framebuffer) return;
+  if (command == ')') {
+    uint32_t latest = 0;
+    if (listPhotos(&latest, 1)) {
+      Serial.printf("PHOTO_STORAGE id=%lu backend=%s bytes=%u\n", (unsigned long)latest,
+                    photoOnSd(latest) ? "sd" : "internal", unsigned(photoBytes(latest)));
+    }
+    sdCardReport();
+    return;
+  }
+  if (command == '&') { Serial.printf("SD_TEST result=%s\n", (sdCardSelfTest() && sdCardPhotoSelfTest()) ? "PASS" : "FAIL"); return; }
+  if (command == '(') {
+    const BatteryStatus power = batteryStatus();
+    Serial.printf("POWER level=%d volts=%.3f usb_host=%d source=%d charge=%d sense=%d\n",
+                  power.percent, power.volts, power.usbHostConnected, (int)power.source,
+                  (int)power.charge, PIN_BATTERY >= 0);
+    return;
+  }
+  if (command == '?') {
+    // Display diagnostic: no filesystem, credentials or pin assignments change.
+    wakeScreen();
+    stopPreview();
+    Serial.println("LCD_TEST begin: backlight blinks, then red/green/blue/white");
+    for (int i = 0; i < 3; ++i) {
+      displayBrightness(0);
+      Serial.println("LCD_TEST backlight OFF");
+      delay(5000);
+      displayBrightness(255);
+      Serial.println("LCD_TEST backlight ON");
+      delay(5000);
+    }
+    lv_obj_t *test = lv_obj_create(lv_layer_top());
+    lv_obj_remove_style_all(test);
+    lv_obj_set_pos(test, 0, 0);
+    lv_obj_set_size(test, W, H);
+    lv_obj_set_style_bg_opa(test, LV_OPA_COVER, 0);
+    lv_obj_remove_flag(test, LV_OBJ_FLAG_SCROLLABLE);
+    const uint32_t colors[] = {0xff0000, 0x00ff00, 0x0000ff, 0xffffff};
+    const char *names[] = {"RED", "GREEN", "BLUE", "WHITE"};
+    for (int round = 0; round < 2; ++round) {
+      for (int i = 0; i < 4; ++i) {
+        lv_obj_set_style_bg_color(test, lv_color_hex(colors[i]), 0);
+        lv_refr_now(display);
+        Serial.printf("LCD_TEST %s framebuffer_center=%04x\n", names[i], framebuffer[(H / 2) * W + W / 2]);
+        const uint32_t started = millis();
+        while (millis() - started < 3000) { lv_timer_handler(); delay(5); }
+      }
+    }
+    lv_obj_delete(test);
+    wakeScreen();
+    lv_obj_invalidate(root);
+    lv_refr_now(display);
+    Serial.println("LCD_TEST finished: original UI and brightness restored");
+    return;
+  }
   if (command == 'T') {
     String xy = Serial.readStringUntil('\n');
     // "x,y" taps; "x,y,ms" holds for ms (long-press actions).
@@ -403,6 +457,7 @@ void handleDeviceButton(char command) {
       show(Screen::Password);
       break;
     case 'i': launch(Screen::Settings); break;
+    case '9': launch(Screen::Battery); break;
     case 'b':
       if (answerCount) showAnswer(answerIds[0]);
       break;

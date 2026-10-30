@@ -9,8 +9,7 @@ void initDeviceUi() {
   sleepChoice = settings.getUChar("sleep", 1) % (sizeof(SLEEP_CHOICES) / sizeof(SLEEP_CHOICES[0]));
   dailyChoice = settings.getUChar("daily", 0) % (sizeof(DAILY_CHOICES) / sizeof(DAILY_CHOICES[0]));
   aiSetDailyLimit(DAILY_CHOICES[dailyChoice]);
-  // Privacy light: the board's orange LED (active low) is on while a photo or sound is being
-  // recorded or sent.
+  // Deselect the SD card before initializing the shared display bus.
   pinMode(PIN_SD_CS, OUTPUT);
   digitalWrite(PIN_SD_CS, HIGH);
   batteryBegin();
@@ -103,6 +102,7 @@ void initDeviceUi() {
   buildWifi();
   buildPassword();
   buildControl();
+  buildBattery();
   // Back arrow for screens two levels deep (Answer from History, Model from Settings...).
   backButton = plain(lv_layer_top());
   lv_obj_set_size(backButton, 34, 34);

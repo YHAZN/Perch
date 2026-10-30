@@ -10,13 +10,13 @@ void buildFace() {
   lv_obj_t *status = plain(s);
   lv_obj_set_size(status, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
   lv_obj_set_flex_flow(status, LV_FLEX_FLOW_ROW);
-  lv_obj_set_flex_align(status, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_flex_align(status, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
   lv_obj_set_style_pad_column(status, 8, 0);
   lv_obj_align(status, LV_ALIGN_TOP_RIGHT, -24, 30);
   faceBt = text(status, LV_SYMBOL_BLUETOOTH, F_BODY, MIST);
   faceWifi = text(status, LV_SYMBOL_WIFI, F_BODY, MIST);
-  faceBattery = text(status, "", F_SMALL, MIST);
-  lv_obj_add_flag(faceBattery, LV_OBJ_FLAG_HIDDEN);  // shown once the battery sense is wired
+  faceUsb = text(status, LV_SYMBOL_USB, F_SMALL, MIST);
+  faceBattery = text(status, LV_SYMBOL_BATTERY_EMPTY "?", F_SMALL, MIST);
   faceOffline = text(s, "", F_SMALL, MIST);
   lv_obj_add_flag(faceOffline, LV_OBJ_FLAG_HIDDEN);
   card = pressedFeedback(plain(s));

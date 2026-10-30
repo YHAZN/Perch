@@ -8,3 +8,14 @@ void batteryBegin();
 int batteryPercent();
 // Cell voltage in volts, 0 when unknown.
 float batteryVolts();
+
+enum class PowerSource { Unknown, Usb, Battery };
+enum class BatteryCharge { Unknown, NotCharging, Charging, Full };
+struct BatteryStatus {
+  int percent;              // -1 = unavailable; voltage-derived percentages are estimates
+  float volts;             // 0 = unavailable
+  bool usbHostConnected;   // USB data host detected; NOT proof of charging or battery presence
+  PowerSource source;
+  BatteryCharge charge;
+};
+BatteryStatus batteryStatus();

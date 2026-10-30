@@ -1,6 +1,9 @@
 #include "battery.h"
 #include <Arduino.h>
 #include "board_pins.h"
+#if ARDUINO_USB_MODE && ARDUINO_USB_CDC_ON_BOOT
+#include <HWCDC.h>
+#endif
 
 namespace {
 float smoothed = 0;
@@ -25,6 +28,9 @@ float readVolts() {
 }  // namespace
 
 void batteryBegin() {
+  if (PIN_USB_PRESENT >= 0) pinMode(PIN_USB_PRESENT, INPUT);
+  if (PIN_CHARGING >= 0) pinMode(PIN_CHARGING, INPUT_PULLUP);
+  if (PIN_CHARGE_DONE >= 0) pinMode(PIN_CHARGE_DONE, INPUT_PULLUP);
   if (PIN_BATTERY < 0) return;
   analogSetPinAttenuation(PIN_BATTERY, ADC_11db);  // full 0-3.1 V range
   smoothed = readVolts();
@@ -44,6 +50,28 @@ float batteryVolts() {
 int batteryPercent() {
   const float v = batteryVolts();
   // Below 2.5 V there is no cell connected (the pin just floats near ground).
-  if (v < 2.5f) return -1;
+  if (v < 2.5f || v > 4.35f) return -1;
   return percentFor(v);
+}
+
+BatteryStatus batteryStatus() {
+  BatteryStatus state = {batteryPercent(), batteryVolts(), false, PowerSource::Unknown, BatteryCharge::Unknown};
+#if ARDUINO_USB_MODE && ARDUINO_USB_CDC_ON_BOOT
+  state.usbHostConnected = HWCDC::isPlugged();
+#endif
+  // No USB host does not imply battery power: wall chargers have no USB data host.
+  if (PIN_USB_PRESENT >= 0) {
+    const bool usbPower = digitalRead(PIN_USB_PRESENT) == HIGH;
+    if (usbPower) state.source = PowerSource::Usb;
+    else if (state.percent >= 0) state.source = PowerSource::Battery;
+    if (!usbPower) state.charge = BatteryCharge::NotCharging;
+    else if (PIN_CHARGING >= 0 && digitalRead(PIN_CHARGING) == LOW)
+      state.charge = BatteryCharge::Charging;
+    else if (PIN_CHARGE_DONE >= 0 && digitalRead(PIN_CHARGE_DONE) == LOW)
+      state.charge = BatteryCharge::Full;
+    else if (PIN_CHARGING >= 0 && PIN_CHARGE_DONE >= 0)
+      state.charge = BatteryCharge::NotCharging;
+  }
+  // Never infer charge completion from USB presence, voltage, or elapsed time.
+  return state;
 }

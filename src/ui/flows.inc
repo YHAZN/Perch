@@ -126,7 +126,8 @@ void saveTask(void *) {
     if (id) savedPhotoId = id;
     else Serial.println("STORAGE_ERROR Photo not saved");
     freeKbCache = storageFreeBytes() / 1024;
-    Serial.printf("PHOTO_SAVED id=%lu in %lums\n", (unsigned long)id, (unsigned long)(millis() - t));
+    Serial.printf("PHOTO_SAVED id=%lu in %lums storage=%s\n", (unsigned long)id,
+                  (unsigned long)(millis() - t), photoOnSd(id) ? "sd" : "internal");
     free(job->jpeg);
     free(job->small);
     free(job);

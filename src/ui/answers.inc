@@ -390,13 +390,43 @@ void refreshDynamic() {
     const lv_color_t btColor = remoteConnected() ? INK : MIST;
     if (!lv_color_eq(lv_obj_get_style_text_color(faceBt, 0), btColor)) lv_obj_set_style_text_color(faceBt, btColor, 0);
     hide(faceBt, !bluetoothOn);
-    const int battery = batteryPercent();
-    hide(faceBattery, battery < 0);
-    if (battery >= 0) {
-      setText(faceBattery, (String(battery) + "%").c_str());
-      const lv_color_t c = battery <= 15 ? lv_color_hex(0xFF5A4E) : INK;
-      if (!lv_color_eq(lv_obj_get_style_text_color(faceBattery, 0), c)) lv_obj_set_style_text_color(faceBattery, c, 0);
+    const BatteryStatus power = batteryStatus();
+    const bool measured = power.percent >= 0;
+    hide(faceUsb, !power.usbHostConnected && power.source != PowerSource::Usb);
+    hide(faceBattery, false);
+    // Keep the existing icon font, flex row and top-right anchor.
+    // Tighten spacing only when Bluetooth adds a fourth icon beside the clock.
+    lv_obj_set_style_pad_column(lv_obj_get_parent(faceWifi), bluetoothOn ? 4 : 8, 0);
+    if (measured) {
+      const char *icon = power.percent >= 90 ? LV_SYMBOL_BATTERY_FULL
+                         : power.percent >= 65 ? LV_SYMBOL_BATTERY_3
+                         : power.percent >= 40 ? LV_SYMBOL_BATTERY_2
+                         : power.percent >= 15 ? LV_SYMBOL_BATTERY_1 : LV_SYMBOL_BATTERY_EMPTY;
+      setText(faceBattery, icon);
+      const lv_color_t c = power.percent <= 15 ? lv_color_hex(0xFF5A4E) : INK;
+      if (!lv_color_eq(lv_obj_get_style_text_color(faceBattery, 0), c))
+        lv_obj_set_style_text_color(faceBattery, c, 0);
+    } else {
+      setText(faceBattery, LV_SYMBOL_BATTERY_EMPTY "?");
+      lv_obj_set_style_text_color(faceBattery, MIST, 0);
     }
+    const String level = measured ? "~" + String(power.percent) + "%" : "Unavailable";
+    const char *usb = power.source == PowerSource::Usb ? "Powered"
+                      : power.usbHostConnected ? "Connected" : "Not detected";
+    const char *charge = power.charge == BatteryCharge::Charging ? "Charging"
+                         : power.charge == BatteryCharge::Full ? "Full"
+                         : power.charge == BatteryCharge::NotCharging ? "No" : "Not measured";
+    setText(batteryLevelValue, level.c_str());
+    setText(batteryUsbValue, usb);
+    setText(batteryChargeValue, charge);
+    const String detail = measured ? String(power.volts, 2) + " V. Level is an estimate."
+                                  : "USB connection does not indicate charging.";
+    setText(batteryDetail, detail.c_str());
+    const String summary = String(power.source == PowerSource::Battery ? "Battery" :
+                                  power.source == PowerSource::Usb ? "USB power" :
+                                  power.usbHostConnected ? "USB connected" : "Power") +
+                           "  /  " + (measured ? level : "Level --");
+    setText(ccPowerLabel, summary.c_str());
   }
   renderCard();
   const bool photo = jpegBytes > 0;
@@ -452,8 +482,12 @@ void refreshDynamic() {
     }
     setText(softwareSub, line.c_str());
   }
-  setText(storageValue, freeKbCache ? (String(freeKbCache) + " KB free").c_str() : "");
-  setText(storageSub, (String(photoCount) + " photos, " + answerCount + " answers on the device").c_str());
+  const String storageSpace = sdCardAvailable() ? String(double(sdCardCapacity()) / 1e9, 1) + " GB SD"
+                                               : freeKbCache ? String(freeKbCache) + " KB free" : "";
+  setText(storageValue, storageSpace.c_str());
+  const String storageNote = sdCardAvailable() ? "SD photos / " + String(freeKbCache) + " KB internal"
+                                              : String(photoCount) + " photos, " + answerCount + " answers on the device";
+  setText(storageSub, storageNote.c_str());
   setText(remoteStatus, !remoteStarted()    ? ""
                         : remoteConnected() ? "Connected"
                                             : "Pair \"Perch\" in your computer's Bluetooth");

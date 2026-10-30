@@ -23,3 +23,8 @@ constexpr int PIN_SD_CS = 21;    // internal, also the user LED
 // pulsed only at boot).
 constexpr int PIN_BATTERY = -1;
 constexpr float BATTERY_DIVIDER = 2.0f;
+// Optional 3.3 V logic signals from a future power circuit. -1 = not wired.
+// Never connect raw USB 5 V or battery voltage to these GPIO inputs.
+constexpr int PIN_USB_PRESENT = -1;  // active high; actual VBUS detection, not USB data
+constexpr int PIN_CHARGING = -1;    // active low, charger status
+constexpr int PIN_CHARGE_DONE = -1; // active low, dedicated charge-complete status

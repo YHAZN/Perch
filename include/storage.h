@@ -2,8 +2,8 @@
 #include <Arduino.h>
 #include <vector>
 
-// Durable device storage on the internal flash filesystem (LittleFS, 1.5 MB "spiffs"
-// partition) until the SD card takes over. Survives reboots and power loss.
+// Durable indexes, thumbnails and chats use internal LittleFS. New full-resolution
+// photos use microSD when available, with internal flash as a fallback.
 bool storageBegin();
 
 // Thumbnails are 64x64 little-endian RGB565, stored beside each photo and answer.
@@ -17,6 +17,7 @@ int listPhotos(uint32_t *ids, int max);
 bool loadPhoto(uint32_t id, uint8_t *&jpeg, size_t &length);
 bool loadPhotoThumb(uint32_t id, uint16_t *thumb);
 size_t photoBytes(uint32_t id);  // size of the full photo, 0 if missing
+bool photoOnSd(uint32_t id);
 // Screen-sized JPEG (240x284) kept beside each photo so Photos opens quickly.
 bool savePhotoScreen(uint32_t id, const uint8_t *jpeg, size_t length);
 bool loadPhotoScreen(uint32_t id, uint8_t *&jpeg, size_t &length);

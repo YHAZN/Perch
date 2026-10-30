@@ -19,12 +19,14 @@ void buildSettings() {
     settings.putUChar("sleep", sleepChoice);
     refreshDynamic();
   });
-  lv_obj_t *storage = row(s, 266, "Storage", &storageValue, 64);
+  lv_obj_t *power = row(s, 266, "Battery", nullptr);
+  onClick(power, [] { show(Screen::Battery); });
+  lv_obj_t *storage = row(s, 318, "Storage", &storageValue, 64);
   lv_obj_align(lv_obj_get_child(storage, 0), LV_ALIGN_TOP_LEFT, 22, 12);
   lv_obj_align(storageValue, LV_ALIGN_TOP_RIGHT, -20, 12);
   storageSub = text(storage, "", F_SMALL, MIST);
   lv_obj_set_pos(storageSub, 22, 36);
-  lv_obj_t *forget = row(s, 330, "Forget last hour", nullptr, 64);
+  lv_obj_t *forget = row(s, 382, "Forget last hour", nullptr, 64);
   lv_obj_align(lv_obj_get_child(forget, 0), LV_ALIGN_TOP_LEFT, 22, 12);
   lv_obj_t *forgetSub = text(forget, "Hold: chats, answers, photos go", F_SMALL, MIST);
   lv_obj_set_pos(forgetSub, 22, 36);
@@ -60,7 +62,7 @@ void buildSettings() {
       },
       LV_EVENT_LONG_PRESSED, nullptr);
   // Software: version and updates. Tap to check; then to install; then to restart.
-  lv_obj_t *about = row(s, 394, "Software", nullptr, 64);
+  lv_obj_t *about = row(s, 446, "Software", nullptr, 64);
   lv_obj_align(lv_obj_get_child(about, 0), LV_ALIGN_TOP_LEFT, 22, 12);
   softwareSub = text(about, "", F_SMALL, MIST);
   lv_obj_set_pos(softwareSub, 22, 36);
@@ -304,6 +306,17 @@ lv_obj_t *ccToggle(lv_obj_t *parent, const char *label, lv_obj_t **labelOut, lv_
   if (stateOut) *stateOut = st;
   return t;
 }
+void buildBattery() {
+  lv_obj_t *s = scr[(int)Screen::Battery] = screenBase();
+  title(s, "Battery");
+  row(s, 58, "Level", &batteryLevelValue);
+  row(s, 110, "USB link", &batteryUsbValue);
+  row(s, 162, "Charging", &batteryChargeValue);
+  batteryDetail = text(s, "", F_SMALL, MIST);
+  lv_obj_set_width(batteryDetail, 196);
+  lv_obj_set_pos(batteryDetail, 22, 222);
+}
+
 void buildControl() {
   cc = plain(root);
   lv_obj_add_flag(cc, LV_OBJ_FLAG_CLICKABLE);  // tap outside the controls closes it
@@ -363,6 +376,12 @@ void buildControl() {
     lv_obj_t *ray = circle(ccBright, 3, MIST, 0, MIST, LV_OPA_COVER);
     lv_obj_align(ray, LV_ALIGN_LEFT_MID, 22 + 3 + (int)(10 * cosf(i * PI / 4)), (int)(10 * sinf(i * PI / 4)));
   }
+  lv_obj_t *power = pressedFeedback(plain(cc));
+  lv_obj_set_size(power, 196, 30);
+  lv_obj_set_pos(power, 22, 212);
+  ccPowerLabel = text(power, "", F_SMALL, MIST);
+  lv_obj_center(ccPowerLabel);
+  onClick(power, [] { closeControl(); show(Screen::Battery); });
   lv_obj_t *hint = text(cc, "Swipe up from the bottom to close", F_SMALL, MIST);
   lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -24);
   // Tap outside the controls closes it; so does swiping up from the bottom line.

@@ -25,6 +25,7 @@
 #include "display.h"
 #include "remote.h"
 #include "storage.h"
+#include "sd_card.h"
 #include "math_text.h"
 
 // Display fonts (src/fonts, C files).
@@ -76,6 +77,7 @@ enum class Screen {
   Gestures,
   Chats,
   Picker,
+  Battery,
   Count
 };
 Screen current = Screen::Face;
@@ -143,6 +145,8 @@ int answerCount = 0;
 // Widgets
 lv_obj_t *scr[(int)Screen::Count];
 lv_obj_t *faceWifi, *faceBt, *faceBattery;
+lv_obj_t *faceUsb;
+lv_obj_t *batteryLevelValue, *batteryUsbValue, *batteryChargeValue, *batteryDetail, *ccPowerLabel;
 lv_obj_t *clockLabel, *dateLabel, *faceOffline, *card, *cardImage, *cardScrim, *cardRing, *cardKey, *cardValue,
     *cardDots;
 std::vector<lv_obj_t *> icons;

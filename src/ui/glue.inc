@@ -137,6 +137,7 @@ const char *screenName() {
     case Screen::Password: return "password";
     case Screen::Chats: return "chats";
     case Screen::Picker: return "picker";
+    case Screen::Battery: return "battery";
     case Screen::Settings: return "status";
     case Screen::Model: return "model";
     default: return "error";
