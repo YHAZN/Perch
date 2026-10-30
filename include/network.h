@@ -1,5 +1,6 @@
 #pragma once
 #include <Arduino.h>
+#include "network_attempt.h"
 
 // Wi-Fi runs in the background from boot and reconnects by itself. Networks are tried in
 // order: ones saved on the device (most recent first), the build-time test network, then
@@ -14,8 +15,15 @@ String networkName();  // SSID when connected, else ""
 // Saved networks (NVS). Saving moves a network to the front and joins it now.
 constexpr int SAVED_NETWORKS = 5;
 void networkSave(const String &ssid, const String &password);
+// Reuse stored credentials without rewriting them. False means the SSID was not saved.
+bool networkJoinSaved(const String &ssid);
+bool networkJoining();
+NetworkJoinState networkJoinState();
+String networkJoinTarget();
+const char *networkJoinErrorMessage();
 void networkForget(const String &ssid);
 bool networkIsSaved(const String &ssid);
+bool networkSavedHasPassword(const String &ssid);
 
 // Scanning without blocking the UI. While the Wi-Fi screen is open, automatic retries pause
 // so they do not cancel the scan.

@@ -200,6 +200,7 @@ void refreshPhotos();
 extern String cardSignature;
 lv_obj_t *wifiList, *wifiStatus, *passwordTitle, *passwordField, *keyboard;
 String joiningSsid;
+String wifiAttemptSsid;
 bool scanShown = false;
 unsigned long scanStartedAt = 0;
 lv_obj_t *modelValue, *wifiValue, *brightSlider, *storageValue, *storageSub, *softwareSub;

@@ -2,6 +2,7 @@
 #include "network.h"
 #include <Preferences.h>
 #include <WiFi.h>
+#include <esp_wifi.h>
 #include <algorithm>
 #include <vector>
 // Development builds may carry a test network in include/wifi_secrets.h (never committed).
@@ -23,6 +24,8 @@ bool radioOn = true;
 bool paused = false;
 unsigned long lastAttempt = 0;
 int candidate = 0;
+NetworkAttempt attempt;
+String manualTarget;
 
 struct Candidate {
   String ssid, password;
@@ -45,6 +48,22 @@ void joinNext() {
   else WiFi.begin(c.ssid.c_str());
   lastAttempt = millis();
 }
+void joinManual(const Candidate &c) {
+  radioOn = true;
+  WiFi.mode(WIFI_STA);
+  // An in-flight list scan can otherwise make begin() fail with WIFI_STATE.
+  esp_wifi_scan_stop();
+  WiFi.scanDelete();
+  WiFi.setAutoReconnect(false);
+  WiFi.disconnect();
+  manualTarget = c.ssid;
+  attempt.start(millis());
+  lastAttempt = millis();
+  candidate = 0;
+  if (c.password.length()) WiFi.begin(c.ssid.c_str(), c.password.c_str());
+  else WiFi.begin(c.ssid.c_str());
+  deviceConsole().println("WIFI_JOIN begin");
+}
 }  // namespace
 
 void networkBegin() {
@@ -63,10 +82,24 @@ void networkBegin() {
   if (PERCH_BUILD_NETWORK && WIFI_TEST_SSID[0] && strcmp(WIFI_TEST_SSID, "your-network") != 0 &&
       !networkIsSaved(WIFI_TEST_SSID))
     networkSave(WIFI_TEST_SSID, WIFI_TEST_PASSWORD);
-  joinNext();
+  if (!attempt.joining()) joinNext();
 }
 
 void networkTick() {
+  if (attempt.joining()) {
+    const auto status = WiFi.status();
+    const auto error = status == WL_NO_SSID_AVAIL    ? NetworkJoinError::NotFound
+                       : status == WL_CONNECT_FAILED ? NetworkJoinError::Rejected
+                                                     : NetworkJoinError::None;
+    attempt.poll(millis(), status == WL_CONNECTED && WiFi.SSID() == manualTarget, error);
+    if (!attempt.joining()) {
+      if (attempt.state() == NetworkJoinState::Failed) WiFi.disconnect();
+      WiFi.setAutoReconnect(true);
+      lastAttempt = millis();
+      deviceConsole().printf("WIFI_JOIN result=%d error=%d\n", int(attempt.state()), int(attempt.error()));
+    }
+    return;  // manual attempts progress even while automatic retries are paused
+  }
   if (radioOn && !paused && WiFi.status() != WL_CONNECTED && millis() - lastAttempt > RETRY_MS) {
     WiFi.disconnect();
     joinNext();
@@ -76,6 +109,8 @@ void networkTick() {
 void networkSetEnabled(bool on) {
   // Control Center Wi-Fi toggle: off turns the radio off entirely (saves power).
   radioOn = on;
+  attempt.cancel();
+  WiFi.setAutoReconnect(true);
   if (on) {
     WiFi.mode(WIFI_STA);
     candidate = 0;
@@ -91,6 +126,7 @@ bool networkConnected() { return WiFi.status() == WL_CONNECTED; }
 String networkName() { return networkConnected() ? WiFi.SSID() : String(); }
 
 void networkSave(const String &ssid, const String &password) {
+  if (ssid.isEmpty()) return;
   // Most recent first: shift the others down, dropping the oldest and any old copy.
   std::vector<Candidate> saved;
   saved.push_back({ssid, password});
@@ -103,14 +139,38 @@ void networkSave(const String &ssid, const String &password) {
     store.putString(("s" + String(i)).c_str(), used ? saved[i].ssid : "");
     store.putString(("p" + String(i)).c_str(), used ? saved[i].password : "");
   }
-  radioOn = true;
-  WiFi.mode(WIFI_STA);
-  WiFi.disconnect();
-  candidate = 0;
-  joinNext();
+  joinManual({ssid, password});
+}
+
+bool networkJoinSaved(const String &ssid) {
+  if (ssid.isEmpty()) return false;
+  for (int i = 0; i < SAVED_NETWORKS; ++i) {
+    if (store.getString(("s" + String(i)).c_str(), "") != ssid) continue;
+    const String password = store.getString(("p" + String(i)).c_str(), "");
+    joinManual({ssid, password});
+    return true;
+  }
+  return false;
+}
+bool networkJoining() { return attempt.joining(); }
+NetworkJoinState networkJoinState() { return attempt.state(); }
+String networkJoinTarget() { return manualTarget; }
+const char *networkJoinErrorMessage() {
+  switch (attempt.error()) {
+    case NetworkJoinError::NotFound: return "Network not found. Check hotspot.";
+    case NetworkJoinError::Rejected: return "Password or security rejected.";
+    case NetworkJoinError::Timeout: return "Join timed out. Try again.";
+    default: return "Could not connect. Try again.";
+  }
 }
 
 void networkForget(const String &ssid) {
+  const bool cancelJoin = manualTarget == ssid && attempt.joining();
+  if (manualTarget == ssid) {
+    attempt.cancel();
+    manualTarget = "";
+    WiFi.setAutoReconnect(true);
+  }
   std::vector<Candidate> kept;
   for (int i = 0; i < SAVED_NETWORKS; ++i) {
     const String s = store.getString(("s" + String(i)).c_str(), "");
@@ -121,12 +181,20 @@ void networkForget(const String &ssid) {
     store.putString(("s" + String(i)).c_str(), used ? kept[i].ssid : "");
     store.putString(("p" + String(i)).c_str(), used ? kept[i].password : "");
   }
-  if (networkName() == ssid) WiFi.disconnect();
+  if (cancelJoin || networkName() == ssid) WiFi.disconnect();
 }
 
 bool networkIsSaved(const String &ssid) {
+  if (ssid.isEmpty()) return false;
   for (int i = 0; i < SAVED_NETWORKS; ++i)
     if (store.getString(("s" + String(i)).c_str(), "") == ssid) return true;
+  return false;
+}
+bool networkSavedHasPassword(const String &ssid) {
+  if (ssid.isEmpty()) return false;
+  for (int i = 0; i < SAVED_NETWORKS; ++i)
+    if (store.getString(("s" + String(i)).c_str(), "") == ssid)
+      return !store.getString(("p" + String(i)).c_str(), "").isEmpty();
   return false;
 }
 
@@ -137,6 +205,7 @@ void networkPauseRetries(bool p) { paused = p; }
 void networkRoam(bool allowed) {
   static unsigned long lastCheck = 0;
   static bool scanning = false;
+  if (attempt.joining()) return;
   if (WiFi.status() != WL_CONNECTED) {
     scanning = false;
     return;
@@ -177,6 +246,7 @@ void networkRoam(bool allowed) {
 }
 
 void networkScanStart() {
+  if (!attempt.scansAllowed()) return;
   if (!radioOn) {
     radioOn = true;
     WiFi.mode(WIFI_STA);

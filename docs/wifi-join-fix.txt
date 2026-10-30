@@ -1,0 +1,37 @@
+WI-FI JOIN REPAIR
+
+Observed code defects in firmware through 0.6.4:
+- Submitting a password returns to Wi-Fi. Entering that screen starts a scan,
+  and scanning disconnects an unfinished join. Automatic retries are paused on that screen.
+- Selecting a saved secured network passes an empty password to networkSave,
+  replacing the stored password before starting a new join.
+- The list's periodic scan can interrupt another join, and no bounded failure result is shown.
+
+Repair:
+- Explicit joins own the radio for up to 25 seconds; UI scans and candidate rotation wait.
+- Saved secured joins load their stored password without overwriting it.
+- Entries with an erased password request it again. Failed entries let the user edit it.
+- Persistent driver rejection/not-found states become failures after 2 seconds; transient errors can recover.
+- Password form target and active-join tracking use separate variables, so a completed/failed
+  earlier attempt cannot clear the target while the user is entering another network's password.
+- Forget uses short-click/long-press separation to avoid rejoining on release after a forget.
+- Diagnostic results log only join state and error category, never passwords.
+
+IPHONE HOTSPOT ON THE OLD INSTALLED FIRMWARE
+Enable Allow Others to Join and Maximize Compatibility on the iPhone.
+Keep Personal Hotspot settings visible during discovery and initial connection.
+If Perch already marks the hotspot Saved and will not ask for its password, hold the row to
+forget it, then add it again. Enter the password once, return Home, and toggle Wi-Fi off/on
+from Control Center. Stay out of the Wi-Fi list afterward so it does not cancel the new join.
+The most recently saved network is attempted first when Wi-Fi is switched back on.
+This is a source-based workaround, not a confirmed successful hotspot test.
+
+VERIFICATION
+Compile-time state-machine tests exercise scan exclusion, timeout, transient error recovery,
+persistent rejection, cancellation, retry, and clock rollover. Firmware must also build.
+Actual hotspot/router association, DHCP and internet access remain hardware tests.
+An update cannot download while the device has no working network. If the workaround does
+not restore connectivity, a USB update or a reachable previously working network is needed.
+
+Apple hotspot guidance: https://support.apple.com/en-ae/119837
+ESP32-S3 2.4 GHz Wi-Fi: https://files.seeedstudio.com/wiki/SeeedStudio-XIAO-ESP32S3/res/esp32-s3_datasheet.pdf

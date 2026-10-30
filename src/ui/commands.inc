@@ -54,6 +54,7 @@ void handleDeviceButton(char command) {
   }
   if (command == '_') { wirelessLinkProvision(); return; }
   if (command == ':') {
+    deviceConsole().printf("WIFI_JOIN state=%d active=%d\n", int(networkJoinState()), networkJoining());
     deviceConsole().printf("REMOTE subscriptions=%u mouse_ready=%d mouse_attempts=%u mouse_reports=%u\n",
         remoteSubscriptions(), remoteMouseReady(), remoteMouseAttempts(), remoteMouseReports());
     deviceConsole().printf("COEX wifi=%d bt_started=%d bt_connected=%d bt_drops=%u camera_mode=%d internal_free=%u internal_largest=%u internal_min=%u psram_free=%u\n",

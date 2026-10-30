@@ -1,6 +1,10 @@
 // Part of device_ui.cpp (included there, one translation unit). Screens: Wi-Fi list, password and question keyboard.
 // ---------- Wi-Fi: choose a network and type its password on the device ----------
 void startScan() {
+  if (networkJoining()) {
+    setText(wifiStatus, ("Joining " + networkJoinTarget() + "...").c_str());
+    return;
+  }
   networkScanStart();
   scanShown = false;
   scanStartedAt = millis();
@@ -9,10 +13,21 @@ void startScan() {
 }
 void joinNetwork(const String &ssid, const String &password) {
   networkSave(ssid, password);
-  joiningSsid = ssid;
+  wifiAttemptSsid = ssid;
+  setText(wifiStatus, ("Joining " + ssid + "...").c_str());
+  toast(("Joining " + ssid).c_str());
+}
+void joinSavedNetwork(const String &ssid) {
+  if (!networkJoinSaved(ssid)) return;
+  wifiAttemptSsid = ssid;
+  setText(wifiStatus, ("Joining " + ssid + "...").c_str());
   toast(("Joining " + ssid).c_str());
 }
 void renderScan() {
+  if (networkJoining()) {
+    setText(wifiStatus, ("Joining " + networkJoinTarget() + "...").c_str());
+    return;
+  }
   static ScanResult results[12];
   const int n = networkScanResults(results, 12);
   if (n < 0 || scanShown) return;
@@ -25,6 +40,7 @@ void renderScan() {
     return rank(a) != rank(b) ? rank(a) > rank(b) : a.rssi > b.rssi;
   });
   setText(wifiStatus, current.length() ? ("Connected to " + current).c_str()
+                      : networkJoinState() == NetworkJoinState::Failed ? networkJoinErrorMessage()
                       : n              ? "Choose a network"
                                        : "No networks found");
   for (int i = 0; i < n; ++i) {
@@ -38,7 +54,11 @@ void renderScan() {
     lv_obj_set_size(name, 160, 20);
     lv_obj_set_pos(name, 22, 7);
     const bool connected = results[i].ssid == current, saved = networkIsSaved(results[i].ssid);
-    const char *note = connected ? "Connected" : saved ? "Saved" : results[i].secured ? "" : "Open";
+    const bool missingPassword = saved && results[i].secured && !networkSavedHasPassword(results[i].ssid);
+    const bool failed = networkJoinState() == NetworkJoinState::Failed && networkJoinTarget() == results[i].ssid;
+    const char *note = connected ? "Connected" : missingPassword ? "Password needed"
+                       : failed && results[i].secured ? "Tap to edit password"
+                       : saved ? "Saved" : results[i].secured ? "" : "Open";
     lv_obj_t *sub = text(r, note, F_SMALL, connected ? LENS : MIST);
     lv_obj_set_pos(sub, 22, 29);
     if (!*note) {
@@ -64,8 +84,13 @@ void renderScan() {
         r,
         [](lv_event_t *e) {
           Row *row = (Row *)lv_event_get_user_data(e);
-          if (!row->secured || networkIsSaved(row->ssid)) {
+          if (!row->secured) {
             joinNetwork(row->ssid, "");
+            return;
+          }
+          const bool failed = networkJoinState() == NetworkJoinState::Failed && networkJoinTarget() == row->ssid;
+          if (networkIsSaved(row->ssid) && networkSavedHasPassword(row->ssid) && !failed) {
+            joinSavedNetwork(row->ssid);
             return;
           }
           joiningSsid = row->ssid;
@@ -78,13 +103,14 @@ void renderScan() {
           lv_textarea_set_text(passwordField, "");
           show(Screen::Password);
         },
-        LV_EVENT_CLICKED, row);
+        LV_EVENT_SHORT_CLICKED, row);
     lv_obj_add_event_cb(
         r,
         [](lv_event_t *e) {
           Row *row = (Row *)lv_event_get_user_data(e);
           if (!networkIsSaved(row->ssid)) return;
           networkForget(row->ssid);
+          if (wifiAttemptSsid == row->ssid) wifiAttemptSsid = "";
           toast(("Forgot " + row->ssid).c_str());
           startScan();
         },
@@ -97,9 +123,11 @@ void buildWifi() {
   title(s, "Wi-Fi");
   wifiStatus = text(s, "", F_SMALL, MIST);
   lv_obj_set_pos(wifiStatus, 22, 58);
+  lv_obj_set_width(wifiStatus, W - 44);
+  lv_label_set_long_mode(wifiStatus, LV_LABEL_LONG_WRAP);
   wifiList = plain(s);
-  lv_obj_set_size(wifiList, W, H - 80);
-  lv_obj_set_pos(wifiList, 0, 80);
+  lv_obj_set_size(wifiList, W, H - 100);
+  lv_obj_set_pos(wifiList, 0, 100);
   scrollable(wifiList);
   lv_obj_set_flex_flow(wifiList, LV_FLEX_FLOW_COLUMN);
   lv_obj_set_style_pad_bottom(wifiList, 56, 0);

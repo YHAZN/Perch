@@ -487,12 +487,18 @@ void refreshDynamic() {
   // Wi-Fi list: show results when a scan finishes; rescan every 20 s while it is open.
   if (current == Screen::Wifi) {
     renderScan();
-    if (scanShown && millis() - scanStartedAt > 20000) startScan();
+    if (!networkJoining() && scanShown && millis() - scanStartedAt > 20000) startScan();
   }
-  if (joiningSsid.length() && networkName() == joiningSsid) {
-    toast(("Connected to " + joiningSsid).c_str());
-    joiningSsid = "";
-    if (current == Screen::Wifi) startScan();
+  if (wifiAttemptSsid.length()) {
+    if (networkName() == wifiAttemptSsid) {
+      toast(("Connected to " + wifiAttemptSsid).c_str());
+      wifiAttemptSsid = "";
+      if (current == Screen::Wifi) startScan();
+    } else if (networkJoinState() == NetworkJoinState::Failed && networkJoinTarget() == wifiAttemptSsid) {
+      toast(networkJoinErrorMessage());
+      if (current == Screen::Wifi) setText(wifiStatus, networkJoinErrorMessage());
+      wifiAttemptSsid = "";
+    } else if (networkJoinState() == NetworkJoinState::Idle) wifiAttemptSsid = "";
   }
   if (keyCache < 0) keyCache = (settings.isKey("gemini-key") ? 1 : 0) | (settings.isKey("gpt-key") ? 2 : 0);
   if (current == Screen::Model) refreshAiScreen();
