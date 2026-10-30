@@ -467,7 +467,7 @@ void dispatchChat() {
         }  // a deleted photo
   }
   AiOptions options = aiOptions(useGemini);
-  pauseBluetooth();  // Bluetooth leaves too little memory for HTTPS; it comes back after
+  prepareAiBluetooth();
   const bool voice = q.voice && chatWav && useGemini;
   const bool started = aiChat(options, turns.data(), turns.size(), jpegs, lengths, ids, pages,
                               voice ? chatWav : nullptr, voice ? chatWavLen : 0);
@@ -623,7 +623,7 @@ void startListenBack(const uint8_t *wav, size_t length) {
   }
   sendAfterTranscribe = !confirmWords;
   AiOptions options = aiOptions(useGemini);
-  pauseBluetooth();
+  prepareAiBluetooth();
   const bool started = aiTranscribe(options, wav, length);
   options.key = "";
   if (!started) {

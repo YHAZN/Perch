@@ -182,7 +182,8 @@ class SseSink : public Stream {
   bool gemini;
   String text, finish, line, error;
   bool blocked = false;
-  explicit SseSink(bool g) : gemini(g) {}
+  bool publish;
+  explicit SseSink(bool g, bool show = true) : gemini(g), publish(show) {}
   size_t write(uint8_t b) override { return write(&b, 1); }
   size_t write(const uint8_t *b, size_t n) override {
     for (size_t i = 0; i < n; ++i) {
@@ -227,6 +228,7 @@ class SseSink : public Stream {
     }
     if (piece.isEmpty()) return;
     text += piece;
+    if (!publish) return;
     const String shown = toDisplayText(text);
     portENTER_CRITICAL(&partialLock);
     partialText = shown;
@@ -1162,34 +1164,44 @@ void aiUploadTest(size_t bytes) {
 }
 
 namespace {
+struct CoexistenceJob {
+  AiOptions options;
+  bool bluetooth;
+};
 void coexistenceLiveTask(void *raw) {
   {
-    std::unique_ptr<AiOptions> options(static_cast<AiOptions *>(raw));
+    std::unique_ptr<CoexistenceJob> job(static_cast<CoexistenceJob *>(raw));
+    AiOptions *options = &job->options;
     const uint32_t wait = millis();
     while (wirelessLinkRunning() && millis() - wait < 5000) vTaskDelay(pdMS_TO_TICKS(10));
     const bool connected = remoteConnected();
     const uint32_t drops = remoteDisconnectCount();
+    const uint32_t started = millis();
     int status = -100;
-    if (!wirelessLinkRunning() && connected && WiFi.status() == WL_CONNECTED) {
+    int received = -1;
+    SseSink sink(true, false);
+    if (!wirelessLinkRunning() && connected == job->bluetooth && WiFi.status() == WL_CONNECTED) {
       WiFiClientSecure client;
       client.setCACert(AI_ROOT_CERTS);
       client.setHandshakeTimeout(12);
       HTTPClient http;
       http.setConnectTimeout(12000);
-      http.setTimeout(30000);
-      const String url = "https://generativelanguage.googleapis.com/v1beta/models/" + options->model + ":generateContent";
+      http.setTimeout(65000);
+      const String url = "https://generativelanguage.googleapis.com/v1beta/models/" + options->model + ":streamGenerateContent?alt=sse";
       if (http.begin(client, url)) {
         http.addHeader("Content-Type", "application/json");
         http.addHeader("x-goog-api-key", options->key);
         countRequest(true);
-        char body[] = R"({"contents":[{"parts":[{"text":"Reply with only OK."}]}],"generationConfig":{"maxOutputTokens":64}})";
-        status = http.POST(reinterpret_cast<uint8_t *>(body), strlen(body));
+        String body = String(R"({"contents":[{"parts":[{"text":"Reply with only OK."}]}],"generationConfig":{"maxOutputTokens":1024,"thinkingConfig":{"thinkingLevel":")") + options->effort + "\"}}}";
+        status = http.POST(reinterpret_cast<uint8_t *>(const_cast<char *>(body.c_str())), body.length());
+        if (status == 200) { received = http.writeToStream(&sink); sink.handle(); }
         http.end();
       }
     }
     options->key = "";
-    deviceConsole().printf("COEX_LIVE status=%d before_connected=%d bt_connected=%d bt_drops=%u internal_free=%u internal_largest=%u\n",
-        status, connected, remoteConnected(), remoteDisconnectCount() - drops,
+    sink.text.trim();
+    deviceConsole().printf("COEX_LIVE mode=%d status=%d received=%d reply_ok=%d elapsed_ms=%u before_connected=%d bt_connected=%d bt_drops=%u internal_free=%u internal_largest=%u\n",
+        job->bluetooth, status, received, sink.text == "OK" || sink.text == "OK.", millis() - started, connected, remoteConnected(), remoteDisconnectCount() - drops,
         heap_caps_get_free_size(MALLOC_CAP_INTERNAL), heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
   }
   uploadTestRunning = false;
@@ -1197,13 +1209,13 @@ void coexistenceLiveTask(void *raw) {
 }
 }
 
-bool aiCoexistenceCheck(const AiOptions &options) {
-  if (!options.gemini || options.key.isEmpty() || !remoteConnected() || aiBusy() ||
+bool aiCoexistenceCheck(const AiOptions &options, bool bluetooth) {
+  if (!options.gemini || options.key.isEmpty() || remoteConnected() != bluetooth || aiBusy() ||
       (dailyLimit > 0 && aiRequestsToday(true) + aiRequestsToday(false) >= dailyLimit)) return false;
   if (uploadTestRunning.exchange(true)) return false;
-  AiOptions *copy = new AiOptions(options);
+  CoexistenceJob *copy = new CoexistenceJob{options, bluetooth};
   if (xTaskCreatePinnedToCore(coexistenceLiveTask, "coex-live", 16384, copy, 1, nullptr, 0) != pdPASS) {
-    copy->key = "";
+    copy->options.key = "";
     delete copy;
     uploadTestRunning = false;
     return false;

@@ -68,7 +68,7 @@ void aiDryRun(const AiOptions &options, int pages, const String &question, bool 
 void aiUploadTest(size_t bytes);
 bool aiUploadTestBusy();
 // One isolated, capped Gemini request; no photos, no history changes, no retries.
-bool aiCoexistenceCheck(const AiOptions &options);
+bool aiCoexistenceCheck(const AiOptions &options, bool bluetooth = true);
 // Developer: free check that the key is valid and can see the model.
 void aiKeyCheck(const String &key);
 // The UI reports when flash is busy (photo still saving); requests wait for it.

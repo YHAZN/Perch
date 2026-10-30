@@ -362,6 +362,16 @@ void pauseBluetooth() {
     btPaused = true;
   }
 }
+void prepareAiBluetooth() {
+  // TLS buffers use PSRAM. Keep a linked remote unless internal memory is
+  // already too constrained for the worker stack and Wi-Fi bookkeeping.
+  const size_t available = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+  const size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+  const bool constrained = available < 48 * 1024 || largest < 16 * 1024;
+  deviceConsole().printf("AI_RADIO bt_connected=%d fallback=%d internal_free=%u internal_largest=%u\n",
+      remoteConnected(), constrained && remoteStarted(), unsigned(available), unsigned(largest));
+  if (constrained) pauseBluetooth();
+}
 void resumeBluetooth() {
   btPaused = false;
   if (bluetoothOn && !remoteStarted()) remoteBegin();

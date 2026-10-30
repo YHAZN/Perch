@@ -151,7 +151,7 @@ void deviceTick() {
       uint8_t *wav = nullptr;
       size_t wavLen = 0;
       queueLoadAudio(queued[i].id, wav, wavLen);
-      pauseBluetooth();  // Bluetooth leaves too little memory for HTTPS
+      prepareAiBluetooth();
       AiOptions options = aiOptions(queued[i].gemini);
       const uint8_t *pages[1] = {jpeg};
       const size_t lengths[1] = {len};

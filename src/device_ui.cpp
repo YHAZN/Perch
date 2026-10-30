@@ -202,6 +202,7 @@ uint32_t nextTimerMs = 1;  // when LVGL next needs to run (main loop rest)
 void chatPhotoTaken();
 void chatPhotoSaved(uint32_t id);
 void pauseBluetooth();
+void prepareAiBluetooth();
 void setBluetooth(bool on);
 void wakeScreen();
 void refreshAiScreen();

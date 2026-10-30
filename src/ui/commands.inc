@@ -41,8 +41,13 @@ void handleDeviceButton(char command) {
     return;
   }
   if (command == '{') {
+    String mode = deviceConsole().readStringUntil('\n');
+    mode.trim();
+    if (mode.length() && mode != "0" && mode != "1") { deviceConsole().println("COEX_LIVE invalid mode"); return; }
+    const bool bluetooth = mode != "0";
     AiOptions options = aiOptions(true);
-    const bool started = !photoSavePending && aiCoexistenceCheck(options);
+    if (!bluetooth && !photoSavePending && !aiBusy()) pauseBluetooth();
+    const bool started = !photoSavePending && aiCoexistenceCheck(options, bluetooth);
     options.key = "";
     deviceConsole().printf("COEX_LIVE started=%d\n", started);
     return;
