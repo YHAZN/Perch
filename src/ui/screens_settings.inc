@@ -62,7 +62,9 @@ void buildSettings() {
       },
       LV_EVENT_LONG_PRESSED, nullptr);
   // Software: version and updates. Tap to check; then to install; then to restart.
-  lv_obj_t *about = row(s, 446, "Software", nullptr, 64);
+  constexpr int softwareY = 446;
+  constexpr int detailRowHeight = 64;
+  lv_obj_t *about = row(s, softwareY, "Software", nullptr, detailRowHeight);
   lv_obj_align(lv_obj_get_child(about, 0), LV_ALIGN_TOP_LEFT, 22, 12);
   softwareSub = text(about, "", F_SMALL, MIST);
   lv_obj_set_pos(softwareSub, 22, 36);
@@ -103,7 +105,8 @@ void buildSettings() {
     }
   });
   // Spending guard: every request counts (retries and fallbacks too); resets at midnight.
-  lv_obj_t *daily = row(s, 458, "Daily limit", &dailyValue, 64);
+  constexpr int dailyY = softwareY + detailRowHeight;
+  lv_obj_t *daily = row(s, dailyY, "Daily limit", &dailyValue, detailRowHeight);
   lv_obj_align(lv_obj_get_child(daily, 0), LV_ALIGN_TOP_LEFT, 22, 12);
   lv_obj_align(dailyValue, LV_ALIGN_TOP_RIGHT, -20, 12);
   dailySub = text(daily, "", F_SMALL, MIST);
@@ -116,7 +119,7 @@ void buildSettings() {
   });
   lv_obj_t *spacer = plain(s);
   lv_obj_set_size(spacer, 1, 1);
-  lv_obj_set_pos(spacer, 0, 578);
+  lv_obj_set_pos(spacer, 0, dailyY + 120);
 }
 
 // AI settings: which provider answers, and for each provider its model and effort.
