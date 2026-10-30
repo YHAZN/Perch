@@ -1,0 +1,39 @@
+{
+  "units": "mm",
+  "status": "Component reference study, not a verified printable enclosure",
+  "battery": {
+    "model": "503450",
+    "nominal_capacity_mah": 1000,
+    "size": [34.0, 50.0, 5.0],
+    "source": "Current battery and existing Fusion model",
+    "replacement_selected": false,
+    "bay_clearance_each_side": 0.75,
+    "wire_exit_allowance": 4.0
+  },
+  "camera": {
+    "head_size": [8.89, 8.89, 3.81],
+    "heatsink_size": [10.16, 10.16, 10.16],
+    "ribbon_width": 6.35,
+    "ribbon_free_length": 60.96,
+    "source": "User ruler estimates: head 0.35x0.35x0.15 inch; heatsink 0.4 inch cube; ribbon 0.25 inch wide and 2.4 inch long",
+    "ribbon_minimum_bend_radius": null,
+    "ribbon_thickness": null,
+    "head_ribbon_exit_offset": null,
+    "thermal_replacement_verified": false
+  },
+  "screen": {
+    "model": "Waveshare 1.83inch Touch LCD Module ST7789P CST816D",
+    "outline": [35.0, 42.0],
+    "body_depth": 6.7,
+    "rear_mount_projection": 3.5,
+    "mount_hole_spacing": [25.0, 32.0],
+    "source": "Waveshare mechanical drawing and STEP, 2026-02-11; physical revision must be checked"
+  },
+  "constraints": [
+    "Use the current battery until a demonstrably better replacement is selected.",
+    "Resin printed enclosure; protect LiPo from pressure, sharp features and screws.",
+    "Do not assume that camera ribbon can twist or tolerate a sharp crease.",
+    "Keep the glued heatsink allowance until a thinner thermal solution is validated.",
+    "Do not infer a final outer depth from an exploded reference layout."
+  ]
+}
