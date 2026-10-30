@@ -520,7 +520,7 @@ void refreshDynamic() {
                                               : String(photoCount) + " photos, " + answerCount + " answers on the device";
   setText(storageSub, storageNote.c_str());
   setText(remoteStatus, !remoteStarted()    ? ""
-                        : remoteConnected() ? "Connected"
+                        : remoteConnected() ? (remoteMode == 0 && !remoteMouseReady() ? "Refresh PC pairing" : "Connected")
                                             : "Pair \"Perch\" in your computer's Bluetooth");
   lv_obj_set_style_opa(remoteSlides, remoteConnected() ? LV_OPA_COVER : LV_OPA_40, 0);
   lv_obj_set_style_opa(remoteMediaPanel, remoteConnected() ? LV_OPA_COVER : LV_OPA_40, 0);

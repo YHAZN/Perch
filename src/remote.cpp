@@ -2,6 +2,7 @@
 #include <Arduino.h>
 #include <NimBLEDevice.h>
 #include <NimBLEHIDDevice.h>
+#include "nimble/nimble/host/services/gatt/include/services/gatt/ble_svc_gatt.h"
 
 namespace {
 // Reports: 1 = keyboard (8 bytes), 2 = consumer control (2 bytes), 3 = relative mouse (4 bytes).
@@ -27,9 +28,16 @@ volatile uint32_t disconnects = 0;
 NimBLEHIDDevice *hid = nullptr;
 NimBLECharacteristic *keyboard = nullptr, *consumer = nullptr, *mouse = nullptr;
 uint8_t mouseButtons = 0;
+uint32_t mouseAttempts = 0, mouseReports = 0;
+volatile uint32_t connectedAt = 0;
+bool refreshedServices = false;
 
 class Callbacks : public NimBLEServerCallbacks {
-  void onConnect(NimBLEServer *) override { connected = true; }
+  void onConnect(NimBLEServer *) override {
+    connectedAt = millis();
+    refreshedServices = false;
+    connected = true;
+  }
   void onDisconnect(NimBLEServer *) override {
     connected = false;
     mouseButtons = 0;
@@ -68,6 +76,22 @@ bool remoteBegin() {
 bool remoteStarted() { return started; }
 bool remoteConnected() { return connected; }
 uint32_t remoteDisconnectCount() { return disconnects; }
+bool remoteMouseReady() { return connected && mouse && mouse->getSubscribedCount() > 0; }
+uint32_t remoteMouseAttempts() { return mouseAttempts; }
+uint32_t remoteMouseReports() { return mouseReports; }
+uint8_t remoteSubscriptions() {
+  if (!connected) return 0;
+  return (keyboard && keyboard->getSubscribedCount() ? 1 : 0) |
+         (consumer && consumer->getSubscribedCount() ? 2 : 0) | (remoteMouseReady() ? 4 : 0);
+}
+void remoteTick() {
+  // An old bonded host can reconnect with the former keyboard-only GATT cache.
+  // Send one standard Service Changed indication; never erase bonds or retry in a loop.
+  if (connected && !refreshedServices && millis() - connectedAt > 5000) {
+    refreshedServices = true;
+    if (!remoteMouseReady()) ble_svc_gatt_changed(0x0001, 0xffff);
+  }
+}
 
 void remoteKey(uint8_t usage, uint8_t modifiers) {
   if (!connected || !keyboard) return;
@@ -81,7 +105,8 @@ void remoteKey(uint8_t usage, uint8_t modifiers) {
 }
 
 void remoteMouseMove(int16_t x, int16_t y, int16_t wheel) {
-  if (!connected || !mouse) return;
+  ++mouseAttempts;
+  if (!remoteMouseReady()) return;
   // Split long deltas rather than wrapping an 8-bit relative HID report.
   do {
     const int8_t dx = constrain(x, -127, 127), dy = constrain(y, -127, 127);
@@ -89,6 +114,7 @@ void remoteMouseMove(int16_t x, int16_t y, int16_t wheel) {
     const uint8_t report[4] = {mouseButtons, uint8_t(dx), uint8_t(dy), uint8_t(dz)};
     mouse->setValue(report, sizeof(report));
     mouse->notify();
+    ++mouseReports;
     x -= dx;
     y -= dy;
     wheel -= dz;

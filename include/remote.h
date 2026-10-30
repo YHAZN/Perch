@@ -9,6 +9,11 @@ void remoteEnd();
 bool remoteStarted();
 bool remoteConnected();
 uint32_t remoteDisconnectCount();
+void remoteTick();
+bool remoteMouseReady();
+uint8_t remoteSubscriptions();
+uint32_t remoteMouseAttempts();
+uint32_t remoteMouseReports();
 // Press and release one key (USB HID usage id), e.g. 0x4F right arrow.
 void remoteKey(uint8_t usage, uint8_t modifiers = 0);
 // Press and release one consumer-control key, e.g. 0xCD play/pause.

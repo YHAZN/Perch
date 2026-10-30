@@ -54,6 +54,8 @@ void handleDeviceButton(char command) {
   }
   if (command == '_') { wirelessLinkProvision(); return; }
   if (command == ':') {
+    deviceConsole().printf("REMOTE subscriptions=%u mouse_ready=%d mouse_attempts=%u mouse_reports=%u\n",
+        remoteSubscriptions(), remoteMouseReady(), remoteMouseAttempts(), remoteMouseReports());
     deviceConsole().printf("COEX wifi=%d bt_started=%d bt_connected=%d bt_drops=%u camera_mode=%d internal_free=%u internal_largest=%u internal_min=%u psram_free=%u\n",
         networkConnected(), remoteStarted(), remoteConnected(), remoteDisconnectCount(), int(cameraMode()), heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
         heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL), heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL), ESP.getFreePsram());

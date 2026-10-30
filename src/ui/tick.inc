@@ -2,6 +2,7 @@
 void deviceTick() {
   if (!framebuffer) return;
   const unsigned long now = millis();
+  remoteTick();
   if (remoteDragging && !remoteConnected()) remotePointerReset();
   if (softwareRestartAt && int32_t(now - softwareRestartAt) >= 0) ESP.restart();
   networkRoam(!aiBusy() && current != Screen::Wifi && updaterState() != UpdateState::Installing);
