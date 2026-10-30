@@ -31,8 +31,18 @@ def diagnostic(command, prefix, timeout=15):
 
 
 def jpeg():
-    result = server.exchange("o", capture=True)
-    return base64.b64decode(result["image"].split(",", 1)[1])
+    for attempt in range(3):
+        try:
+            result = server.exchange("o", capture=True)
+            return base64.b64decode(result["image"].split(",", 1)[1])
+        except RuntimeError as error:
+            if attempt == 2 or not any(message in str(error) for message in
+                                       ("payload stalled", "transfer ending", "incomplete JPEG")):
+                raise
+            # Original export is read-only: retry the transfer, never the shutter.
+            print("Retrying original export:", error)
+            time.sleep(1)
+
 
 
 def main():
