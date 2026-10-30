@@ -9,7 +9,11 @@
 constexpr int PIN_LCD_CS = 1;    // D0
 constexpr int PIN_LCD_DC = 2;    // D1
 constexpr int PIN_TP_INT = 3;    // D2
+#if defined(PERCH_BATTERY_DIVIDER)
+constexpr int PIN_TP_RST = 43;  // shared with LCD reset; requires the reset wire moved to D6
+#else
 constexpr int PIN_TP_RST = 4;    // D3, touch reset (moves onto D6 with LCD_RST once the battery needs D3)
+#endif
 constexpr int PIN_I2C_SDA = 5;   // D4, touch (and any later I2C parts)
 constexpr int PIN_I2C_SCL = 6;   // D5
 constexpr int PIN_LCD_RST = 43;  // D6
@@ -21,7 +25,11 @@ constexpr int PIN_SD_CS = 21;    // internal, also the user LED
 // Battery sense: BAT+ through a 1:2 divider (2 x 100 kOhm) to this pin. -1 = not wired yet.
 // It goes on D3 (GPIO4); TP_RST then shares D6 with LCD_RST (both are active-low resets
 // pulsed only at boot).
+#if defined(PERCH_BATTERY_DIVIDER)
+constexpr int PIN_BATTERY = 4;  // D3: 100k BAT+ -> ADC -> 100k GND, 100nF ADC -> GND
+#else
 constexpr int PIN_BATTERY = -1;
+#endif
 constexpr float BATTERY_DIVIDER = 2.0f;
 // Optional 3.3 V logic signals from a future power circuit. -1 = not wired.
 // Never connect raw USB 5 V or battery voltage to these GPIO inputs.

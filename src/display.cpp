@@ -84,10 +84,14 @@ bool displayBegin(uint32_t spiHz, void (*onDrawDone)()) {
 
   // Reset the touch controller, then give it time to boot.
   pinMode(PIN_TP_INT, INPUT);
-  pinMode(PIN_TP_RST, OUTPUT);
-  digitalWrite(PIN_TP_RST, LOW);
-  delay(10);
-  digitalWrite(PIN_TP_RST, HIGH);
+  // A shared reset was already pulsed by esp_lcd_panel_reset(). Pulsing it
+  // here again would erase the LCD initialization and leave only the backlight.
+  if (PIN_TP_RST != PIN_LCD_RST) {
+    pinMode(PIN_TP_RST, OUTPUT);
+    digitalWrite(PIN_TP_RST, LOW);
+    delay(10);
+    digitalWrite(PIN_TP_RST, HIGH);
+  }
   delay(60);
   Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL, 400000);
   Wire.beginTransmission(TOUCH_ADDR);
