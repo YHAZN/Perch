@@ -130,6 +130,8 @@ uint16_t *galleryPixels = nullptr;  // photo shown in Photos / Answer
 uint8_t *savedJpeg = nullptr, *rgbScratch = nullptr;
 size_t jpegBytes = 0, jpegCapacity = 0, rgbCapacity = 0;
 uint32_t latestPhotoId = 0;
+uint32_t cachedCaptureToken = 0;
+volatile uint32_t durableCaptureToken = 0;
 uint32_t photoIds[MAX_PHOTOS];
 int photoCount = 0, photoIndex = 0;
 lv_image_dsc_t liveDsc, photoDsc, galleryDsc;

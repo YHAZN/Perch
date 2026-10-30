@@ -247,9 +247,59 @@ bool sdPhotoLoad(uint32_t id, size_t length, uint32_t checksum, uint8_t *&data) 
   return true;
 }
 
+namespace {
+String assetPath(uint32_t id, SdPhotoAsset asset, const char *extension = ".bin") {
+  return String(root) + "/" + id + (asset == SdPhotoAsset::Thumbnail ? "-thumb" : "-screen") + extension;
+}
+struct AssetHeader { uint32_t magic, length, checksum; };
+constexpr uint32_t ASSET_MAGIC = 0x31534150;  // PAS1
+constexpr size_t ASSET_LIMIT = 128 * 1024;
+}
+
+bool sdPhotoAssetSave(uint32_t id, SdPhotoAsset asset, const uint8_t *data, size_t length) {
+  Lock lock;
+  if (!id || !data || !length || length > ASSET_LIMIT || !sdCardAvailable() || !makeRoot()) return false;
+  const String name = assetPath(id, asset), temp = assetPath(id, asset, ".tmp");
+  if (volume.exists(name.c_str()) || volume.exists(temp.c_str())) return false;
+  FsFile file;
+  if (!file.open(&volume, temp.c_str(), O_WRONLY | O_CREAT | O_EXCL)) return false;
+  const AssetHeader header = {ASSET_MAGIC, uint32_t(length), hashBytes(data, length)};
+  bool ok = file.write(&header, sizeof(header)) == sizeof(header) && file.write(data, length) == length;
+  ok = file.close() && ok;
+  if (ok && volume.rename(temp.c_str(), name.c_str())) return true;
+  volume.remove(temp.c_str());
+  return false;
+}
+
+bool sdPhotoAssetLoad(uint32_t id, SdPhotoAsset asset, uint8_t *&data, size_t &length) {
+  data = nullptr;
+  length = 0;
+  Lock lock;
+  if (!id || !sdCardAvailable()) return false;
+  FsFile file;
+  if (!file.open(&volume, assetPath(id, asset).c_str(), O_RDONLY)) return false;
+  AssetHeader header = {};
+  if (file.read(&header, sizeof(header)) != sizeof(header) || header.magic != ASSET_MAGIC ||
+      !header.length || header.length > ASSET_LIMIT || file.fileSize() != sizeof(header) + header.length) {
+    file.close();
+    return false;
+  }
+  uint8_t *buffer = static_cast<uint8_t *>(ps_malloc(header.length));
+  const bool read = buffer && file.read(buffer, header.length) == int(header.length);
+  file.close();
+  if (!read || hashBytes(buffer, header.length) != header.checksum) { free(buffer); return false; }
+  data = buffer;
+  length = header.length;
+  return true;
+}
+
 bool sdPhotoRemove(uint32_t id) {
   Lock lock;
   if (!id || !sdCardAvailable()) return false;
+  for (SdPhotoAsset asset : {SdPhotoAsset::Thumbnail, SdPhotoAsset::Screen}) {
+    const String name = assetPath(id, asset);
+    if (volume.exists(name.c_str()) && !volume.remove(name.c_str())) return false;
+  }
   const String name = photoPath(id);
   return !volume.exists(name.c_str()) || volume.remove(name.c_str());
 }

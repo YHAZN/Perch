@@ -193,7 +193,7 @@ bool launch(UpdateState next, TaskFunction_t fn) {
 }  // namespace
 
 void updaterBegin() { store.begin("perch-update", false); }
-String updaterUrl() { return store.getString("url", ""); }
+String updaterUrl() { return store.getString("url", "https://github.com/YHAZN/Perch/releases/latest/download/perch.json"); }
 void updaterSetUrl(const String &url) { store.putString("url", url); }
 bool updaterCheck() { return launch(UpdateState::Checking, checkTask); }
 bool updaterInstall() {

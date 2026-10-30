@@ -17,3 +17,8 @@ bool sdCardPhotoSelfTest();
 bool sdPhotoSave(uint32_t id, const uint8_t *data, size_t length, uint32_t &checksum);
 bool sdPhotoLoad(uint32_t id, size_t length, uint32_t checksum, uint8_t *&data);
 bool sdPhotoRemove(uint32_t id);
+
+// Checksummed photo derivatives; allocated reads are owned by the caller.
+enum class SdPhotoAsset { Thumbnail, Screen };
+bool sdPhotoAssetSave(uint32_t id, SdPhotoAsset asset, const uint8_t *data, size_t length);
+bool sdPhotoAssetLoad(uint32_t id, SdPhotoAsset asset, uint8_t *&data, size_t &length);

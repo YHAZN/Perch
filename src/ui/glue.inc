@@ -288,6 +288,7 @@ bool ensureSavedJpeg() {
   size_t len;
   if (!loadPhoto(latestPhotoId, jpeg, len)) return false;
   savedJpeg = jpeg;
+  cachedCaptureToken = durableCaptureToken;
   jpegBytes = jpegCapacity = len;
   return true;
 }

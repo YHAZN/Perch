@@ -21,6 +21,7 @@ void refreshPhotos() { photoCount = listPhotos(photoIds, MAX_PHOTOS); }
 uint8_t *taskScratch = nullptr;  // owned by the camera task
 size_t taskScratchCapacity = 0;
 struct CaptureResult {
+  uint32_t token = 0;
   uint8_t *jpeg = nullptr;
   size_t len = 0;
   String problem;
@@ -72,6 +73,7 @@ volatile int savesPending = 0;
 // Saving to flash takes ~3 s, so it runs on its own low-priority task with its own copies:
 // the viewfinder resumes at once and quick successive photos are all kept.
 struct SaveJob {
+  uint32_t token;
   uint8_t *jpeg;
   size_t len;
   bool blurry;
@@ -85,6 +87,7 @@ size_t saveScratchCapacity = 0;
 // so the live view resumes as soon as the frames are taken. Then the photo goes to flash.
 void processShot(SaveJob *job) {
   CaptureResult r;
+  r.token = job->token;
   r.jpeg = (uint8_t *)ps_malloc(job->len);
   if (r.jpeg) {
     memcpy(r.jpeg, job->jpeg, job->len);
@@ -123,7 +126,7 @@ void saveTask(void *) {
     processShot(job);
     const uint32_t id = savePhoto(job->jpeg, job->len, job->thumb);
     if (id && job->small) savePhotoScreen(id, job->small, job->smallLen);
-    if (id) savedPhotoId = id;
+    if (id) { durableCaptureToken = job->token; savedPhotoId = id; }
     else Serial.println("STORAGE_ERROR Photo not saved");
     freeKbCache = storageFreeBytes() / 1024;
     Serial.printf("PHOTO_SAVED id=%lu in %lums storage=%s\n", (unsigned long)id,
@@ -199,6 +202,8 @@ void captureInTask() {
   cameraSetMode(previewWanted ? CameraMode::Preview : CameraMode::Off);
   SaveJob *job = r.jpeg ? (SaveJob *)ps_malloc(sizeof(SaveJob)) : nullptr;
   if (job) {
+    static uint32_t captureToken = 0;
+    job->token = ++captureToken;
     job->jpeg = r.jpeg;  // the save task owns it now
     job->len = r.len;
     job->blurry = r.blurry;
@@ -252,6 +257,7 @@ bool acceptCapture(String &problem) {
   if (captureOut.blurry) toast("Blurry. Hold still and try again");
   free(savedJpeg);
   savedJpeg = captureOut.jpeg;
+  cachedCaptureToken = captureOut.token;
   jpegBytes = jpegCapacity = captureOut.len;
   captureOut.jpeg = nullptr;
   uint16_t *old = photoPixels;

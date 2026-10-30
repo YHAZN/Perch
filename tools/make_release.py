@@ -11,6 +11,7 @@ address is https://github.com/<owner>/<repo>/releases/latest/download/perch.json
 
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -23,7 +24,7 @@ if len(sys.argv) != 2 or '/' not in sys.argv[1]:
 repo = sys.argv[1]
 version = re.search(r'PERCH_VERSION "([^"]+)"', (ROOT / 'include' / 'version.h').read_text()).group(1)
 pio = Path.home() / '.platformio' / 'penv' / 'Scripts' / 'pio.exe'
-subprocess.run([str(pio), 'run', '-e', 'release'], cwd=ROOT, check=True)
+subprocess.run([str(pio), 'run', '-e', 'release', '-j', '2'], cwd=ROOT, check=True)
 image = ROOT / '.pio' / 'build' / 'release' / 'firmware.bin'
 check = subprocess.run([sys.executable, str(ROOT / 'tools' / 'check_release.py'), str(image)])
 if check.returncode:
@@ -37,11 +38,18 @@ data = image.read_bytes()
 key = ROOT / 'keys' / 'perch-update-private.pem'
 if not key.exists():
     raise SystemExit('No release key in keys/: cannot sign. Restore your backup of perch-update-private.pem.')
+openssl = shutil.which('openssl')
+if not openssl:
+    bundled = Path(os.environ.get('ProgramFiles', 'C:/Program Files')) / 'Git' / 'usr' / 'bin' / 'openssl.exe'
+    if bundled.exists():
+        openssl = str(bundled)
+if not openssl:
+    raise SystemExit('OpenSSL is required to sign and verify the release.')
 sig_file = dist / 'perch.sig'
-subprocess.run(['openssl', 'dgst', '-sha256', '-sign', str(key), '-out', str(sig_file), str(image)], check=True)
+subprocess.run([openssl, 'dgst', '-sha256', '-sign', str(key), '-out', str(sig_file), str(image)], check=True)
 subprocess.run(
     [
-        'openssl',
+        openssl,
         'dgst',
         '-sha256',
         '-verify',

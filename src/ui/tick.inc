@@ -128,6 +128,14 @@ void deviceTick() {
     chatPhotoSaved(savedPhotoId);
     refreshDynamic();
   }
+  // Keep the screen copy, but release the full JPEG after its durable save. USB
+  // export and requests reload originals on demand instead of retaining a RAM copy.
+  if (savedJpeg && latestPhotoId && cachedCaptureToken == durableCaptureToken && !savesPending &&
+      !captureRequested && !captureProcessing && !captureReady && !aiBusy()) {
+    free(savedJpeg);
+    savedJpeg = nullptr;
+    jpegCapacity = 0;
+  }
   // Ask waiting questions once Wi-Fi is back, one at a time, never while you are asking.
   if (queuedCount && !queueInFlight && networkConnected() && !aiBusy() && millis() > queueRetryAt) {
     for (int i = 0; i < queuedCount; ++i) {

@@ -161,8 +161,11 @@ uint32_t savePhoto(const uint8_t *jpeg, size_t length, const uint16_t *thumb) {
   uint32_t checksum = 0;
   if (sdPhotoSave(id, jpeg, length, checksum)) {
     const String ref = String(length) + " " + String(checksum, HEX) + "\n";
-    if (writeFile(path("/photos", id, ".sdi"), reinterpret_cast<const uint8_t *>(ref.c_str()), ref.length()))
+    if (writeFile(path("/photos", id, ".sdi"), reinterpret_cast<const uint8_t *>(ref.c_str()), ref.length())) {
+      if (sdPhotoAssetSave(id, SdPhotoAsset::Thumbnail, reinterpret_cast<const uint8_t *>(thumb), THUMB_BYTES))
+        LittleFS.remove(path("/photos", id, ".thm"));
       return id;
+    }
     sdPhotoRemove(id);
   }
   // Reserve space for the full JPEG if the card could not accept it.
@@ -215,10 +218,21 @@ size_t photoBytes(uint32_t id) {
   return stat((String("/littlefs") + path("/photos", id, ".jpg")).c_str(), &info) == 0 ? (size_t)info.st_size : 0;
 }
 
-bool loadPhotoThumb(uint32_t id, uint16_t *thumb) { return mounted && readThumb(path("/photos", id, ".thm"), thumb); }
+bool loadPhotoThumb(uint32_t id, uint16_t *thumb) {
+  if (!mounted || !thumb) return false;
+  if (readThumb(path("/photos", id, ".thm"), thumb)) return true;
+  uint8_t *data = nullptr;
+  size_t length = 0;
+  const bool ok = sdPhotoAssetLoad(id, SdPhotoAsset::Thumbnail, data, length) && length == THUMB_BYTES;
+  if (ok) memcpy(thumb, data, length);
+  free(data);
+  return ok;
+}
 
 bool savePhotoScreen(uint32_t id, const uint8_t *jpeg, size_t length) {
-  return mounted && writeFile(path("/photos", id, ".scr"), jpeg, length);
+  if (!mounted) return false;
+  if (photoOnSd(id) && sdPhotoAssetSave(id, SdPhotoAsset::Screen, jpeg, length)) return true;
+  return writeFile(path("/photos", id, ".scr"), jpeg, length);
 }
 
 bool loadPhotoScreen(uint32_t id, uint8_t *&jpeg, size_t &length) {
@@ -226,7 +240,7 @@ bool loadPhotoScreen(uint32_t id, uint8_t *&jpeg, size_t &length) {
   length = 0;
   if (!mounted) return false;
   File f = LittleFS.open(path("/photos", id, ".scr"), "r");
-  if (!f) return false;
+  if (!f) return sdPhotoAssetLoad(id, SdPhotoAsset::Screen, jpeg, length);
   length = f.size();
   jpeg = static_cast<uint8_t *>(ps_malloc(length));
   const bool ok = jpeg && f.read(jpeg, length) == length;
@@ -468,4 +482,49 @@ bool deleteAnswer(uint32_t id) {
   if (!mounted) return false;
   LittleFS.remove(path("/answers", id, ".thm"));
   return LittleFS.remove(path("/answers", id, ".txt"));
+}
+
+int storageMigratePhotos() {
+  if (!mounted || !sdCardAvailable()) return 0;
+  int moved = 0;
+  for (uint32_t id : photoIds()) {
+    if (!photoOnSd(id)) {
+      uint8_t *data = nullptr, *verified = nullptr;
+      size_t length = 0;
+      uint32_t checksum = 0;
+      if (loadPhoto(id, data, length) && sdPhotoSave(id, data, length, checksum)) {
+        const bool valid = sdPhotoLoad(id, length, checksum, verified) && !memcmp(data, verified, length);
+        const String reference = String(length) + " " + String(checksum, HEX) + "\n";
+        if (valid && writeFile(path("/photos", id, ".sdi"),
+                               reinterpret_cast<const uint8_t *>(reference.c_str()), reference.length())) {
+          moved += LittleFS.remove(path("/photos", id, ".jpg"));
+        } else sdPhotoRemove(id);
+      }
+      free(data);
+      free(verified);
+    }
+    if (!photoOnSd(id)) continue;
+    for (SdPhotoAsset asset : {SdPhotoAsset::Thumbnail, SdPhotoAsset::Screen}) {
+      const String local = path("/photos", id, asset == SdPhotoAsset::Thumbnail ? ".thm" : ".scr");
+      File file = LittleFS.open(local, "r");
+      if (!file) continue;
+      const size_t length = file.size();
+      if (!length || length > 128 * 1024) { file.close(); continue; }
+      uint8_t *data = static_cast<uint8_t *>(ps_malloc(length));
+      const bool read = data && file.read(data, length) == length;
+      file.close();
+      if (!read) { free(data); continue; }
+      uint8_t *verified = nullptr;
+      size_t actual = 0;
+      if (!sdPhotoAssetLoad(id, asset, verified, actual)) {
+        sdPhotoAssetSave(id, asset, data, length);
+        sdPhotoAssetLoad(id, asset, verified, actual);
+      }
+      if (verified && actual == length && !memcmp(data, verified, length)) moved += LittleFS.remove(local);
+      free(data);
+      free(verified);
+    }
+    delay(1);
+  }
+  return moved;
 }

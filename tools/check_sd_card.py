@@ -41,11 +41,16 @@ def main():
     parser.add_argument("--write-test", action="store_true", help="Create, verify and remove one scratch file")
     parser.add_argument("--photo-test", action="store_true", help="Save a new camera photo, restart, compare its original")
     parser.add_argument("--existing-photo", action="store_true", help="Verify the newest original without taking another photo")
+    parser.add_argument("--migrate", action="store_true", help="Verify and move existing photo files to SD")
     args = parser.parse_args()
     server.PORT = args.port
     try:
         report, _ = diagnostic(")", "SD_CARD ")
         assert "ready=1" in report and "mounted=1" in report, "Card must be mounted"
+        if args.migrate:
+            line, _ = diagnostic("]", "SD_MIGRATE ", 120)
+            assert "busy" not in line, "Migration requires an idle device"
+            print(line)
         if args.write_test:
             result, lines = diagnostic("&", "SD_TEST result=", 30)
             assert result.endswith("PASS") and any("cleanup=PASS" in line for line in lines), lines

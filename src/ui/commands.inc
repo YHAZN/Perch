@@ -7,7 +7,21 @@ void handleDeviceButton(char command) {
       Serial.printf("PHOTO_STORAGE id=%lu backend=%s bytes=%u\n", (unsigned long)latest,
                     photoOnSd(latest) ? "sd" : "internal", unsigned(photoBytes(latest)));
     }
+    Serial.printf("PHOTO_CACHE bytes=%u psram_free=%u internal_free=%u\n", savedJpeg ? unsigned(jpegBytes) : 0, ESP.getFreePsram(), ESP.getFreeHeap());
     sdCardReport();
+    return;
+  }
+  if (command == ']') {
+    if (savesPending || captureRequested || captureProcessing || captureReady || aiBusy() ||
+        updaterState() == UpdateState::Installing || updaterState() == UpdateState::Checking) {
+      Serial.println("SD_MIGRATE busy");
+      return;
+    }
+    stopPreview();
+    const size_t before = storageFreeBytes();
+    const int files = storageMigratePhotos();
+    freeKbStale = true;
+    Serial.printf("SD_MIGRATE files=%d before=%u after=%u\n", files, unsigned(before), unsigned(storageFreeBytes()));
     return;
   }
   if (command == '&') { Serial.printf("SD_TEST result=%s\n", (sdCardSelfTest() && sdCardPhotoSelfTest()) ? "PASS" : "FAIL"); return; }

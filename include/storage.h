@@ -76,3 +76,7 @@ bool photoUriLoad(uint32_t id, String &uri, uint32_t &expires, uint32_t &keyTag)
 void photoUriForget(uint32_t id);
 // Upload links of photos deleted since the last call (to delete the provider's copies too).
 std::vector<String> storageTakeForgottenUploads();
+
+// Copy existing photo files to SD, verify every byte, then remove internal copies.
+// Run only while captures, requests and updates are idle. Returns files moved.
+int storageMigratePhotos();
