@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Camera calibration lab</title><link rel="stylesheet" href="/vision/style.css"></head>
+<body><main>
+<header><div><span class="eyebrow">VISION EXPERIMENT</span><h1>Calibrate before controlling.</h1><p>Map a screen plane. Measure the error. Keep the cursor in preview.</p></div><span id="source" class="badge">Simulation</span></header>
+<section class="toolbar" aria-label="Frame controls">
+<button id="demo">Simulation</button><button id="camera">Use Perch camera</button><button id="freeze" disabled>Freeze frame</button><button id="stop" disabled>Stop camera</button>
+<label class="file">Open image<input id="file" type="file" accept="image/*"></label>
+<a href="/vision/target" target="_blank" rel="noopener">Open calibration target ↗</a>
+</section>
+<p id="error" role="alert" hidden></p>
+<div class="layout"><section class="frame panel"><div class="section-head"><h2>Camera view</h2><span id="frameState">Synthetic frame</span></div>
+<canvas id="image" width="640" height="480" aria-label="Camera image. Click marker centres 1, 2, 3, 4 in order."></canvas>
+<p id="step" aria-live="polite">Simulation uses known marker positions.</p>
+<div class="actions"><button id="reset">Mark four points</button><button id="undo">Undo</button><button id="validate">Check centre</button><button id="export" disabled>Export calibration</button></div>
+</section><aside class="panel"><h2>Screen projection</h2><canvas id="screen" width="480" height="270" aria-label="Preview projection, not the operating system cursor"></canvas>
+<p class="caption">The blue dot is the frame-centre projection. Move over the camera image to probe other points.</p>
+<dl><div><dt>Calibration</dt><dd id="quality">Simulation only</dd></div><div><dt>Centre check</dt><dd id="measure">Not measured</dd></div><div><dt>Host input</dt><dd>Preview only</dd></div></dl>
+<label class="dimensions">Target size · CSS pixels <span><input id="width" type="number" min="1" max="20000" value="1920" aria-label="Target width"> × <input id="height" type="number" min="1" max="20000" value="1080" aria-label="Target height"></span></label>
+<div class="note"><strong>What this measures</strong><p>Four marker centres map the monitor’s plane. A fingertip at a different depth is not an accurate pointing ray.</p><p>Freeze a real frame, then mark 1 → 2 → 3 → 4 and check the separate centre cross. Recalibrate after camera or target movement.</p></div>
+</aside></div>
+<footer>Manual calibration prototype. Automatic marker detection, finger tracking and OS cursor control are not enabled. Images stay in this local companion.</footer>
+</main><script type="module" src="/vision/lab.mjs"></script></body></html>

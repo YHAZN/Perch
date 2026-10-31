@@ -1,0 +1,48 @@
+Camera calibration lab
+
+Start the existing local companion, then open http://127.0.0.1:8765/vision.
+The lab starts in simulation and does not contact the device until requested.
+It adds no firmware dependency and sends no keyboard or mouse input.
+
+Workflow
+1. Use Simulation to inspect the mapping without hardware, or Open image to
+   inspect an existing camera photo locally.
+2. Open calibration target on the monitor to be mapped. Enter full screen
+   before capturing. Keep that target displayed while taking a camera frame.
+3. Use Perch camera, then Freeze frame. With one monitor, capture while the
+   target is visible using another browser window/display or a saved image;
+   switching away from the lab pauses polling. Stop camera returns Perch Home.
+4. Mark four points, clicking marker centres in order: top left, top right,
+   bottom right, bottom left. Their destinations are 8%/92% of the target,
+   not the physical corners of the monitor.
+5. Check centre, then click the separate central cross in the camera image.
+   The reported error is in target CSS pixels. Four fitted points alone do
+   not validate accuracy. The centre check is one diagnostic, not a guarantee.
+6. Move over the camera view to probe mapped positions. Blue is the image
+   centre projection; gold is the mouse probe. Both are preview dots only.
+   Export calibration downloads local JSON; images are not uploaded externally.
+
+Limits
+Manual correspondences apply to one frozen planar view. Recalibrate after
+camera or target movement. New preview frames discard old calibration.
+Target resize/full-screen changes also discard real-frame calibration.
+The current device preview is 320x240, limiting annotation precision. Larger
+saved photos offer more pixels but cannot undo optical blur.
+There is no automatic marker detection, hand recognition, lens-distortion
+correction, calibrated optical axis, or OS cursor control in this prototype.
+A fingertip in front of the monitor is at a different depth. Screen-plane
+calibration cannot infer the direction of a 3D pointing finger from its tip.
+The lab introduces no tracking packages or downloaded models.
+
+Next experiments
+For handheld aiming, detect screen markers continuously and project the
+camera centre, suspending output whenever markers are lost. This does not
+require finger recognition, but needs adequate marker visibility and tests.
+For finger-controlled pointing, stabilize the camera and track a hand in a
+defined workspace; use explicit clutch/click gestures. PC-assisted landmark
+processing is a separate optional experiment, not implemented by this lab.
+
+Checks
+node --test tools/check_vision_calibration.mjs
+node --check simulator/vision/lab.mjs
+python -m py_compile simulator/server.py

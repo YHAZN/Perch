@@ -255,6 +255,12 @@ class Handler(BaseHTTPRequestHandler):
             '/': ('index.html', 'text/html; charset=utf-8'),
             '/app.js': ('app.js', 'text/javascript; charset=utf-8'),
             '/style.css': ('style.css', 'text/css; charset=utf-8'),
+            '/vision': ('vision/index.html', 'text/html; charset=utf-8'),
+            '/vision/': ('vision/index.html', 'text/html; charset=utf-8'),
+            '/vision/style.css': ('vision/style.css', 'text/css; charset=utf-8'),
+            '/vision/lab.mjs': ('vision/lab.mjs', 'text/javascript; charset=utf-8'),
+            '/vision/geometry.mjs': ('vision/geometry.mjs', 'text/javascript; charset=utf-8'),
+            '/vision/target': ('vision/target.html', 'text/html; charset=utf-8'),
         }
         if path == '/api/health':
             return self.reply(
